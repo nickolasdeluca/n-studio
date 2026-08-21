@@ -1,0 +1,15 @@
+[package]
+name = "fb-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rsfbclient = { workspace = true, features = ["pure_rust"] }
+rsfbclient-core = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+# Enables the native-client backend so we can compare capability surfaces.
+native = ["rsfbclient/dynamic_loading"]

@@ -1,0 +1,47 @@
+# Firebird version matrix for fbexpert integration tests.
+#
+#   docker compose -f docker/compose.yml up -d
+#
+# Ports map version -> host port so the probe can hit all four at once:
+#   2.5 -> 3050   3.0 -> 3053   4.0 -> 3054   5.0 -> 3055
+#
+# 2.5 comes from jacobalberty/firebird; the official firebirdsql/firebird
+# images only go back to 3.0.
+services:
+  fb25:
+    image: jacobalberty/firebird:2.5-ss
+    ports: ["3050:3050"]
+    environment:
+      ISC_PASSWORD: masterkey
+      FIREBIRD_DATABASE: fixture.fdb
+      EnableLegacyClientAuth: "true"
+    volumes:
+      - ./seed:/seed:ro
+
+  fb30:
+    image: firebirdsql/firebird:3.0
+    ports: ["3053:3050"]
+    environment:
+      FIREBIRD_ROOT_PASSWORD: masterkey
+      FIREBIRD_DATABASE: fixture.fdb
+      FIREBIRD_USE_LEGACY_AUTH: "true"
+    volumes:
+      - ./seed:/seed:ro
+
+  fb40:
+    image: firebirdsql/firebird:4.0
+    ports: ["3054:3050"]
+    environment:
+      FIREBIRD_ROOT_PASSWORD: masterkey
+      FIREBIRD_DATABASE: fixture.fdb
+    volumes:
+      - ./seed:/seed:ro
+
+  fb50:
+    image: firebirdsql/firebird:5.0
+    ports: ["3055:3050"]
+    environment:
+      FIREBIRD_ROOT_PASSWORD: masterkey
+      FIREBIRD_DATABASE: fixture.fdb
+    volumes:
+      - ./seed:/seed:ro

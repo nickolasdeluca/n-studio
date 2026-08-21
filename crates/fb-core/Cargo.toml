@@ -1,0 +1,10 @@
+[package]
+name = "fb-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rsfbclient = { workspace = true, features = ["pure_rust"] }
+rsfbclient-core = { workspace = true }
+thiserror = { workspace = true }

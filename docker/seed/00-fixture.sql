@@ -1,0 +1,109 @@
+/* Core fixture — must run on Firebird 2.5 through 5.0, dialect 3. */
+
+CREATE DOMAIN D_ID          AS INTEGER NOT NULL;
+CREATE DOMAIN D_MONEY       AS NUMERIC(18,4) DEFAULT 0;
+CREATE DOMAIN D_FLAG        AS CHAR(1) DEFAULT 'N' CHECK (VALUE IN ('S','N'));
+
+CREATE EXCEPTION E_FIXTURE 'fixture exception';
+
+CREATE GENERATOR GEN_TIPOS_ID;
+
+/* Every type reachable on 2.5, plus both charsets on the same table so a
+   single SELECT proves round-tripping in one shot. */
+CREATE TABLE TIPOS (
+  ID              D_ID,
+  C_SMALLINT      SMALLINT,
+  C_INTEGER       INTEGER,
+  C_BIGINT        BIGINT,
+  C_NUMERIC_18_4  NUMERIC(18,4),
+  C_NUMERIC_9_2   NUMERIC(9,2),
+  C_NUMERIC_4_2   NUMERIC(4,2),
+  C_FLOAT         FLOAT,
+  C_DOUBLE        DOUBLE PRECISION,
+  C_DATE          DATE,
+  C_TIME          TIME,
+  C_TIMESTAMP     TIMESTAMP,
+  C_CHAR          CHAR(10),
+  C_VARCHAR       VARCHAR(100),
+  C_VC_WIN1252    VARCHAR(100) CHARACTER SET WIN1252,
+  C_VC_UTF8       VARCHAR(100) CHARACTER SET UTF8,
+  C_VC_NONE       VARCHAR(100) CHARACTER SET NONE,
+  C_BLOB_TEXT     BLOB SUB_TYPE TEXT,
+  C_BLOB_BIN      BLOB SUB_TYPE 0,
+  C_NULLABLE      VARCHAR(50),
+  CONSTRAINT PK_TIPOS PRIMARY KEY (ID)
+);
+
+/* Accented + currency text: the classic WIN1252 vs UTF8 tripwire. */
+INSERT INTO TIPOS (ID, C_SMALLINT, C_INTEGER, C_BIGINT, C_NUMERIC_18_4,
+                   C_NUMERIC_9_2, C_NUMERIC_4_2, C_FLOAT, C_DOUBLE,
+                   C_DATE, C_TIME, C_TIMESTAMP, C_CHAR, C_VARCHAR,
+                   C_VC_WIN1252, C_VC_UTF8, C_VC_NONE,
+                   C_BLOB_TEXT, C_BLOB_BIN, C_NULLABLE)
+VALUES (1, -32768, -2147483648, -9223372036854775808, -99999999999999.9999,
+        -9999999.99, -99.99, 1.5, 3.141592653589793,
+        '2026-08-21', '15:03:52', '2026-08-21 15:03:52.1234', 'abc', 'plain ascii',
+        'ação preço ãõçéêà', 'ação preço ãõçéêà', 'ascii only',
+        'blob de texto com acentuação', NULL, NULL);
+
+INSERT INTO TIPOS (ID, C_SMALLINT, C_INTEGER, C_BIGINT, C_NUMERIC_18_4,
+                   C_NUMERIC_9_2, C_NUMERIC_4_2, C_FLOAT, C_DOUBLE,
+                   C_DATE, C_TIME, C_TIMESTAMP, C_CHAR, C_VARCHAR,
+                   C_VC_WIN1252, C_VC_UTF8, C_VC_NONE,
+                   C_BLOB_TEXT, C_BLOB_BIN, C_NULLABLE)
+VALUES (2, 32767, 2147483647, 9223372036854775807, 99999999999999.9999,
+        9999999.99, 99.99, -1.5, -3.141592653589793,
+        '0001-01-01', '00:00:00', '9999-12-31 23:59:59.9999', 'xyz', '',
+        'R$ 1.234,56', 'R$ 1.234,56', 'x',
+        '', NULL, 'not null here');
+
+CREATE VIEW V_TIPOS AS
+  SELECT ID, C_VARCHAR, C_NUMERIC_18_4 FROM TIPOS;
+
+/* Bulk table for the streaming / grid-perf spike. */
+CREATE TABLE BULK_ROWS (
+  ID         INTEGER NOT NULL,
+  NOME       VARCHAR(120),
+  VALOR      NUMERIC(15,2),
+  CRIADO_EM  TIMESTAMP,
+  CONSTRAINT PK_BULK_ROWS PRIMARY KEY (ID)
+);
+
+CREATE INDEX IDX_BULK_NOME ON BULK_ROWS (NOME);
+
+SET TERM ^ ;
+
+CREATE PROCEDURE P_FIXTURE (P_N INTEGER)
+RETURNS (R_ID INTEGER, R_TXT VARCHAR(100))
+AS
+BEGIN
+  R_ID = P_N;
+  R_TXT = 'proc row ' || P_N;
+  SUSPEND;
+END^
+
+CREATE TRIGGER TIPOS_BI FOR TIPOS ACTIVE BEFORE INSERT POSITION 0
+AS
+BEGIN
+  IF (NEW.ID IS NULL) THEN
+    NEW.ID = GEN_ID(GEN_TIPOS_ID, 1);
+END^
+
+/* Bulk table for the streaming / grid-perf spike: 1,000,000 rows. */
+CREATE PROCEDURE P_SEED_BULK (P_ROWS INTEGER)
+AS
+DECLARE VARIABLE I INTEGER;
+BEGIN
+  I = 0;
+  WHILE (I < P_ROWS) DO
+  BEGIN
+    INSERT INTO BULK_ROWS (ID, NOME, VALOR, CRIADO_EM)
+    VALUES (:I, 'PRODUTO COMPLEMENTO ' || :I, MOD(:I, 100000) / 100.0,
+            DATEADD(:I SECOND TO TIMESTAMP '2020-01-01 00:00:00'));
+    I = I + 1;
+  END
+END^
+
+SET TERM ; ^
+
+COMMIT;

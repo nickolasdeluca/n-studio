@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fb-core",
+    "crates/fb-wire",
+    "spikes/fb-probe",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/nickolasdeluca/fbexpert"
+
+[workspace.dependencies]
+rsfbclient = { version = "0.27", default-features = false }
+rsfbclient-core = "0.27"
+rsfbclient-rust = "0.27"
+rsfbclient-native = "0.27"
+anyhow = "1"
+thiserror = "2"
+
+# M0: vendored copy of the pure-Rust wire driver so we can instrument it and add
+# the ops it lacks (op_info_sql, op_info_database, op_cancel, services).
+# Upstreamed as PRs where they land; this patch is how they ship until then.
+[patch.crates-io]
+rsfbclient-rust = { path = "crates/fb-wire" }
