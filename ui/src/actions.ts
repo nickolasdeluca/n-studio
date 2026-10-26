@@ -1,6 +1,7 @@
 // What the toolbar, the menus and the keyboard can do to a registration.
 // One place, so each surface offers the same thing under the same name.
 import type { MenuItem } from "./components/ContextMenu";
+import { openEditor } from "./dock";
 import { t } from "./i18n";
 import { useStore } from "./store";
 
@@ -12,6 +13,8 @@ export function registrationActions(id: string): (MenuItem | "separator")[] {
     { label: t("Connect"), icon: "plug", disabled: connected || s.connecting[id], onSelect: () => void s.connect(id) },
     { label: t("Disconnect"), icon: "unplug", disabled: !connected, onSelect: () => void s.disconnect(id) },
     { label: t("Refresh"), icon: "refresh", disabled: !connected, onSelect: () => void s.refresh(id) },
+    "separator",
+    { label: t("New SQL Editor"), icon: "sql", disabled: !connected, onSelect: () => openEditor(id) },
     "separator",
     {
       label: t("Edit Registration…"),

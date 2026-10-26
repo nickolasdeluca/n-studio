@@ -134,6 +134,11 @@ execute-to-cursor, streamed results grid with the record navigator and `<null>`
 rendering, Messages / Query columns / Explain plan bottom tabs, Performance Analysis
 tab, transaction toolbar + TIL selector, status bar. This is screenshots 2 and 3.
 
+In place: all of the above. Still to come before M2 closes: sorting and export in
+the grid, cancelling a running statement (`op_cancel`), parameters (`?`, `:name`),
+blobs fetched on demand instead of with the row, and asking to commit or roll back
+when an editor with an active transaction closes (today it rolls back).
+
 ### M3 — Object viewers (read-only)
 Per-object-type editors with the IBExpert tab layout: Fields, Constraints, Indices,
 Dependencies, Triggers, Data, Description, DDL. Metadata extract for a selection.

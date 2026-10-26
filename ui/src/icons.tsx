@@ -114,6 +114,27 @@ const glyphs: Record<string, ReactNode> = {
       <path d="m10.2 10.2 3.4 3.4" />
     </>
   ),
+  sql: <path d="M3.5 2h6l3 3v9h-9zM9.5 2v3h3M5.5 8h5M5.5 10.5h3.5" />,
+  run: <path d="M5 3.2v9.6L12.6 8z" fill="currentColor" />,
+  "run-all": <path d="M2.8 3.6v8.8L8 8zM8 3.6v8.8L13.2 8z" fill="currentColor" />,
+  "run-cursor": (
+    <>
+      <path d="M3.5 3.6v8.8L9 8z" fill="currentColor" />
+      <path d="M12 3.4v9.2" />
+    </>
+  ),
+  commit: <path d="m3 8.4 3.2 3.2L13 4.8" />,
+  rollback: (
+    <>
+      <path d="M3.4 6.4h6.4a3.2 3.2 0 0 1 0 6.4H6.4" />
+      <path d="m5.8 4 -2.4 2.4 2.4 2.4" />
+    </>
+  ),
+  first: <path d="M4 3.5v9M12 3.5 7 8l5 4.5" />,
+  prev: <path d="M10.5 3.5 5.5 8l5 4.5" />,
+  next: <path d="M5.5 3.5 10.5 8l-5 4.5" />,
+  last: <path d="M12 3.5v9M4 3.5 9 8l-5 4.5" />,
+  "fetch-all": <path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3.5 13.5h9" />,
   panel: (
     <>
       <rect x="2.2" y="2.6" width="11.6" height="10.8" rx="1" />

@@ -7,6 +7,8 @@ import {
 } from "dockview-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { serverSummary } from "../api";
+import { openEditor, setDock } from "../dock";
+import { useEditors } from "../editors";
 import { t } from "../i18n";
 import { Icon } from "../icons";
 import { useStore } from "../store";
@@ -14,6 +16,7 @@ import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { Dialogs } from "./Dialogs";
 import { Explorer } from "./Explorer";
 import { ObjectList } from "./ObjectList";
+import { forgetEditor, SqlEditor } from "./SqlEditor";
 
 const theme: DockviewTheme = { name: "n", className: "dockview-theme-n" };
 const LAYOUT = "n-studio.layout.v1";
@@ -22,6 +25,7 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   explorer: () => <Explorer />,
   objects: () => <ObjectList />,
   start: () => <Start />,
+  sql: (props) => <SqlEditor {...(props as IDockviewPanelProps<{ tab: string }>)} />,
 };
 
 /** The panels the View menu can bring back */
@@ -37,9 +41,29 @@ export function Shell() {
     void useStore.getState().load();
   }, []);
 
+  // F12, as in IBExpert: an SQL editor on the selected database
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "F12") return;
+      const id = useStore.getState().selection?.id;
+      if (!id) return;
+      e.preventDefault();
+      openEditor(id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const onReady = (e: DockviewReadyEvent) => {
     dock.current = e.api;
+    setDock(e.api);
     if (!restore(e.api)) defaultLayout(e.api);
+    // An editor's tab closing ends its transaction
+    e.api.onDidRemovePanel((panel) => {
+      if (!panel.id.startsWith("sql-")) return;
+      forgetEditor(panel.id);
+      void useEditors.getState().close(panel.id);
+    });
     e.api.onDidLayoutChange(() => {
       try {
         localStorage.setItem(LAYOUT, JSON.stringify(e.api.toJSON()));
@@ -86,6 +110,9 @@ function restore(api: DockviewApi): boolean {
     const saved = localStorage.getItem(LAYOUT);
     if (!saved) return false;
     api.fromJSON(JSON.parse(saved));
+    // Editors do not outlive the app: their transactions are gone
+    for (const panel of api.panels.filter((p) => p.id.startsWith("sql-"))) panel.api.close();
+    if (!api.getPanel("start")) api.addPanel({ id: "start", component: "start", title: t("Start") });
     return api.panels.length > 0;
   } catch {
     return false;
@@ -137,6 +164,9 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <ToolButton icon="plug" label={t("Connect")} disabled={!id || connected || connecting} onClick={() => id && void s.connect(id)} />
       <ToolButton icon="unplug" label={t("Disconnect")} disabled={!connected} onClick={() => id && void s.disconnect(id)} />
       <ToolButton icon="refresh" label={t("Refresh")} disabled={!connected} onClick={() => id && void s.refresh(id)} />
+      <Separator />
+      <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
+      <Separator />
       <ToolButton
         icon="edit"
         label={t("Edit Registration…")}
@@ -216,7 +246,7 @@ function StatusBar() {
   );
 }
 
-/** The center area until editors exist (M2) */
+/** The center area before any editor opens */
 function Start() {
   const count = useStore((s) => s.registrations.length);
   return (
@@ -228,7 +258,7 @@ function Start() {
         <p className="text-muted">
           {count === 0
             ? t("Register a database to get started.")
-            : t("Double-click a database in the explorer to connect.")}
+            : t("Double-click a database in the explorer to connect, then press F12 for an SQL editor.")}
         </p>
         {count === 0 && (
           <button

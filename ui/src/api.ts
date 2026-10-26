@@ -80,6 +80,126 @@ export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// The SQL editor
+
+export type Isolation = "read_committed" | "read_committed_no_rec_version" | "snapshot" | "snapshot_table_stability";
+export type LockWait = { mode: "wait" } | { mode: "no_wait" } | { mode: "timeout"; seconds: number };
+
+export interface TxOptions {
+  isolation: Isolation;
+  readOnly: boolean;
+  lockWait: LockWait;
+}
+
+export type TxEnd = "commit" | "commit_retaining" | "rollback" | "rollback_retaining";
+
+export type StatementType =
+  | "select"
+  | "select_for_update"
+  | "insert"
+  | "update"
+  | "delete"
+  | "ddl"
+  | "exec_procedure"
+  | "set_generator"
+  | "savepoint"
+  | "commit"
+  | "rollback"
+  | "start_transaction"
+  | "other";
+
+export type ColumnKind =
+  | "integer"
+  | "decimal"
+  | "float"
+  | "text"
+  | "date"
+  | "time"
+  | "timestamp"
+  | "boolean"
+  | "text_blob"
+  | "blob"
+  | "other";
+
+export interface ColumnInfo {
+  name: string;
+  field: string;
+  relation: string;
+  typeName: string;
+  kind: ColumnKind;
+  nullable: boolean;
+}
+
+export interface Records {
+  selected: number;
+  inserted: number;
+  updated: number;
+  deleted: number;
+}
+
+export interface TablePerformance {
+  table: string;
+  indexedReads: number;
+  nonIndexedReads: number;
+  inserts: number;
+  updates: number;
+  deletes: number;
+  backouts: number;
+  purges: number;
+  expunges: number;
+}
+
+export interface Performance {
+  reads: number;
+  writes: number;
+  fetches: number;
+  marks: number;
+  currentMemory: number;
+  maxMemory: number;
+  buffers: number;
+  pageSize: number;
+  tables: TablePerformance[];
+}
+
+/** A cell as the grid shows it; null is SQL NULL */
+export type Cell = string | null;
+
+/** A select's rows, held by the backend */
+export interface ResultView {
+  id: number;
+  /** Fetched so far */
+  rows: number;
+  eof: boolean;
+  /** The transaction ended before the rows ran out */
+  endedEarly: boolean;
+  fetchMs: number;
+  performance: Performance | null;
+}
+
+export interface Executed {
+  statementType: StatementType;
+  columns: ColumnInfo[];
+  result: ResultView | null;
+  /** An EXECUTE PROCEDURE's output row */
+  rows: Cell[][];
+  records: Records;
+  plan: string | null;
+  explainedPlan: string | null;
+  prepareMs: number;
+  executeMs: number;
+  ended: TxEnd | null;
+  performance: Performance | null;
+}
+
+export interface StatementRange {
+  from: number;
+  to: number;
+  /** Past the terminator */
+  end: number;
+  kind: { type: "sql" } | { type: "set_term"; terminator: string } | { type: "isql" };
+  unterminatedLiteral: boolean;
+}
+
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
@@ -93,6 +213,15 @@ export const api = {
   disconnect: (id: string) => invoke<void>("disconnect", { id }),
   explorerTree: (id: string) => invoke<TreeKind[]>("explorer_tree", { id }),
   objectList: (id: string, kind: ObjectKind) => invoke<DbObject[]>("object_list", { id, kind }),
+
+  editorBegin: (id: string, options: TxOptions) => invoke<number>("editor_begin", { id, options }),
+  editorEnd: (id: string, tx: number, how: TxEnd) => invoke<void>("editor_end", { id, tx, how }),
+  editorExecute: (id: string, tx: number, sql: string, options: { plan: boolean; performance: boolean }, first: number) =>
+    invoke<Executed>("editor_execute", { id, tx, sql, options, first }),
+  resultFetch: (result: number, max: number) => invoke<ResultView>("result_fetch", { result, max }),
+  resultRows: (result: number, from: number, count: number) => invoke<Cell[][]>("result_rows", { result, from, count }),
+  resultClose: (result: number) => invoke<void>("result_close", { result }),
+  sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
 };
 
 export function serverSummary(s: ServerInfo): string {

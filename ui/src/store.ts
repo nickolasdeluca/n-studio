@@ -12,6 +12,7 @@ import {
   type ServerInfo,
   type TreeKind,
 } from "./api";
+import { useEditors } from "./editors";
 import { t } from "./i18n";
 
 interface Loadable<T> {
@@ -138,6 +139,7 @@ export const useStore = create<State>()((set, get) => ({
 
   async disconnect(id) {
     await api.disconnect(id);
+    useEditors.getState().sessionClosed(id);
     set((s) => {
       const servers = { ...s.servers };
       delete servers[id];
@@ -180,6 +182,7 @@ export const useStore = create<State>()((set, get) => ({
 
   async deleteRegistration(id) {
     await api.deleteRegistration(id);
+    useEditors.getState().sessionClosed(id);
     set((s) => {
       const servers = { ...s.servers };
       delete servers[id];

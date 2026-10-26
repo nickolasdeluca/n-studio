@@ -34,6 +34,7 @@ fn main() {
             editor::result_fetch,
             editor::result_rows,
             editor::result_close,
+            editor::sql_statements,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

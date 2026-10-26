@@ -242,3 +242,63 @@ pub async fn result_close(app: AppHandle, result: u64) -> AppResult<()> {
     })
     .await
 }
+
+/// A statement in the editor's text, in UTF-16 offsets as the editor counts
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatementRange {
+    from: usize,
+    to: usize,
+    /// Past its terminator
+    end: usize,
+    kind: fb_sql::StatementKind,
+    unterminated_literal: bool,
+}
+
+/// Splits the editor's text into statements, `SET TERM` aware
+#[tauri::command]
+pub async fn sql_statements(text: String) -> Vec<StatementRange> {
+    let mut utf16 = Utf16Cursor::default();
+    fb_sql::split(&text)
+        .into_iter()
+        .map(|s| StatementRange {
+            from: utf16.at(&text, s.range.start),
+            to: utf16.at(&text, s.range.end),
+            end: utf16.at(&text, s.span_end),
+            kind: s.kind,
+            unterminated_literal: s.unterminated_literal,
+        })
+        .collect()
+}
+
+/// Byte offsets to UTF-16 ones in a single pass, for offsets that only grow
+#[derive(Default)]
+struct Utf16Cursor {
+    byte: usize,
+    units: usize,
+}
+
+impl Utf16Cursor {
+    fn at(&mut self, text: &str, byte: usize) -> usize {
+        debug_assert!(byte >= self.byte, "offsets must not go back");
+        self.units += text[self.byte..byte].encode_utf16().count();
+        self.byte = byte;
+        self.units
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn statement_ranges_count_utf16() {
+        let text = "select 'ação 😀' from t;\nselect 2 from rdb$database;".to_string();
+        let ranges = tauri::async_runtime::block_on(sql_statements(text.clone()));
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let slice = |a: usize, b: usize| String::from_utf16(&units[a..b]).unwrap();
+        assert_eq!(slice(ranges[0].from, ranges[0].to), "select 'ação 😀' from t");
+        assert_eq!(slice(ranges[0].to, ranges[0].end), ";");
+        assert_eq!(slice(ranges[1].from, ranges[1].to), "select 2 from rdb$database");
+    }
+}

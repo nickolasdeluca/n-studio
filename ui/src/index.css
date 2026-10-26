@@ -21,6 +21,12 @@
   --shadow: 0 12px 40px rgb(15 23 42 / 0.18), 0 2px 8px rgb(15 23 42 / 0.08);
   --row: 22px;
   --font-size: 12.5px;
+  --sql-keyword: #1f4fb3;
+  --sql-type: #8a3fb0;
+  --sql-string: #a3420f;
+  --sql-number: #0d7a6b;
+  --sql-comment: #7a838d;
+  --sql-param: #b0306e;
   color-scheme: light;
 }
 
@@ -41,6 +47,12 @@
     --danger: #ef6a5c;
     --ok: #4fbf7a;
     --shadow: 0 12px 40px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
+    --sql-keyword: #7aa7ff;
+    --sql-type: #c792ea;
+    --sql-string: #e6a26b;
+    --sql-number: #5fd0bd;
+    --sql-comment: #6f7983;
+    --sql-param: #f07fb4;
     color-scheme: dark;
   }
 }
