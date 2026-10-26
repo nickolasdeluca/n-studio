@@ -280,7 +280,15 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
 /// Server version and dialect, straight from the engine.
 fn report_server(conn: &mut impl Queryable) -> Result<()> {
     println!("\n── server ──");
-    for key in ["ENGINE_VERSION", "DB_NAME", "NETWORK_PROTOCOL", "CLIENT_ADDRESS"] {
+    for key in [
+        "ENGINE_VERSION",
+        "DB_NAME",
+        "NETWORK_PROTOCOL",
+        "CLIENT_ADDRESS",
+        // Whether the wire is encrypted (3.0+), and with what (4.0+).
+        "WIRE_ENCRYPTED",
+        "WIRE_CRYPT_PLUGIN",
+    ] {
         // 2.5 lacks some of these keys; a missing one is information, not an error.
         let got: Option<(Option<String>,)> = conn
             .query_first(
@@ -292,6 +300,17 @@ fn report_server(conn: &mut impl Queryable) -> Result<()> {
             Some(v) => println!("  {key:<17} {v}"),
             None => println!("  {key:<17} <unavailable>"),
         }
+    }
+    // The auth plugin this connection used (3.0+).
+    let auth: Option<(Option<String>,)> = conn
+        .query_first(
+            "select mon$auth_method from mon$attachments where mon$attachment_id = current_connection",
+            (),
+        )
+        .unwrap_or(None);
+    match auth.and_then(|r| r.0) {
+        Some(v) => println!("  {:<17} {}", "AUTH_METHOD", v.trim()),
+        None => println!("  {:<17} <unavailable>", "AUTH_METHOD"),
     }
     Ok(())
 }
