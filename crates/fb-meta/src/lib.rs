@@ -10,10 +10,10 @@
 //! costs a full network latency on a remote server.
 
 use fb_core::{Connection, Error, Result, ServerInfo, Value};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The kinds of object the explorer shows, in its order
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectKind {
     Domain,
@@ -48,6 +48,24 @@ impl ObjectKind {
         ObjectKind::Role,
         ObjectKind::Index,
     ];
+
+    /// The explorer's heading for the kind, as IBExpert names it
+    pub fn label(self) -> &'static str {
+        match self {
+            ObjectKind::Domain => "Domains",
+            ObjectKind::Table => "Tables",
+            ObjectKind::View => "Views",
+            ObjectKind::Procedure => "Procedures",
+            ObjectKind::Function => "Functions",
+            ObjectKind::Package => "Packages",
+            ObjectKind::Trigger => "Triggers",
+            ObjectKind::Generator => "Generators",
+            ObjectKind::Exception => "Exceptions",
+            ObjectKind::Udf => "UDFs",
+            ObjectKind::Role => "Roles",
+            ObjectKind::Index => "Indices",
+        }
+    }
 }
 
 /// Which catalog layout a database has

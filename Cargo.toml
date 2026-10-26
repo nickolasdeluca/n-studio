@@ -5,6 +5,7 @@ members = [
     "crates/fb-meta",
     "crates/fb-wire",
     "spikes/fb-probe",
+    "src-tauri",
     "spikes/grid-shell/src-tauri",
     "spikes/grid-slint",
 ]

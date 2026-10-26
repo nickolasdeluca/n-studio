@@ -1,0 +1,27 @@
+[package]
+name = "n-studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = "1"
+thiserror = { workspace = true }
+uuid = { version = "1.28", features = ["v4"] }
+keyring = "4.2"
+fb-core = { workspace = true }
+fb-meta = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Serve the frontend from the binary rather than the dev server; `tauri build`
+# turns it on.
+custom-protocol = ["tauri/custom-protocol"]
