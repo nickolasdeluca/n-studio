@@ -19,8 +19,13 @@ use rsfbclient_core::{ibase, Charset, Column, Dialect, FbError, FreeStmtOp, SqlT
 /// This value is also sent to the server as the maximum size of prepare and
 /// info responses. At 1 KiB the descriptor of a wide table (100+ columns, the
 /// norm in ERP schemas) does not fit, the server truncates the reply and the
-/// parser desyncs. 64 KiB covers the widest tables seen in practice.
-pub const BUFFER_LENGTH: u32 = 65536;
+/// parser desyncs.
+///
+/// It must fit in 16 bits: the server reads the prepare, info and segment
+/// buffer lengths as USHORT, so 65536 arrives as 0. For op_get_segment that
+/// means every reply is an empty segment that never reaches the end of the
+/// blob, and the reader loops forever.
+pub const BUFFER_LENGTH: u32 = u16::MAX as u32;
 
 /// Highest protocol type offered at handshake.
 ///
@@ -65,7 +70,8 @@ pub fn connect(
     // Protocol versions understood
     connect.put_u32(protocols.len() as u32);
 
-    // Request SRP by default, so use Sha1
+    // The public key A = g^a mod N does not depend on the SRP hash, so the
+    // same key serves whichever of Srp256 / Srp the server ends up choosing.
     let srp = SrpClient::<sha1::Sha1>::new(srp_key, &SRP_GROUP);
 
     let uid = {
@@ -84,8 +90,13 @@ pub fn connect(
                 AuthPluginType::Legacy.name().to_string(),
                 hashed.to_string(),
             ),
+            // Lead with Srp256, as fbclient does (AuthClient = Srp256, Srp,
+            // Legacy_Auth). Leading with Srp makes FB4 answer op_cond_accept
+            // switching to Srp256 with no data, and its op_cont_auth reply to
+            // that is isc_unavailable — the "unavailable database" seen on
+            // every FB4 server tried in M0.
             None => (
-                AuthPluginType::Srp.name(),
+                AuthPluginType::Srp256.name(),
                 AuthPluginType::plugin_list(),
                 pubkey,
             ),
@@ -174,6 +185,7 @@ pub fn attach(
     role_name: Option<&str>,
     dialect: Dialect,
     no_db_triggers: bool,
+    auth_data: Option<&[u8]>,
 ) -> Bytes {
     let dpb = build_dpb(
         user,
@@ -184,6 +196,7 @@ pub fn attach(
         role_name,
         dialect,
         no_db_triggers,
+        auth_data,
     );
 
     let mut attach = BytesMut::with_capacity(16 + db_name.len() + dpb.len());
@@ -208,9 +221,10 @@ pub fn create(
     page_size: Option<u32>,
     role_name: Option<&str>,
     dialect: Dialect,
+    auth_data: Option<&[u8]>,
 ) -> Bytes {
     let dpb = build_dpb(
-        user, pass, protocol, charset, page_size, role_name, dialect, false,
+        user, pass, protocol, charset, page_size, role_name, dialect, false, auth_data,
     );
 
     let mut create = BytesMut::with_capacity(16 + db_name.len() + dpb.len());
@@ -235,6 +249,8 @@ fn build_dpb(
     role_name: Option<&str>,
     dialect: Dialect,
     no_db_triggers: bool,
+    // Auth plugin data the server deferred to the attach (op_accept_data).
+    auth_data: Option<&[u8]>,
 ) -> Bytes {
     let mut dpb = BytesMut::with_capacity(64);
 
@@ -283,8 +299,15 @@ fn build_dpb(
             dpb.put_slice(enc_pass.as_bytes());
         }
 
-        // Password already verified
-        ProtocolVersion::V13 => {}
+        // Password verified by the auth plugin: either already, through
+        // op_cont_auth (op_cond_accept), or by the data carried here
+        // (op_accept_data).
+        ProtocolVersion::V13 => {
+            if let Some(data) = auth_data {
+                dpb.put_slice(&[ibase::isc_dpb_specific_auth_data as u8, data.len() as u8]);
+                dpb.put_slice(data);
+            }
+        }
     }
 
     dpb.freeze()
@@ -552,24 +575,6 @@ pub fn parse_response(resp: &mut Bytes) -> Result<Response, FbError> {
         object_id,
         data,
     })
-}
-
-/// Parse a server sql response (`WireOp::FetchResponse`)
-pub fn parse_fetch_response(
-    resp: &mut Bytes,
-    xsqlda: &[XSqlVar],
-    version: ProtocolVersion,
-    charset: &Charset,
-) -> Result<Option<Vec<ParsedColumn>>, FbError> {
-    const END_OF_STREAM: u32 = 100;
-
-    let status = resp.get_u32()?;
-
-    if status == END_OF_STREAM {
-        return Ok(None);
-    }
-
-    Ok(Some(parse_sql_response(resp, xsqlda, version, charset)?))
 }
 
 /// Parse a server sql response (`WireOp::SqlResponse`)
@@ -909,6 +914,10 @@ pub fn parse_status_vector(resp: &mut Bytes) -> Result<(), FbError> {
 pub struct ConnectionResponse {
     pub version: ProtocolVersion,
     pub auth_plugin: Option<AuthPlugin>,
+    /// The server answered op_accept_data rather than op_cond_accept: it will
+    /// not take op_cont_auth on this port, and expects the plugin's reply in
+    /// the attach DPB instead. Servers send this when wire encryption is off.
+    pub auth_in_dpb: bool,
 }
 
 #[derive(Debug)]
@@ -968,6 +977,7 @@ pub fn parse_accept(resp: &mut Bytes) -> Result<ConnectionResponse, FbError> {
     Ok(ConnectionResponse {
         version,
         auth_plugin,
+        auth_in_dpb: op_code == WireOp::AcceptData as u32,
     })
 }
 

@@ -211,6 +211,9 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
     let mut first_row_at = None;
     let mut printed_cols = false;
     let mut mangled = 0usize;
+    // Content fingerprint, comparable against another driver reading the
+    // same query: text characters, binary bytes, integer sum, null count.
+    let (mut text_chars, mut bin_bytes, mut int_sum, mut nulls) = (0usize, 0usize, 0i128, 0usize);
 
     while let Some(row) = iter.next() {
         let row = row?;
@@ -225,10 +228,17 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
         }
         // U+FFFD anywhere means the connection charset is wrong for this data.
         for col in &row.cols {
-            if let SqlType::Text(t) = &col.value {
-                if t.contains('\u{FFFD}') {
-                    mangled += 1;
+            match &col.value {
+                SqlType::Text(t) => {
+                    if t.contains('\u{FFFD}') {
+                        mangled += 1;
+                    }
+                    text_chars += t.chars().count();
                 }
+                SqlType::Binary(b) => bin_bytes += b.len(),
+                SqlType::Integer(i) => int_sum += *i as i128,
+                SqlType::Null => nulls += 1,
+                _ => {}
             }
         }
         count += 1;
@@ -245,6 +255,7 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
         println!("  throughput      {:.0} rows/s", count as f64 / elapsed.as_secs_f64());
     }
     println!("  replacement chars in {mangled} cells (0 = charset ok)");
+    println!("  fingerprint     rows={count} text_chars={text_chars} binary_bytes={bin_bytes} int_sum={int_sum} nulls={nulls}");
     Ok(())
 }
 

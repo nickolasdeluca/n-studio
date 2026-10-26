@@ -176,8 +176,13 @@ impl BytesWireExt for Bytes {
     }
 }
 
+/// The message of the error a parser raises when its input ends early. The
+/// client's reader matches on it to tell an incomplete reply apart from a bad
+/// one, so every underflow must go through `err_invalid_response`.
+pub const MISSING_BYTES: &str = "Invalid server response, missing bytes";
+
 pub fn err_invalid_response<T>() -> Result<T, FbError> {
-    Err("Invalid server response, missing bytes".into())
+    Err(MISSING_BYTES.into())
 }
 
 pub fn err_conn_rejected<T>(op_code: u32) -> Result<T, FbError> {

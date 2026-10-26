@@ -1,8 +1,9 @@
 # M0 — Spike findings
 
 Status: **partially complete.** Driver capability audit done by source inspection, and
-validated against a live Firebird 4.0.4 server (read-only). The version matrix still
-needs a container runtime. One blocking driver defect found — see §4.
+validated against two live Firebird 4.0.4 servers (read-only). The version matrix
+still needs a container runtime, which this dev machine cannot run. The blocking
+defects of §3 and §4 are fixed — see §8.
 
 ---
 
@@ -167,6 +168,45 @@ Until it lands, the driver handles narrow, BLOB-free result sets only.
 
 ---
 
+## 8. Resolution (2026-10-26)
+
+Against a second FB 4.0.4 server (the ERP database, 1322 tables), cross-checked by reading
+the same queries with an independent pure-Python driver (`firebirdsql`):
+
+**§3, SRP "unavailable database" — not a server problem.** Servers with wire
+encryption disabled accept with `op_accept_data` (94), not `op_cond_accept` (98),
+and take the SRP proof in the attach DPB as `isc_dpb_specific_auth_data`. The
+driver always answered with `op_cont_auth`, for which such a server has no
+pending authentication, hence `isc_unavailable`. Fixed; SRP now connects with no
+`FB_AUTH` override. Legacy_Auth stays as a fallback.
+
+**§4, framing — three bugs, none of them alignment padding.**
+
+- *End of cursor* (`status = 100`) consumed the status word but not the
+  `messages` word after it. Those 4 zero bytes were the "zero prefix" that made
+  retaining the tail look wrong; the next reader saw opcode 0.
+- *`execute2`* parsed `op_response` without reading its opcode first.
+- *Blobs mid-batch.* A row's blob was fetched while the rest of the 200-row
+  batch was still in flight, so the blob reply was read out of the middle of it.
+  Blobs are now resolved as rows are delivered, after the batch is read.
+
+With those fixed, retaining the tail is correct, and the reader now does exactly
+that: one connection buffer, each reply parsed out by exact length, topped up
+from the socket when a parse runs short.
+
+**The BLOB "hang" was a fourth bug.** `BUFFER_LENGTH` had been raised to 65536,
+and the server reads the segment length as USHORT — 0. Every `op_get_segment`
+returned an empty segment and never the last one. Capped at 65535; the same cap
+fixes the prepare and info buffer lengths.
+
+| Query | Before | After | vs Python driver |
+|---|---|---|---|
+| `select * from PRODUTO` (174 cols) | hang | 1517 rows, 378 ms | identical |
+| procedure sources (1550 text BLOBs) | `rejected with code 0` | 1550 rows, 1.6 s | identical |
+
+Blob reads cost three round trips each (open, get, close). Lazy blob loading in
+the grid is a `fb-core` concern for M2, not a driver one.
+
 ## 5. Container matrix — still blocked
 
 Pending: the 2.5 / 3.0 / 4.0 / 5.0 matrix, and reading the performance block from a
@@ -192,8 +232,8 @@ Recommendation: option 1.
 
 The driver work is no longer a background task running parallel to the UI. Order:
 
-1. **Wire reader framing rewrite** — nothing else is trustworthy until this lands.
-2. **Legacy_Auth as a first-class connection setting** (done as a spike, needs productising).
+1. ~~Wire reader framing rewrite~~ — done, §8.
+2. **Auth plugin as a connection setting** (SRP fixed in §8; Legacy_Auth still an env var).
 3. `op_info_sql` (plan) and `op_info_database` (performance counters) — M2's panels.
 4. `op_cancel`, then events, then services.
 

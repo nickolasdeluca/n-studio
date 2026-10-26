@@ -190,8 +190,8 @@ impl AuthPluginType {
     /// List with the plugins
     pub fn plugin_list() -> String {
         [
-            AuthPluginType::Srp.name(),
             AuthPluginType::Srp256.name(),
+            AuthPluginType::Srp.name(),
             AuthPluginType::Legacy.name(),
         ]
         .join(",")

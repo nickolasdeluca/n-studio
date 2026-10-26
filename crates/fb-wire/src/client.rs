@@ -35,22 +35,15 @@ fn fetch_batch_size() -> u32 {
 
 /// Result of parsing ONE op_fetch_response.
 enum FetchOne {
-    /// A row (status=0, messages=1).
-    Row(Vec<Column>),
+    /// A row (status=0, messages=1). Blob columns still hold only their id:
+    /// their contents are fetched once the whole batch has been read.
+    Row(Vec<ParsedColumn>),
     /// End of THIS batch (status=0, messages=0): the server ended the op_fetch
     /// without exhausting the cursor. Re-issuing op_fetch fetches the rest.
     BatchEnd,
     /// End of cursor (status=100). Nothing more to read.
     End,
 }
-
-enum FetchErr {
-    /// Not enough bytes in the buffer — read more from the socket and retry.
-    NeedMore,
-    /// A real protocol/server error — propagate it.
-    Fatal(FbError),
-}
-
 
 /// Wire tracing for the M0 spike: set FBW_TRACE=1 to dump packets.
 pub(crate) fn trace(label: &str, bytes: &[u8]) {
@@ -111,11 +104,13 @@ pub struct FirebirdWireConnection {
 
     pub(crate) charset: Charset,
 
-    /// Bytes read from the socket but not yet consumed. Firebird responses are
-    /// not length-prefixed and the server coalesces several into one TCP
-    /// segment, so whatever follows the packet just parsed has to survive until
-    /// the next read — dropping it desyncs the stream.
-    pending: BytesMut,
+    /// Bytes read from the socket that no reply has consumed yet. See
+    /// `read_reply`: every reply is parsed out of this buffer.
+    pending: Bytes,
+
+    /// Auth plugin reply to send in the first attach DPB, when the server
+    /// accepted with op_accept_data instead of op_cond_accept.
+    dpb_auth_data: Option<Vec<u8>>,
 }
 
 /// Data to keep track about a prepared statement
@@ -129,7 +124,9 @@ pub struct StmtHandleData {
     /// Number of parameters
     param_count: usize,
     /// Rows already fetched in a batch but not yet delivered (batch fetch).
-    prefetched: VecDeque<Vec<Column>>,
+    /// Blobs are resolved as each row is delivered, never mid-batch: the rest
+    /// of the batch is still in flight then, ahead of any blob reply.
+    prefetched: VecDeque<Vec<ParsedColumn>>,
     /// Cursor exhausted on the server (do not request more batches).
     cursor_eof: bool,
 }
@@ -391,23 +388,63 @@ impl FirebirdWireConnection {
         // May be a bit too much
         let mut buff = vec![0; BUFFER_LENGTH as usize * 2].into_boxed_slice();
 
-        let len = socket.read(&mut buff)?;
-        trace("op_connect <-", &buff[..len]);
-        let mut resp = Bytes::copy_from_slice(&buff[..len]);
+        // Nothing is sent lazily before the attach, so no replies are owed.
+        let mut pending = Bytes::new();
+        let mut no_lazy = 0;
 
         let ConnectionResponse {
             version,
             auth_plugin,
-        } = parse_accept(&mut resp)?;
+            auth_in_dpb,
+        } = read_reply(&mut socket, &mut buff, &mut pending, &mut no_lazy, |r, _| {
+            parse_accept(r)
+        })?;
 
-        if let Some(mut auth_plugin) = auth_plugin {
-            loop {
+        let mut dpb_auth_data = None;
+
+        match auth_plugin {
+            // op_accept_data: the server takes the plugin's reply in the attach
+            // DPB and will refuse op_cont_auth with isc_unavailable. No session
+            // key is agreed on this path, so the connection stays plaintext —
+            // which is what the server asked for by not offering op_cond_accept.
+            Some(auth_plugin) if auth_in_dpb => {
+                let data = match (auth_plugin.kind, auth_plugin.data) {
+                    (AuthPluginType::Srp, Some(data)) => {
+                        let srp = SrpClient::<sha1::Sha1>::new(&srp_key, &SRP_GROUP);
+                        srp_proof(srp, user, pass, &data)?.0
+                    }
+                    (AuthPluginType::Srp256, Some(data)) => {
+                        let srp = SrpClient::<sha2::Sha256>::new(&srp_key, &SRP_GROUP);
+                        srp_proof(srp, user, pass, &data)?.0
+                    }
+                    (AuthPluginType::Legacy, _) => legacy_hash(pass).into_bytes(),
+                    (plugin, None) => {
+                        return Err(format!(
+                            "Server chose {} without sending its auth data, and op_accept_data \
+                             leaves no way to ask for it",
+                            plugin.name()
+                        )
+                        .into())
+                    }
+                };
+                dpb_auth_data = Some(data);
+            }
+            Some(mut auth_plugin) => loop {
                 match auth_plugin.kind {
                     plugin @ AuthPluginType::Srp => {
                         let srp = SrpClient::<sha1::Sha1>::new(&srp_key, &SRP_GROUP);
 
                         if let Some(data) = auth_plugin.data {
-                            socket = srp_auth(socket, &mut buff, srp, plugin, user, pass, data)?;
+                            socket = srp_auth(
+                                socket,
+                                &mut buff,
+                                &mut pending,
+                                srp,
+                                plugin,
+                                user,
+                                pass,
+                                data,
+                            )?;
 
                             // Authentication Ok
                             break;
@@ -425,11 +462,13 @@ impl FirebirdWireConnection {
                             socket.write_all(&req)?;
                             socket.flush()?;
 
-                            let len = socket.read(&mut buff)?;
-                            trace("op_cont_auth <-", &buff[..len]);
-                            let mut resp = Bytes::copy_from_slice(&buff[..len]);
-
-                            auth_plugin = parse_cont_auth(&mut resp)?;
+                            auth_plugin = read_reply(
+                                &mut socket,
+                                &mut buff,
+                                &mut pending,
+                                &mut no_lazy,
+                                |r, _| parse_cont_auth(r),
+                            )?;
                         }
                     }
                     AuthPluginType::Legacy => {
@@ -449,40 +488,42 @@ impl FirebirdWireConnection {
                         socket.write_all(&req)?;
                         socket.flush()?;
 
-                        let len = socket.read(&mut buff)?;
-                        trace("op_cont_auth(legacy) <-", &buff[..len]);
-                        let mut resp = Bytes::copy_from_slice(&buff[..len]);
-
-                        let op_code = resp.get_u32()?;
-                        if op_code == WireOp::Response as u32 {
-                            // Success carries an empty status vector; a failure
-                            // surfaces as an error here.
-                            parse_response(&mut resp)?;
-                            break;
+                        // op_response ends the exchange (a failure surfaces as
+                        // its error); op_cont_auth asks for another round.
+                        let next = read_reply(
+                            &mut socket,
+                            &mut buff,
+                            &mut pending,
+                            &mut no_lazy,
+                            |r, _| {
+                                let mut peek = r.clone();
+                                if peek.get_u32()? == WireOp::Response as u32 {
+                                    r.advance(4)?;
+                                    return Ok(response_body(r)?.map(|_| None));
+                                }
+                                Ok(Ok(Some(parse_cont_auth(r)?)))
+                            },
+                        )??;
+                        match next {
+                            Some(plugin) => auth_plugin = plugin,
+                            None => break,
                         }
-                        if op_code == WireOp::ContAuth as u32 {
-                            let auth_data = parse_srp_auth_data(&mut resp.get_wire_bytes()?)?;
-                            let plugin = AuthPluginType::parse(&resp.get_wire_bytes()?)?;
-                            let _plugin_list = resp.get_wire_bytes()?;
-                            let keys = resp.get_wire_bytes()?;
-                            auth_plugin = AuthPlugin {
-                                kind: plugin,
-                                data: auth_data,
-                                keys,
-                            };
-                            continue;
-                        }
-                        return Err(format!(
-                            "Unexpected response to Legacy_Auth continuation: op {op_code}"
-                        )
-                        .into());
                     }
 
                     plugin @ AuthPluginType::Srp256 => {
                         let srp = SrpClient::<sha2::Sha256>::new(&srp_key, &SRP_GROUP);
 
                         if let Some(data) = auth_plugin.data {
-                            socket = srp_auth(socket, &mut buff, srp, plugin, user, pass, data)?;
+                            socket = srp_auth(
+                                socket,
+                                &mut buff,
+                                &mut pending,
+                                srp,
+                                plugin,
+                                user,
+                                pass,
+                                data,
+                            )?;
 
                             // Authentication Ok
                             break;
@@ -500,15 +541,18 @@ impl FirebirdWireConnection {
                             socket.write_all(&req)?;
                             socket.flush()?;
 
-                            let len = socket.read(&mut buff)?;
-                            trace("op_cont_auth <-", &buff[..len]);
-                            let mut resp = Bytes::copy_from_slice(&buff[..len]);
-
-                            auth_plugin = parse_cont_auth(&mut resp)?;
+                            auth_plugin = read_reply(
+                                &mut socket,
+                                &mut buff,
+                                &mut pending,
+                                &mut no_lazy,
+                                |r, _| parse_cont_auth(r),
+                            )?;
                         }
                     }
                 }
-            }
+            },
+            None => {}
         }
 
         Ok(Self {
@@ -517,7 +561,8 @@ impl FirebirdWireConnection {
             buff,
             lazy_count: 0,
             charset,
-            pending: BytesMut::new(),
+            pending,
+            dpb_auth_data,
         })
     }
 
@@ -540,6 +585,7 @@ impl FirebirdWireConnection {
             page_size,
             role_name.clone(),
             dialect,
+            self.dpb_auth_data.take().as_deref(),
         ))?;
         self.socket.flush()?;
 
@@ -567,6 +613,7 @@ impl FirebirdWireConnection {
             role_name.clone(),
             dialect,
             no_db_triggers,
+            self.dpb_auth_data.take().as_deref(),
         );
         trace("op_attach ->", &req);
         self.socket.write_all(&req)?;
@@ -684,36 +731,20 @@ impl FirebirdWireConnection {
         )?)?;
         self.socket.flush()?;
 
-        let (mut op_code, mut resp) = self.read_packet()?;
+        // Both replies are read before either error is reported: a failed
+        // allocation is still followed by the prepare's reply, and leaving
+        // that unread would hand it to whichever op reads next.
+        let (alloc, prepare) = self.read_reply(|r, lazy| {
+            let alloc = op_response(r, lazy)?;
+            let prepare = op_response(r, lazy)?;
+            Ok((alloc, prepare))
+        })?;
 
-        // Read lazy responses
-        for _ in 0..self.lazy_count {
-            if op_code != WireOp::Response as u32 {
-                return err_conn_rejected(op_code);
-            }
-            self.lazy_count -= 1;
-            parse_response(&mut resp)?;
-
-            op_code = resp.get_u32()?;
-        }
-
-        // Alloc resp
-        if op_code != WireOp::Response as u32 {
-            return err_conn_rejected(op_code);
-        }
-
-        let stmt_handle = StmtHandle(parse_response(&mut resp)?.handle);
-
-        // Prepare resp
-        let op_code = resp.get_u32()?;
-
-        if op_code != WireOp::Response as u32 {
-            return err_conn_rejected(op_code);
-        }
+        let stmt_handle = StmtHandle(alloc?.handle);
 
         let mut xsqlda = Vec::new();
 
-        let mut resp = parse_response(&mut resp)?;
+        let mut resp = prepare?;
         let PrepareInfo {
             stmt_type,
             mut param_count,
@@ -859,33 +890,38 @@ impl FirebirdWireConnection {
         ))?;
         self.socket.flush()?;
 
-        let (mut op_code, mut resp) = read_packet(&mut self.socket, &mut self.buff, &mut self.pending)?;
+        let version = self.version;
+        let charset = self.charset.clone();
+        let xsqlda = &stmt_handle.xsqlda;
 
-        // Read lazy responses
-        for _ in 0..self.lazy_count {
-            if op_code != WireOp::Response as u32 {
+        // Success is op_sql_response (the row) followed by op_response; a
+        // failure is a lone op_response carrying the error.
+        let parsed_cols = self.read_reply(|r, lazy| {
+            let op_code = next_op(r, lazy)?;
+
+            if op_code == WireOp::Response as u32 {
+                return Ok(match response_body(r)? {
+                    Err(e) => Err(e),
+                    Ok(_) => Err("execute2: server returned no row and no error".into()),
+                });
+            }
+
+            if op_code != WireOp::SqlResponse as u32 {
                 return err_conn_rejected(op_code);
             }
-            self.lazy_count -= 1;
-            parse_response(&mut resp)?;
 
-            op_code = resp.get_u32()?;
-        }
+            let has_row = r.clone().get_u32()? != 0;
+            let row = if has_row {
+                Some(parse_sql_response(r, xsqlda, version, &charset)?)
+            } else {
+                r.advance(4)?;
+                None
+            };
 
-        if op_code == WireOp::Response as u32 {
-            // An error ocurred
-            parse_response(&mut resp)?;
-        }
-
-        if op_code != WireOp::SqlResponse as u32 {
-            return err_conn_rejected(op_code);
-        }
-
-        let parsed_cols =
-            parse_sql_response(&mut resp, &stmt_handle.xsqlda, self.version, &self.charset)?;
-
-        parse_response(&mut resp)?;
-        keep_tail(&mut self.pending, resp.clone());
+            Ok(op_response(r, lazy)?.and_then(|_| {
+                row.ok_or_else(|| FbError::from("execute2: statement returned no row"))
+            }))
+        })??;
 
         let mut cols = Vec::with_capacity(parsed_cols.len());
 
@@ -908,7 +944,7 @@ impl FirebirdWireConnection {
         let count = fetch_batch_size();
         let mut empty_batches = 0u32;
         while stmt_handle.prefetched.is_empty() && !stmt_handle.cursor_eof {
-            self.fetch_batch(tr_handle, stmt_handle, count)?;
+            self.fetch_batch(stmt_handle, count)?;
             empty_batches += 1;
             // Safety net: a well-behaved server never sends empty batches
             // without exhausting the cursor; guards against a hang if it does.
@@ -916,176 +952,48 @@ impl FirebirdWireConnection {
                 return Err("fetch: too many empty batches without end of cursor".into());
             }
         }
-        Ok(stmt_handle.prefetched.pop_front())
+
+        let Some(parsed) = stmt_handle.prefetched.pop_front() else {
+            return Ok(None);
+        };
+        let mut cols = Vec::with_capacity(parsed.len());
+        for pc in parsed {
+            cols.push(pc.into_column(self, tr_handle)?);
+        }
+        Ok(Some(cols))
     }
 
     /// Requests `count` rows in one op_fetch and reads every op_fetch_response
-    /// that arrives, filling `stmt_handle.prefetched`. Parses greedily; if bytes
-    /// are missing mid-response, reads more from the socket and resumes (robust
-    /// against responses split across TCP segments — the cause of the old
-    /// "Invalid server response, missing bytes").
-    fn fetch_batch(
-        &mut self,
-        tr_handle: &mut TrHandle,
-        stmt_handle: &mut StmtHandleData,
-        count: u32,
-    ) -> Result<(), FbError> {
+    /// up to the one that ends the batch, filling `stmt_handle.prefetched`.
+    fn fetch_batch(&mut self, stmt_handle: &mut StmtHandleData, count: u32) -> Result<(), FbError> {
         self.socket
             .write_all(&fetch(stmt_handle.handle.0, &stmt_handle.blr, count))?;
         self.socket.flush()?;
 
-        let mut acc = std::mem::take(&mut self.pending);
+        let version = self.version;
+        let charset = self.charset.clone();
         let mut got = 0u32;
 
         loop {
-            // Parse as many responses as the accumulated bytes allow.
-            let mut view = std::mem::take(&mut acc).freeze();
-            loop {
-                let snapshot = view.clone(); // O(1): Bytes shares the underlying buffer
-                let saved_lazy = self.lazy_count;
-                match self.parse_one_fetch_response(&mut view, &stmt_handle.xsqlda, tr_handle) {
-                    Ok(FetchOne::Row(cols)) => {
-                        stmt_handle.prefetched.push_back(cols);
-                        got += 1;
-                        // Do NOT return on got>=count: after the rows, the server
-                        // always sends a terminating op_fetch_response (messages=0
-                        // = end of this batch, or status=100 = end of cursor).
-                        // Returning early would discard that terminator (still
-                        // buffered) and desync the next op_fetch. Let BatchEnd/End
-                        // end the loop. Guard against a server sending more rows
-                        // than requested (should not happen).
-                        if got > count {
-                            return Err("server sent more rows than requested in op_fetch".into());
-                        }
+            let xsqlda = &stmt_handle.xsqlda;
+            let reply =
+                self.read_reply(|r, lazy| parse_fetch_reply(r, lazy, xsqlda, version, &charset))?;
+
+            match reply {
+                FetchOne::Row(cols) => {
+                    stmt_handle.prefetched.push_back(cols);
+                    got += 1;
+                    // Rows are always followed by a terminating op_fetch_response
+                    // (BatchEnd or End), which has to be read too. A server
+                    // sending more rows than requested would be a protocol bug.
+                    if got > count {
+                        return Err("server sent more rows than requested in op_fetch".into());
                     }
-                    Ok(FetchOne::BatchEnd) => {
-                        // Server ended this op_fetch without exhausting the cursor.
-                        // Deliver what arrived; the next fetch() re-issues op_fetch.
-                        keep_tail(&mut self.pending, view);
-                        return Ok(());
-                    }
-                    Ok(FetchOne::End) => {
-                        stmt_handle.cursor_eof = true;
-                        keep_tail(&mut self.pending, view);
-                        return Ok(());
-                    }
-                    Err(FetchErr::NeedMore) => {
-                        self.lazy_count = saved_lazy; // undo partial lazy consumption
-                        view = snapshot;
-                        break;
-                    }
-                    Err(FetchErr::Fatal(e)) => return Err(e),
                 }
-            }
-
-            // Missing bytes: keep the unconsumed tail and read more from the socket.
-            let mut next = BytesMut::from(view.as_ref());
-            let n = self.socket.read(&mut self.buff)?;
-            if n == 0 {
-                return Err("Fetch: connection closed mid-batch".into());
-            }
-            next.extend_from_slice(&self.buff[..n]);
-            acc = next;
-        }
-    }
-
-    /// Tries to parse ONE op_fetch_response from `view`. On NeedMore, the caller
-    /// restores `view` from a snapshot (the partial consumption here is discarded).
-    fn parse_one_fetch_response(
-        &mut self,
-        view: &mut Bytes,
-        xsqlda: &[XSqlVar],
-        tr_handle: &mut TrHandle,
-    ) -> Result<FetchOne, FetchErr> {
-        // op_code, skipping Dummy packets
-        let mut op_code = loop {
-            if view.remaining() < 4 {
-                return Err(FetchErr::NeedMore);
-            }
-            let oc = view.get_u32().map_err(|_| FetchErr::NeedMore)?;
-            if oc != WireOp::Dummy as u32 {
-                break oc;
-            }
-        };
-
-        // Pending lazy responses
-        for _ in 0..self.lazy_count {
-            if op_code != WireOp::Response as u32 {
-                return Err(FetchErr::Fatal(
-                    format!("unexpected op_code in fetch (op {})", op_code).into(),
-                ));
-            }
-            self.lazy_count -= 1;
-            parse_response(view).map_err(|_| FetchErr::NeedMore)?;
-            if view.remaining() < 4 {
-                return Err(FetchErr::NeedMore);
-            }
-            op_code = view.get_u32().map_err(|_| FetchErr::NeedMore)?;
-        }
-
-        if op_code == WireOp::Response as u32 {
-            // Error reported by the server
-            parse_response(view).map_err(FetchErr::Fatal)?;
-        }
-
-        if op_code != WireOp::FetchResponse as u32 {
-            return Err(FetchErr::Fatal(
-                format!("unexpected op_code in fetch (op {})", op_code).into(),
-            ));
-        }
-
-        // Body: [status: u32][messages: u32][null_map][columns...]. Peek status
-        // and messages without consuming, to tell end-of-cursor (status=100),
-        // end-of-batch (messages=0) and a row (messages=1) apart BEFORE delegating.
-        if view.remaining() < 4 {
-            return Err(FetchErr::NeedMore);
-        }
-        let status = {
-            let mut peek = view.clone();
-            peek.get_u32().map_err(|_| FetchErr::NeedMore)?
-        };
-        if status == 100 {
-            // End of cursor: consume only the status (same as parse_fetch_response).
-            view.advance(4).map_err(|_| FetchErr::NeedMore)?;
-            return Ok(FetchOne::End);
-        }
-        if view.remaining() < 8 {
-            return Err(FetchErr::NeedMore);
-        }
-        let messages = {
-            let mut peek = view.clone();
-            peek.get_u32().map_err(|_| FetchErr::NeedMore)?; // status
-            peek.get_u32().map_err(|_| FetchErr::NeedMore)? // messages
-        };
-        if messages == 0 {
-            // End of this batch with no row: consume status+messages, stop the batch.
-            view.advance(8).map_err(|_| FetchErr::NeedMore)?;
-            return Ok(FetchOne::BatchEnd);
-        }
-
-        // A row is present. Delegate to the crate parser (re-reads status+messages+data).
-        // charset cloned so we don't hold a borrow of self when calling into_column.
-        let version = self.version;
-        let charset = self.charset.clone();
-        match parse_fetch_response(view, xsqlda, version, &charset) {
-            Ok(None) => Ok(FetchOne::End),
-            Ok(Some(parsed)) => {
-                let mut cols = Vec::with_capacity(parsed.len());
-                for pc in parsed {
-                    cols.push(pc.into_column(self, tr_handle).map_err(FetchErr::Fatal)?);
-                }
-                Ok(FetchOne::Row(cols))
-            }
-            // Underflow (bytes missing mid-response) has a fixed message -> read
-            // more and resume. Any OTHER error (e.g. invalid UTF-8 when decoding a
-            // column) is a real data error: propagate it, don't turn it into an
-            // infinite wait for bytes that never arrive.
-            Err(e) => {
-                if matches!(&e, FbError::Other(m) if m == "Invalid server response, missing bytes")
-                {
-                    Err(FetchErr::NeedMore)
-                } else {
-                    Err(FetchErr::Fatal(e))
+                FetchOne::BatchEnd => return Ok(()),
+                FetchOne::End => {
+                    stmt_handle.cursor_eof = true;
+                    return Ok(());
                 }
             }
         }
@@ -1168,133 +1076,171 @@ impl FirebirdWireConnection {
 
     /// Read a server response
     fn read_response(&mut self) -> Result<Response, FbError> {
-        read_response(
+        self.read_reply(op_response)?
+    }
+
+    /// Parse one reply out of the connection buffer. See `read_reply`.
+    fn read_reply<T>(
+        &mut self,
+        parse: impl FnMut(&mut Bytes, &mut u32) -> Result<T, FbError>,
+    ) -> Result<T, FbError> {
+        read_reply(
             &mut self.socket,
             &mut self.buff,
-            &mut self.lazy_count,
             &mut self.pending,
+            &mut self.lazy_count,
+            parse,
         )
     }
-
-    /// Reads a packet from the socket
-    fn read_packet(&mut self) -> Result<(u32, Bytes), FbError> {
-        read_packet(&mut self.socket, &mut self.buff, &mut self.pending)
-    }
 }
 
-/// Read a server response
-fn read_response(
+/// Parses one reply out of `pending`, reading from the socket until `parse`
+/// has every byte it needs.
+///
+/// Firebird replies carry no length prefix, and with lazy_send the server
+/// coalesces several of them into one TCP segment, so a socket read can stop
+/// mid-reply or run past the end of one. The only reliable frame is the parser
+/// itself: `parse` consumes exactly one reply (alignment padding included)
+/// from the front of the buffer, and what it leaves is the start of the next.
+///
+/// A parse that runs out of bytes fails with "missing bytes"; the buffer is
+/// then topped up from the socket and `parse` reruns from the start, so it
+/// must not have side effects beyond its arguments. Any other outcome — a
+/// value, or an error the server sent — commits the consumed bytes, since a
+/// server error is itself a complete reply.
+///
+/// `lazy_count` is the number of replies still owed for lazily-sent ops; see
+/// `next_op`.
+fn read_reply<T>(
     socket: &mut impl Read,
     buff: &mut [u8],
+    pending: &mut Bytes,
     lazy_count: &mut u32,
-    pending: &mut BytesMut,
-) -> Result<Response, FbError> {
-    // A response can arrive split across TCP segments. Parse what is buffered,
-    // and on a short packet put the bytes back, read more, and try again.
+    mut parse: impl FnMut(&mut Bytes, &mut u32) -> Result<T, FbError>,
+) -> Result<T, FbError> {
     loop {
-        let snapshot = pending.clone();
-        let saved_lazy = *lazy_count;
-        match parse_buffered_response(socket, buff, lazy_count, pending) {
-            Err(e) if is_incomplete(&e) => {
-                *pending = snapshot;
-                *lazy_count = saved_lazy;
+        let mut view = pending.clone();
+        let mut lazy = *lazy_count;
+
+        match parse(&mut view, &mut lazy) {
+            Err(e) if is_missing_bytes(&e) => {
                 let n = socket.read(buff)?;
                 if n == 0 {
-                    return Err("Connection closed mid-response".into());
+                    return Err("Connection closed by the server mid-reply".into());
                 }
-                trace("read_response <- (top-up)", &buff[..n.min(96)]);
-                pending.put_slice(&buff[..n]);
+                trace("read <-", &buff[..n]);
+
+                let mut grown = BytesMut::with_capacity(pending.len() + n);
+                grown.put_slice(pending);
+                grown.put_slice(&buff[..n]);
+                *pending = grown.freeze();
             }
-            other => return other,
+            other => {
+                *pending = view;
+                *lazy_count = lazy;
+                return other;
+            }
         }
     }
 }
 
-/// True for the error the readers raise when a packet is not fully buffered yet.
-fn is_incomplete(e: &FbError) -> bool {
-    e.to_string().contains("missing bytes")
+/// True for the error a parser raises when the reply is not fully buffered.
+fn is_missing_bytes(e: &FbError) -> bool {
+    matches!(e, FbError::Other(m) if m == MISSING_BYTES)
 }
 
-fn parse_buffered_response(
-    socket: &mut impl Read,
-    buff: &mut [u8],
-    lazy_count: &mut u32,
-    pending: &mut BytesMut,
-) -> Result<Response, FbError> {
-    let (mut op_code, mut resp) = read_packet(socket, buff, pending)?;
+/// Reads the next opcode, skipping op_dummy keepalives and the replies still
+/// owed for lazily-sent ops (op_free_statement), which the server delivers
+/// ahead of the reply to whatever was sent next.
+fn next_op(r: &mut Bytes, lazy: &mut u32) -> Result<u32, FbError> {
+    loop {
+        let op_code = r.get_u32()?;
 
-    // Read lazy responses
-    for _ in 0..*lazy_count {
-        if op_code != WireOp::Response as u32 {
-            return err_conn_rejected(op_code);
+        if op_code == WireOp::Dummy as u32 {
+            continue;
         }
-        *lazy_count -= 1;
-        parse_response(&mut resp)?;
 
-        op_code = resp.get_u32()?;
+        if *lazy > 0 {
+            if op_code != WireOp::Response as u32 {
+                return err_conn_rejected(op_code);
+            }
+            *lazy -= 1;
+            // A failed free belongs to no caller: reporting it here would
+            // misattribute it to the op being read, and returning early
+            // would leave that op's reply in the buffer.
+            response_body(r)?.ok();
+            continue;
+        }
+
+        return Ok(op_code);
     }
+}
 
+/// Reads one op_response. The outer error means the reply could not be read
+/// (incomplete, or another op); the inner one is the server's own error,
+/// carried by a reply that was consumed in full.
+fn op_response(r: &mut Bytes, lazy: &mut u32) -> Result<Result<Response, FbError>, FbError> {
+    let op_code = next_op(r, lazy)?;
     if op_code != WireOp::Response as u32 {
         return err_conn_rejected(op_code);
     }
-
-    let parsed = parse_response(&mut resp)?;
-    keep_tail(pending, resp);
-    Ok(parsed)
+    response_body(r)
 }
 
-/// Intentionally drops the unparsed remainder.
-///
-/// Retaining it looks right but is not: a response can be followed by
-/// alignment padding, and feeding that back prefixes the next packet with
-/// zero bytes. Framing each opcode by its exact wire length is what this
-/// actually needs — tracked as the wire-layer rewrite.
-fn keep_tail(_pending: &mut BytesMut, _rest: Bytes) {}
-
-/// Reads a packet from the socket
-fn read_packet(
-    socket: &mut impl Read,
-    buff: &mut [u8],
-    pending: &mut BytesMut,
-) -> Result<(u32, Bytes), FbError> {
-    if pending.is_empty() {
-        let mut len = socket.read(buff)?;
-        if len == 0 {
-            return Err("Connection closed by the server".into());
-        }
-        trace("read_packet <-", &buff[..len.min(96)]);
-        pending.put_slice(&buff[..len]);
-
-        while len == buff.len() {
-            // The buffer was exactly filled, so more is likely waiting.
-            len = socket.read(buff)?;
-            trace("read_packet <- (cont)", &buff[..len.min(96)]);
-            pending.put_slice(&buff[..len]);
-        }
+/// The body of an op_response whose opcode was already read. See `op_response`.
+fn response_body(r: &mut Bytes) -> Result<Result<Response, FbError>, FbError> {
+    match parse_response(r) {
+        Err(e) if is_missing_bytes(&e) => Err(e),
+        resp => Ok(resp),
     }
-    let mut resp = std::mem::take(pending).freeze();
-
-    let op_code = loop {
-        let op_code = resp.get_u32()?;
-
-        if op_code != WireOp::Dummy as u32 {
-            break op_code;
-        }
-    };
-
-    Ok((op_code, resp))
 }
 
-/// Performs the srp authentication with the server, returning the encrypted stream
-fn srp_auth<D>(
-    mut socket: FbStream,
-    buff: &mut [u8],
+/// Parses one reply to op_fetch: a row, the end of the batch, or the end of
+/// the cursor. Blob columns come back unresolved.
+fn parse_fetch_reply(
+    r: &mut Bytes,
+    lazy: &mut u32,
+    xsqlda: &[XSqlVar],
+    version: ProtocolVersion,
+    charset: &Charset,
+) -> Result<FetchOne, FbError> {
+    let op_code = next_op(r, lazy)?;
+
+    if op_code == WireOp::Response as u32 {
+        return Err(match response_body(r)? {
+            Err(e) => e,
+            Ok(_) => "fetch: server replied op_response without an error".into(),
+        });
+    }
+
+    if op_code != WireOp::FetchResponse as u32 {
+        return err_conn_rejected(op_code);
+    }
+
+    // [status][messages], then the row when messages is 1. Both header words
+    // are always sent, end of cursor included.
+    let status = r.get_u32()?;
+    if status == 100 {
+        r.get_u32()?;
+        return Ok(FetchOne::End);
+    }
+
+    if r.clone().get_u32()? == 0 {
+        r.advance(4)?;
+        return Ok(FetchOne::BatchEnd);
+    }
+
+    Ok(FetchOne::Row(parse_sql_response(r, xsqlda, version, charset)?))
+}
+
+/// Computes the SRP client proof (hex-encoded, as the server expects it) and
+/// the session key the wire encryption is keyed with.
+fn srp_proof<D>(
     srp: SrpClient<D>,
-    plugin: AuthPluginType,
     user: &str,
     pass: &str,
-    data: SrpAuthData,
-) -> Result<FbStream, FbError>
+    data: &SrpAuthData,
+) -> Result<(Vec<u8>, Vec<u8>), FbError>
 where
     D: digest::Digest,
 {
@@ -1307,18 +1253,34 @@ where
         .map_err(|e| FbError::from(format!("Srp error: {}", e)))?;
 
     // Generate a proof to send to the server so it can verify the password
-    let proof = hex::encode(verifier.get_proof());
+    let proof = hex::encode(verifier.get_proof()).into_bytes();
+
+    Ok((proof, verifier.get_key().to_vec()))
+}
+
+/// Performs the srp authentication with the server, returning the encrypted stream
+fn srp_auth<D>(
+    mut socket: FbStream,
+    buff: &mut [u8],
+    pending: &mut Bytes,
+    srp: SrpClient<D>,
+    plugin: AuthPluginType,
+    user: &str,
+    pass: &str,
+    data: SrpAuthData,
+) -> Result<FbStream, FbError>
+where
+    D: digest::Digest,
+{
+    let (proof, key) = srp_proof(srp, user, pass, &data)?;
 
     // Send proof data
-    socket.write_all(&cont_auth(
-        proof.as_bytes(),
-        plugin,
-        AuthPluginType::plugin_list(),
-        &[],
-    ))?;
+    let req = cont_auth(&proof, plugin, AuthPluginType::plugin_list(), &[]);
+    trace("op_cont_auth(proof) ->", &req);
+    socket.write_all(&req)?;
     socket.flush()?;
 
-    read_response(&mut socket, buff, &mut 0, &mut BytesMut::new())?;
+    read_reply(&mut socket, buff, pending, &mut 0, op_response)??;
 
     // Enable wire encryption
     socket.write_all(&crypt("Arc4", "Symmetric"))?;
@@ -1329,11 +1291,11 @@ where
             FbStream::Plain(s) => s,
             _ => unreachable!("Stream was already encrypted!"),
         },
-        &verifier.get_key(),
+        &key,
         buff.len(),
     ));
 
-    read_response(&mut socket, buff, &mut 0, &mut BytesMut::new())?;
+    read_reply(&mut socket, buff, pending, &mut 0, op_response)??;
 
     Ok(socket)
 }
