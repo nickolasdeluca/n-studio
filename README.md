@@ -18,6 +18,8 @@ is in progress — see [docs/PLAN.md](docs/PLAN.md) for the implementation plan 
 ```
 crates/fb-core       connection actor, transactions, cursors, type mapping
 crates/fb-meta       version-aware catalog: object kinds, counts, lists
+src-tauri/           the app's backend: registrations, keychain, commands
+ui/                  the app's interface: React, dockview, Tailwind, Zustand
 crates/fb-wire       vendored pure-Rust Firebird wire protocol, extended
 crates/fb-wire-core  vendored core types for it: exact decimals, Firebird 4 types
 spikes/fb-probe      M0 driver validation tool + raw handshake dumper
@@ -27,6 +29,17 @@ spikes/rowstore      Paged scroll-back row store shared by both grid spikes
 docker/              Firebird 2.5/3.0/4.0/5.0 test matrix and fixture schema
 docs/                plan and spike findings
 ```
+
+## Running the app
+
+```sh
+cd ui && npm install
+npm run tauri dev      # dev server + app, reloading on change
+npm run tauri build    # bundles for this platform
+```
+
+Registrations live in the app's config directory (`registrations.json`);
+saved passwords live in the OS keychain, never in that file.
 
 ## Running the probe
 

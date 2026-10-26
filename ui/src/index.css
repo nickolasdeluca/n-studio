@@ -1,0 +1,136 @@
+@import "tailwindcss";
+@import "dockview-react/dist/styles/dockview.css";
+
+/* Tokens: dense, flat, hairline borders; light by default, dark with the OS.
+   Density is two numbers, so a later setting can change both. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f0f2f5;
+  --border: #dde1e6;
+  --text: #1d232b;
+  --muted: #6a7480;
+  --faint: #9aa3ad;
+  --accent: #2f6fdf;
+  --accent-text: #ffffff;
+  --selected: #dbe7fb;
+  --selected-inactive: #e8ebef;
+  --hover: #eef1f5;
+  --danger: #c4372b;
+  --ok: #2e8a4f;
+  --shadow: 0 12px 40px rgb(15 23 42 / 0.18), 0 2px 8px rgb(15 23 42 / 0.08);
+  --row: 22px;
+  --font-size: 12.5px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191d;
+    --panel: #1d2025;
+    --panel-2: #23272d;
+    --border: #2e333a;
+    --text: #d9dde3;
+    --muted: #8b939e;
+    --faint: #5f6873;
+    --accent: #4c8dff;
+    --accent-text: #ffffff;
+    --selected: #24395c;
+    --selected-inactive: #2a2f36;
+    --hover: #262a31;
+    --danger: #ef6a5c;
+    --ok: #4fbf7a;
+    --shadow: 0 12px 40px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
+    color-scheme: dark;
+  }
+}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--border);
+  --color-fg: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-text);
+  --color-selected: var(--selected);
+  --color-selected-inactive: var(--selected-inactive);
+  --color-hover: var(--hover);
+  --color-danger: var(--danger);
+  --color-ok: var(--ok);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: var(--font-size) / 1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+input,
+select,
+textarea {
+  user-select: text;
+}
+
+/* In the base layer, so a component's own outline utilities win */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+}
+
+/* dockview, in the same tokens */
+.dockview-theme-n {
+  --dv-group-view-background-color: var(--panel);
+  --dv-tabs-and-actions-container-background-color: var(--panel-2);
+  --dv-tabs-and-actions-container-height: 28px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-activegroup-visiblepanel-tab-background-color: var(--panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--panel-2);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--panel);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--panel-2);
+  --dv-tab-divider-color: var(--border);
+  --dv-activegroup-visiblepanel-tab-color: var(--text);
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--muted);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--faint);
+  --dv-separator-border: var(--border);
+  --dv-paneview-header-border-color: var(--border);
+  --dv-paneview-active-outline-color: var(--accent);
+  --dv-drag-over-background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  --dv-drag-over-border-color: var(--accent);
+  --dv-edge-dock-indicator-color: var(--accent);
+  --dv-icon-hover-background-color: var(--hover);
+  --dv-tabs-container-scrollbar-color: var(--faint);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--accent);
+  --dv-floating-box-shadow: var(--shadow);
+  --dv-floating-border: 1px solid var(--border);
+  --dv-border-radius: 0px;
+  --dv-tab-margin: 0;
+  --dv-spacing-padding: 0px;
+}
+
+.dockview-theme-n .dv-groupview {
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--faint) transparent;
+}
