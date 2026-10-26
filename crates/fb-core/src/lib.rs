@@ -13,7 +13,7 @@ mod value;
 
 pub use connection::{Connection, QueryResult, ServerInfo};
 pub use editor::{
-    ColumnInfo, ColumnKind, CursorId, ExecuteOptions, Executed, Fetched, Isolation, LockWait,
+    BlobContent, ColumnInfo, ColumnKind, CursorId, ExecuteOptions, Executed, Fetched, Isolation, LockWait,
     Performance, Records, StatementType, TablePerformance, TxEnd, TxId, TxOptions,
 };
 pub use error::{Error, Result};

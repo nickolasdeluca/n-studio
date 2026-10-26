@@ -240,3 +240,40 @@ fn a_running_statement_can_be_cancelled() {
     assert_eq!(conn.fetch(executed.cursor.unwrap(), 10).unwrap().rows.len(), 1);
     conn.end(tx, TxEnd::Rollback).unwrap();
 }
+
+#[test]
+fn editor_cursors_leave_blobs_to_be_read_on_demand() {
+    let Some(conn) = connect() else { return };
+    let tx = conn.begin(read_only()).unwrap();
+    let options = ExecuteOptions { plan: false, performance: false };
+    let executed = conn
+        .execute(
+            tx,
+            "select rdb$view_source, rdb$view_blr from rdb$relations \
+             where rdb$view_blr is not null and rdb$view_source is not null",
+            options,
+        )
+        .unwrap();
+    assert_eq!(executed.columns[0].kind, ColumnKind::TextBlob);
+    assert_eq!(executed.columns[1].kind, ColumnKind::Blob);
+    let page = conn.fetch(executed.cursor.unwrap(), 1).unwrap();
+    let Some(row) = page.rows.first() else { return eprintln!("skipped: no views") };
+    let (Value::BlobRef { id: source, text: true }, Value::BlobRef { id: blr, text: false }) = (&row[0], &row[1])
+    else {
+        panic!("expected two unread blobs");
+    };
+
+    let text = conn.read_blob(tx, *source, true, 1 << 20).unwrap();
+    assert!(text.complete);
+    assert!(text.text.as_deref().is_some_and(|t| t.to_uppercase().contains("SELECT")), "no SELECT in a view's source");
+
+    let bytes = conn.read_blob(tx, *blr, false, 1 << 20).unwrap();
+    assert!(bytes.text.is_none() && !bytes.bytes.is_empty() && bytes.complete);
+    // Cut short: as much as asked for, and it says so
+    let cut = conn.read_blob(tx, *blr, false, 4).unwrap();
+    assert_eq!(cut.bytes, bytes.bytes[..4.min(bytes.bytes.len())]);
+    assert_eq!(cut.complete, bytes.bytes.len() <= 4);
+
+    conn.end(tx, TxEnd::Rollback).unwrap();
+    assert!(conn.read_blob(tx, *source, true, 10).is_err());
+}

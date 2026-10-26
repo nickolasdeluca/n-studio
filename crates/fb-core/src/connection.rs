@@ -2,7 +2,9 @@ use rsfbclient_core::{
     FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, SqlType, StmtType, TrDataAccessMode, TrIsolationLevel, TrOp,
     TrRecordVersion, TransactionConfiguration,
 };
-use rsfbclient_rust::{CancelHandle, DatabaseCounters, RustFbClient, RustFbClientAttachmentConfig};
+use rsfbclient_rust::{
+    BlobId, CancelHandle, DatabaseCounters, FetchedColumn, RustFbClient, RustFbClientAttachmentConfig,
+};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Sender};
@@ -11,7 +13,8 @@ use std::thread;
 use std::time::Instant;
 
 use crate::editor::{
-    ColumnInfo, CursorId, ExecuteOptions, Executed, Fetched, Performance, StatementType, TxEnd, TxId, TxOptions,
+    BlobContent, ColumnInfo, CursorId, ExecuteOptions, Executed, Fetched, Performance, StatementType, TxEnd, TxId,
+    TxOptions,
 };
 use crate::error::{Error, Result};
 use crate::params::{charset_by_name, ConnectParams, Dialect};
@@ -60,6 +63,7 @@ enum Request {
     Fetch { cursor: CursorId, max: usize, reply: Reply<Fetched> },
     CursorPerformance { cursor: CursorId, reply: Reply<Option<Performance>> },
     CloseCursor { cursor: CursorId, reply: Reply<()> },
+    ReadBlob { tx: TxId, id: u64, text: bool, max: usize, reply: Reply<BlobContent> },
 }
 
 impl Connection {
@@ -120,6 +124,9 @@ impl Connection {
                         }
                         Request::CloseCursor { cursor, reply } => {
                             let _ = reply.send(actor.close_cursor(cursor));
+                        }
+                        Request::ReadBlob { tx, id, text, max, reply } => {
+                            let _ = reply.send(actor.read_blob(tx, id, text, max));
                         }
                     }
                     *running.lock().unwrap_or_else(|e| e.into_inner()) = false;
@@ -190,6 +197,13 @@ impl Connection {
     /// with `performance`
     pub fn cursor_performance(&self, cursor: CursorId) -> Result<Option<Performance>> {
         self.call(|reply| Request::CursorPerformance { cursor, reply })
+    }
+
+    /// Up to `max` bytes of a blob a cursor of `tx` returned as a
+    /// [`Value::BlobRef`]: text decoded when it is a TEXT blob. Its
+    /// transaction must still be active.
+    pub fn read_blob(&self, tx: TxId, id: u64, text: bool, max: usize) -> Result<BlobContent> {
+        self.call(|reply| Request::ReadBlob { tx, id, text, max, reply })
     }
 
     /// Drops a cursor before its end. Closing one that is gone is not an
@@ -294,7 +308,14 @@ impl Actor {
     fn run(&mut self, tr: &mut rsfbclient_rust::TrHandle, sql: &str, params: Vec<Value>) -> Result<QueryResult> {
         let (stmt_type, mut stmt) = self.cli.prepare_statement(&mut self.db, tr, self.dialect, sql)?;
         let columns = stmt.column_names().map(str::to_owned).collect();
-        let params: Vec<SqlType> = params.into_iter().map(Into::into).collect();
+        let params = params.into_iter().map(SqlType::try_from).collect::<Result<Vec<_>>>();
+        let params = match params {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = self.cli.free_statement(&mut stmt, FreeStmtOp::Drop);
+                return Err(e);
+            }
+        };
         self.cli.execute(&mut self.db, tr, &mut stmt, params)?;
 
         let mut rows = Vec::new();
@@ -465,13 +486,15 @@ impl Actor {
 
     fn fetch(&mut self, cursor: CursorId, max: usize) -> Result<Fetched> {
         let c = self.cursors.get_mut(&cursor).ok_or_else(|| no_such("cursor"))?;
-        let tr = self.transactions.get_mut(&c.tx).ok_or_else(|| no_such("transaction"))?;
+        if !self.transactions.contains_key(&c.tx) {
+            return Err(no_such("transaction"));
+        }
         let started = Instant::now();
         let mut rows = Vec::with_capacity(max.min(4096));
         let mut eof = false;
         while rows.len() < max {
-            match self.cli.fetch(&mut self.db, tr, &mut c.stmt) {
-                Ok(Some(row)) => rows.push(row.into_iter().map(|c| c.value.into()).collect()),
+            match self.cli.fetch_lazy(&mut c.stmt) {
+                Ok(Some(row)) => rows.push(row.into_iter().map(fetched_value).collect()),
                 Ok(None) => {
                     eof = true;
                     break;
@@ -504,6 +527,27 @@ impl Actor {
         }
     }
 
+    fn read_blob(&mut self, tx: TxId, id: u64, text: bool, max: usize) -> Result<BlobContent> {
+        let tr = self.transactions.get_mut(&tx).ok_or_else(|| no_such("transaction"))?;
+        let (mut bytes, complete) = self.cli.read_blob(tr, BlobId::from_raw(id), max)?;
+        let size = bytes.len();
+        if !text {
+            return Ok(BlobContent { text: None, bytes, complete });
+        }
+        // Cut at `max`, the text may end inside a character: drop what does
+        // not decode, at most a character's worth
+        for _ in 0..4 {
+            match self.cli.decode_text(bytes.clone()) {
+                Ok(s) => return Ok(BlobContent { text: Some(s), bytes: Vec::new(), complete }),
+                Err(_) if !complete && !bytes.is_empty() && size - bytes.len() < 4 => {
+                    bytes.pop();
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(BlobContent { text: Some(String::from_utf8_lossy(&bytes).into_owned()), bytes: Vec::new(), complete })
+    }
+
     fn close_cursor(&mut self, cursor: CursorId) -> Result<()> {
         if let Some(mut c) = self.cursors.remove(&cursor) {
             self.cli.free_statement(&mut c.stmt, FreeStmtOp::Drop)?;
@@ -534,6 +578,14 @@ impl Actor {
             let _ = self.cli.transaction_operation(&mut tr, TrOp::Rollback);
         }
         let _ = self.cli.detach_database(&mut self.db);
+    }
+}
+
+/// An editor's cursor leaves blobs unread
+fn fetched_value(c: FetchedColumn) -> Value {
+    match c {
+        FetchedColumn::Value(c) => c.value.into(),
+        FetchedColumn::Blob { id, binary } => Value::BlobRef { id: id.raw(), text: !binary },
     }
 }
 

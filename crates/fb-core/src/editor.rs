@@ -309,6 +309,17 @@ pub struct Fetched {
     pub performance: Option<Performance>,
 }
 
+/// A blob's content, or as much of it as was asked for
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BlobContent {
+    /// A TEXT blob, decoded
+    pub text: Option<String>,
+    /// Any other blob
+    pub bytes: Vec<u8>,
+    /// All of it: not cut at the size asked for
+    pub complete: bool,
+}
+
 /// IBExpert's Performance Analysis: the attachment's counters since the
 /// statement started
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]

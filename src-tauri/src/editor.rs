@@ -34,6 +34,8 @@ struct ResultSet {
     fetch_ms: f64,
     /// The transaction ended before the rows ran out: there are no more
     ended_early: bool,
+    /// The transaction ended: its blobs cannot be read any more
+    tx_ended: bool,
     performance: Option<Performance>,
 }
 
@@ -91,8 +93,11 @@ impl Results {
     fn transaction_ended(&self, session: &str, tx: TxId) {
         for set in self.sets.lock().unwrap().values() {
             let mut set = set.lock().unwrap();
-            if set.session == session && set.tx == tx && set.cursor.take().is_some() {
-                set.ended_early = true;
+            if set.session == session && set.tx == tx {
+                set.tx_ended = true;
+                if set.cursor.take().is_some() {
+                    set.ended_early = true;
+                }
             }
         }
     }
@@ -191,6 +196,7 @@ pub async fn editor_execute(
                     rows: Rows::new(kinds),
                     fetch_ms: 0.0,
                     ended_early: false,
+                    tx_ended: false,
                     performance: None,
                 };
                 set.fetch(first)?;
@@ -235,6 +241,67 @@ pub async fn result_fetch(app: AppHandle, result: u64, max: usize) -> AppResult<
 #[tauri::command]
 pub async fn result_rows(app: AppHandle, result: u64, from: usize, count: usize) -> AppResult<Vec<Vec<Cell>>> {
     blocking(app, move |state| Ok(state.results.get(result)?.lock().unwrap().rows.slice(from, count))).await
+}
+
+/// A blob cell's content, as the blob viewer shows it
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobView {
+    /// A TEXT blob's text
+    text: Option<String>,
+    /// Any other blob, as a hex dump
+    hex: Option<String>,
+    /// Bytes read
+    size: usize,
+    /// All of it: not cut at the size asked for
+    complete: bool,
+}
+
+/// Reads the blob in a cell, up to `max` bytes, in the transaction that
+/// fetched it
+#[tauri::command]
+pub async fn result_blob(
+    app: AppHandle,
+    result: u64,
+    row: usize,
+    col: usize,
+    max: usize,
+) -> AppResult<Option<BlobView>> {
+    blocking(app, move |state| {
+        let set = state.results.get(result)?;
+        let (conn, tx, blob) = {
+            let set = set.lock().unwrap();
+            if set.tx_ended {
+                return Err(AppError::Invalid {
+                    message:
+                        "The transaction that fetched these rows has ended: run the query again to read its blobs."
+                            .into(),
+                });
+            }
+            (set.conn.clone(), set.tx, set.rows.blob(row, col))
+        };
+        let Some((id, text)) = blob else { return Ok(None) };
+        let content = conn.read_blob(tx, id, text, max)?;
+        let size = content.text.as_ref().map_or(content.bytes.len(), String::len);
+        Ok(Some(BlobView {
+            hex: content.text.is_none().then(|| hex_dump(&content.bytes)),
+            text: content.text,
+            size,
+            complete: content.complete,
+        }))
+    })
+    .await
+}
+
+/// Sixteen bytes a line: offset, hex, and the printable ones
+fn hex_dump(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 4 + bytes.len() / 16 * 12);
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
+        let ascii: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
+        out.push_str(&format!("{:08X}  {:<47}  {ascii}\n", i * 16, hex.join(" ")));
+    }
+    out
 }
 
 #[tauri::command]

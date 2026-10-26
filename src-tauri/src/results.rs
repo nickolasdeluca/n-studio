@@ -62,11 +62,22 @@ pub struct Rows {
     kinds: Vec<ColumnKind>,
     pages: Vec<Page>,
     len: usize,
+    /// For each blob column, its blobs' ids by row (0 for null): the cell
+    /// shows a marker, the content is read when asked for
+    blobs: Vec<Option<Vec<u64>>>,
 }
 
 impl Rows {
     pub fn new(kinds: Vec<ColumnKind>) -> Self {
-        Self { kinds, pages: Vec::new(), len: 0 }
+        let blobs = kinds.iter().map(|k| matches!(k, ColumnKind::Blob | ColumnKind::TextBlob).then(Vec::new)).collect();
+        Self { kinds, pages: Vec::new(), len: 0, blobs }
+    }
+
+    /// The blob in row `row` of column `col`: its id and whether it is text.
+    /// `None` for a null, or a column without blobs.
+    pub fn blob(&self, row: usize, col: usize) -> Option<(u64, bool)> {
+        let id = *self.blobs.get(col)?.as_ref()?.get(row)?;
+        (id != 0).then(|| (id, self.kinds[col] == ColumnKind::TextBlob))
     }
 
     pub fn len(&self) -> usize {
@@ -76,6 +87,11 @@ impl Rows {
     pub fn push(&mut self, row: Vec<Value>) {
         if self.pages.last().is_none_or(|p| p.rows == PAGE) {
             self.pages.push(Page::new(self.kinds.len()));
+        }
+        for (ids, v) in self.blobs.iter_mut().zip(&row) {
+            if let Some(ids) = ids {
+                ids.push(if let Value::BlobRef { id, .. } = v { *id } else { 0 });
+            }
         }
         let kinds = &self.kinds;
         let page = self.pages.last_mut().expect("pushed above");
@@ -106,6 +122,9 @@ const MAX_BYTES: usize = 64;
 pub fn display(value: &Value, kind: ColumnKind) -> Cell {
     Some(match value {
         Value::Null => return None,
+        // Not read yet: the grid marks it, a viewer reads it
+        Value::BlobRef { text: true, .. } => "(MEMO)".to_string(),
+        Value::BlobRef { text: false, .. } => "(BLOB)".to_string(),
         Value::Integer(i) => i.to_string(),
         Value::Decimal(d) => d.to_string(),
         Value::Float(f) => f.to_string(),
@@ -177,5 +196,17 @@ mod tests {
         assert_eq!(display(&Value::Null, ColumnKind::Text), None);
         let long = d(Value::Text("é".repeat(MAX_CELL)), ColumnKind::TextBlob);
         assert!(long.len() <= MAX_CELL + "…".len() && long.ends_with('…'));
+    }
+
+    #[test]
+    fn blob_columns_keep_their_ids() {
+        let mut rows = Rows::new(vec![ColumnKind::Integer, ColumnKind::TextBlob, ColumnKind::Blob]);
+        rows.push(vec![Value::Integer(1), Value::BlobRef { id: 42, text: true }, Value::Null]);
+        rows.push(vec![Value::Integer(2), Value::Null, Value::BlobRef { id: 7, text: false }]);
+        assert_eq!(rows.slice(0, 1)[0], vec![Some("1".into()), Some("(MEMO)".into()), None]);
+        assert_eq!(rows.blob(0, 1), Some((42, true)));
+        assert_eq!(rows.blob(1, 2), Some((7, false)));
+        assert_eq!(rows.blob(1, 1), None);
+        assert_eq!(rows.blob(0, 0), None);
     }
 }

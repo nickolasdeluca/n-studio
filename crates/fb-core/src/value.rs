@@ -19,6 +19,12 @@ pub enum Value {
     Boolean(bool),
     /// DATE and TIME arrive as timestamps
     Timestamp(NaiveDateTime),
+    /// A blob not read yet, as an editor's cursor returns them: read it with
+    /// `Connection::read_blob` while its transaction lasts
+    BlobRef {
+        id: u64,
+        text: bool,
+    },
 }
 
 fn as_text<S: Serializer>(d: &Decimal, s: S) -> Result<S::Ok, S::Error> {
@@ -63,9 +69,13 @@ impl From<SqlType> for Value {
     }
 }
 
-impl From<Value> for SqlType {
-    fn from(v: Value) -> Self {
-        match v {
+/// A value as a parameter. A blob reference is not one: it stands for data
+/// the server has not sent.
+impl TryFrom<Value> for SqlType {
+    type Error = crate::Error;
+
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        Ok(match v {
             Value::Null => SqlType::Null,
             Value::Integer(i) => SqlType::Integer(i),
             Value::Decimal(d) => SqlType::Decimal(d),
@@ -74,7 +84,10 @@ impl From<Value> for SqlType {
             Value::Binary(b) => SqlType::Binary(b),
             Value::Boolean(b) => SqlType::Boolean(b),
             Value::Timestamp(t) => SqlType::Timestamp(t),
-        }
+            Value::BlobRef { .. } => {
+                return Err(crate::Error::Client { message: "a blob reference cannot be a parameter".into() })
+            }
+        })
     }
 }
 

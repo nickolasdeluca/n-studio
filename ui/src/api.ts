@@ -191,6 +191,15 @@ export interface Executed {
   performance: Performance | null;
 }
 
+/** A blob cell's content, read on demand */
+export interface BlobView {
+  text: string | null;
+  /** A non-text blob, as a hex dump */
+  hex: string | null;
+  size: number;
+  complete: boolean;
+}
+
 export interface StatementRange {
   from: number;
   to: number;
@@ -221,6 +230,8 @@ export const api = {
     invoke<Executed>("editor_execute", { id, tx, sql, options, first }),
   resultFetch: (result: number, max: number) => invoke<ResultView>("result_fetch", { result, max }),
   resultRows: (result: number, from: number, count: number) => invoke<Cell[][]>("result_rows", { result, from, count }),
+  resultBlob: (result: number, row: number, col: number, max: number) =>
+    invoke<BlobView | null>("result_blob", { result, row, col, max }),
   resultClose: (result: number) => invoke<void>("result_close", { result }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
 };

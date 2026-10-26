@@ -17,12 +17,13 @@ import {
 } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { TxEnd } from "../api";
+import type { ColumnKind, TxEnd } from "../api";
 import { isolations, ms, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon } from "../icons";
 import { useStore } from "../store";
+import { BlobViewer } from "./BlobViewer";
 import { ResultGrid, type GridCursor } from "./ResultGrid";
 
 /** Editor states by tab, so a panel that remounts keeps its text and undo */
@@ -396,12 +397,21 @@ function Results({ tab, cursor, setCursor }: { tab: EditorTab; cursor: GridCurso
         </span>
         {result.endedEarly && <span className="ml-2 text-faint">{t("(the transaction ended before all rows were fetched)")}</span>}
       </div>
-      <div className="min-h-0 flex-1">
-        <ResultGrid result={result} columns={executed.columns} cursor={cursor} onCursor={setCursor} onFetchMore={fetchMore} />
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1">
+          <ResultGrid result={result} columns={executed.columns} cursor={cursor} onCursor={setCursor} onFetchMore={fetchMore} />
+        </div>
+        {isBlob(executed.columns[cursor.col]?.kind) && result.rows > 0 && (
+          <div className="w-[38%] min-w-64 shrink-0 border-l border-line">
+            <BlobViewer result={result.id} row={cursor.row} col={cursor.col} />
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+const isBlob = (kind: ColumnKind | undefined) => kind === "blob" || kind === "text_blob";
 
 function Nav(props: { icon: string; label: string; disabled?: boolean; onClick(): unknown }) {
   return (

@@ -34,6 +34,7 @@ fn main() {
             editor::editor_execute,
             editor::result_fetch,
             editor::result_rows,
+            editor::result_blob,
             editor::result_close,
             editor::sql_statements,
         ])

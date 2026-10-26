@@ -200,6 +200,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore }: P
   const virtualCols = cols.getVirtualItems();
   const width = cols.getTotalSize();
   const align = useMemo(() => columns.map((c) => (numeric(c.kind) ? "text-right" : "")), [columns]);
+  // Blob cells hold a marker, (MEMO) or (BLOB): the viewer reads the content
+  const blob = useMemo(() => columns.map((c) => c.kind === "blob" || c.kind === "text_blob"), [columns]);
 
   return (
     <div
@@ -271,6 +273,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore }: P
                       <span className="inline-block h-2 w-10 rounded bg-hover align-middle" />
                     ) : v === null ? (
                       <span className="text-faint italic">{t("<null>")}</span>
+                    ) : blob[c.index] ? (
+                      <span className="text-muted">{v}</span>
                     ) : (
                       v
                     )}
