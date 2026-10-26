@@ -62,6 +62,9 @@ pub trait BytesWireExt {
     /// Gets an signed 64 bit integer from `self` in the big-endian byte order
     fn get_i64(&mut self) -> Result<i64, FbError>;
 
+    /// Gets a signed 128 bit integer from `self` in the big-endian byte order
+    fn get_i128(&mut self) -> Result<i128, FbError>;
+
     /// Gets an IEEE754 double-precision (8 bytes) floating point number from `self` in big-endian byte order
     fn get_f64(&mut self) -> Result<f64, FbError>;
 
@@ -157,6 +160,13 @@ impl BytesWireExt for Bytes {
             return err_invalid_response();
         }
         Ok(bytes::Buf::get_i64(self))
+    }
+
+    fn get_i128(&mut self) -> Result<i128, FbError> {
+        if self.remaining() < 16 {
+            return err_invalid_response();
+        }
+        Ok(bytes::Buf::get_i128(self))
     }
 
     fn get_f64(&mut self) -> Result<f64, FbError> {

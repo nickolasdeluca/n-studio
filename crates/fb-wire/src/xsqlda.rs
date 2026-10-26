@@ -73,15 +73,36 @@ impl XSqlVar {
             }
 
             ibase::SQL_SHORT | ibase::SQL_LONG | ibase::SQL_INT64 => {
+                // Scale kept: a scaled value is a NUMERIC / DECIMAL, read exactly
                 self.data_length = mem::size_of::<i64>() as i16;
 
-                if self.scale == 0 {
-                    self.sqltype = ibase::SQL_INT64 as i16 + 1;
-                } else {
-                    // Is actually a decimal or numeric value, so coerce as double
-                    self.scale = 0;
-                    self.sqltype = ibase::SQL_DOUBLE as i16 + 1;
-                }
+                self.sqltype = ibase::SQL_INT64 as i16 + 1;
+            }
+
+            ibase::SQL_INT128 => {
+                self.data_length = mem::size_of::<i128>() as i16;
+
+                self.sqltype = ibase::SQL_INT128 as i16 + 1;
+            }
+
+            // Asked for as text, which the server formats exactly. DECFLOAT
+            // reaches 42 characters; a zoned timestamp is 24 plus a zone name.
+            ibase::SQL_DEC16
+            | ibase::SQL_DEC34
+            | ibase::SQL_TIME_TZ
+            | ibase::SQL_TIME_TZ_EX
+            | ibase::SQL_TIMESTAMP_TZ
+            | ibase::SQL_TIMESTAMP_TZ_EX => {
+                self.data_length = 64;
+
+                self.sqltype = ibase::SQL_VARYING as i16 + 1;
+            }
+
+            // An untyped `select null`
+            ibase::SQL_NULL => {
+                self.data_length = 1;
+
+                self.sqltype = ibase::SQL_VARYING as i16 + 1;
             }
 
             ibase::SQL_FLOAT | ibase::SQL_DOUBLE => {
@@ -135,10 +156,9 @@ pub fn xsqlda_to_blr(xsqlda: &[XSqlVar]) -> Result<Bytes, FbError> {
                 blr.put_i16_le(var.data_length);
             }
 
-            ibase::SQL_INT64 => blr.put_slice(&[
-                consts::blr::INT64,
-                0, // Scale
-            ]),
+            ibase::SQL_INT64 => blr.put_slice(&[consts::blr::INT64, var.scale as u8]),
+
+            ibase::SQL_INT128 => blr.put_slice(&[consts::blr::INT128, var.scale as u8]),
 
             ibase::SQL_DOUBLE => blr.put_u8(consts::blr::DOUBLE),
 

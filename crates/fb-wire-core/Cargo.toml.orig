@@ -1,0 +1,22 @@
+[package]
+name = "rsfbclient-core"
+version = "0.27.0"
+description = "Core of firebird client lib"
+authors = ["Luis Fernando Batels <luisfbatels@gmail.com>", "Jairo H Wiethan <jairinhowiethan@gmail.com>"]
+edition = "2021"
+repository = "https://github.com/fernandobatels/rsfbclient"
+keywords = ["firebird", "fbclient", "database"]
+categories = ["database"]
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4.19", features = ["clock", "std"], default-features = false }
+num_enum = "0.5.7"
+thiserror = "1.0.24"
+encoding = "0.2.33"
+regex = "1.4.3"
+
+[features]
+
+[package.metadata.docs.rs]
+all-features = true

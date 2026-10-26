@@ -22,8 +22,10 @@ rsfbclient-native = "0.27"
 anyhow = "1"
 thiserror = "2"
 
-# M0: vendored copy of the pure-Rust wire driver so we can instrument it and add
-# the ops it lacks (op_info_sql, op_info_database, op_cancel, services).
-# Upstreamed as PRs where they land; this patch is how they ship until then.
+# M0: vendored copies of the pure-Rust wire driver and its core types, so we can
+# instrument them and add what they lack (op_info_sql, op_info_database,
+# op_cancel, services, exact decimals, Firebird 4 types). Upstreamed as PRs
+# where they land; this patch is how they ship until then.
 [patch.crates-io]
 rsfbclient-rust = { path = "crates/fb-wire" }
+rsfbclient-core = { path = "crates/fb-wire-core" }

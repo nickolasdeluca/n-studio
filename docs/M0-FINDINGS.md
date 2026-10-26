@@ -42,6 +42,7 @@ Nothing else. In particular:
 | **No `isc_dsql_sql_info` / `op_info_sql` exposed** — *added, §9* | Native backend calls it privately for statement type and affected rows; no public surface, no plan request anywhere. `isc_info_sql_get_plan` never referenced. | `PLAN` text and the FB3+ explained plan — **the Plan Analyzer and Explain plan tabs**. |
 | **No Services API** | Only error strings and the opcodes `ServiceAttach/Detach/Info/Start = 82..85` in `consts.rs:109-112`. Native FFI decls commented out. | M5 entirely: backup, restore, validate, sweep, statistics, user manager. |
 | **No cancel operation** | `Cancel = 91` opcode constant only; `fb_cancel_*` constants in core, unused. | Stopping a runaway query. Non-negotiable for an IDE. |
+| **NUMERIC / DECIMAL through `f64`** — *fixed, §12* | `XSqlVar::coerce` asks the server for any scaled integer as `DOUBLE`; `SqlType` has no decimal variant. `INT128`, `DECFLOAT` and the time-zone types fail with "Unsupported column type". | Plan §3: values must never touch `f64`. Every money column in an ERP database. |
 | **Events are native-only** | `FirebirdClientDbEvents` implemented solely in `rsfbclient-native/connection.rs:601`. | `POST_EVENT` listeners on the pure-Rust backend. |
 
 ### Consequence
@@ -325,6 +326,39 @@ Caveat: the Skia-Metal renderer never calls the rendering notifier, so it
 cannot be measured this way; the benchmark has a 5 s no-frame watchdog that
 reports this instead of hanging. Measured with `SLINT_BACKEND=winit-femtovg`
 and `winit-skia-opengl` (`--features skia`).
+
+## 12. Exact numerics and Firebird 4 types (2026-10-26)
+
+The fix needs a decimal variant in `SqlType`, which lives in `rsfbclient-core`,
+so that crate is vendored too: `crates/fb-wire-core`, patched in the same way
+as `fb-wire`.
+
+- `Decimal` (in core): an `i128` mantissa and a scale of up to 38, so it holds
+  every NUMERIC Firebird has, `INT128` included. Prints and parses exactly; no
+  dependency. `f64` only when a caller explicitly asks for one.
+- Scaled `SMALLINT` / `INTEGER` / `BIGINT` are requested as `INT64` with their
+  own scale, and read as `Decimal`. `INT128` is read natively: 16 bytes,
+  big-endian, confirmed with 1, −1, 256 and a 32-digit value.
+- `DECFLOAT(16|34)`, `TIME` / `TIMESTAMP WITH TIME ZONE` and an untyped
+  `select null` are requested as `VARCHAR(64)`: the server formats them, which
+  is exact and saves implementing IEEE 754 decimal and the zone database
+  client-side. `fb-core`'s value type can parse them later if the grid needs
+  more than text.
+- Parameters: a `Decimal` goes as a scaled `INT64` when it fits, as text
+  otherwise; the server converts either exactly.
+
+Checked on FB 4.0.4 by `fb-probe`'s new "exact numerics" block, which runs in
+every mode and on every server (the FB4 cases are skipped below 4.0): ten cases,
+including `0.1 + 0.2` in `NUMERIC(18,2)` reading `0.30`, the BIGINT edge
+`-922337203685477.5808`, a 32-digit `NUMERIC(38,2)` and both parameter paths.
+`select * from PRODUTO` (1517 rows, 174 columns) gives the same fingerprint as
+the Python reference driver, now including an exact sum of every decimal
+(`394641.2595`).
+
+The coerced type code is what `Column::raw_type` reports, so DECFLOAT and the
+zoned types report `VARYING`. The grid will want the declared type for
+alignment and editing; that belongs in `fb-core`'s column metadata, from the
+XSQLDA, not in the value.
 
 ## 5. Container matrix — still blocked
 

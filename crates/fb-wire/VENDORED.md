@@ -30,6 +30,12 @@ in the workspace manifest.
 - **`BUFFER_LENGTH` = 65535** (upstream: 1 KiB), the cap advertised to the server
   for prepare, info and segment replies. It must fit in a USHORT; 65536 arrived
   as 0 and made blob reads loop forever on empty segments.
+- **Exact numerics and Firebird 4 types** (with `crates/fb-wire-core`). Scaled
+  integers keep their scale and arrive as `SqlType::Decimal` instead of being
+  coerced to `DOUBLE`; `INT128` is read natively (16 bytes, big-endian on the
+  wire); `DECFLOAT`, the time-zone types and an untyped `NULL` are asked for as
+  text, which the server formats exactly. A `Decimal` parameter goes as a
+  scaled `INT64` when it fits, as text otherwise.
 - **Statement plan and performance counters** (`info.rs`).
   `RustFbClient::statement_plan` (classic and FB3+ explained) over `op_info_sql`;
   `RustFbClient::database_counters` over `op_info_database`: page reads, writes,

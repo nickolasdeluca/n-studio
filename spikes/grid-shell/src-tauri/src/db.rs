@@ -283,6 +283,7 @@ fn display(v: SqlType) -> Cell {
         SqlType::Text(s) => s,
         SqlType::Integer(i) => i.to_string(),
         SqlType::Floating(f) => f.to_string(),
+        SqlType::Decimal(d) => d.to_string(),
         SqlType::Timestamp(t) => t.to_string(),
         SqlType::Boolean(b) => b.to_string(),
         SqlType::Binary(b) => format!("(BLOB, {} bytes)", b.len()),

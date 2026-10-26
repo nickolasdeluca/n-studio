@@ -5438,8 +5438,6 @@ dependencies = [
 [[package]]
 name = "rsfbclient-core"
 version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79df189861df4fa2be12f1d1baf902f86d65bbda63c8a7e7e259c47fe2845678"
 dependencies = [
  "chrono",
  "encoding",

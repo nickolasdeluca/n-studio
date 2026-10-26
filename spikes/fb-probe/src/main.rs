@@ -16,6 +16,7 @@
 
 use anyhow::{Context, Result};
 use rsfbclient::{prelude::*, Charset, Dialect, Row, SqlType};
+use rsfbclient_core::Decimal;
 use std::env;
 use std::time::Instant;
 
@@ -92,6 +93,7 @@ fn probe(port: u16, bulk_rows: usize) -> Result<()> {
     println!("connect: ok in {:?}", t0.elapsed());
 
     report_server(&mut conn)?;
+    report_numerics(&mut conn)?;
     report_types(&mut conn)?;
     report_charsets(&mut conn)?;
     report_capability_gaps();
@@ -125,6 +127,7 @@ fn survey(port: u16) -> Result<()> {
     println!("connect: ok in {:?}", t0.elapsed());
 
     report_server(&mut conn)?;
+    report_numerics(&mut conn)?;
     report_db_settings(&mut conn)?;
     report_object_counts(&mut conn)?;
     report_capability_gaps();
@@ -221,6 +224,9 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
     // Content fingerprint, comparable against another driver reading the
     // same query: text characters, binary bytes, integer sum, null count.
     let (mut text_chars, mut bin_bytes, mut int_sum, mut nulls) = (0usize, 0usize, 0i128, 0usize);
+    // Exact sum of NUMERIC / DECIMAL values, held at DEC_SUM_SCALE digits.
+    // None once it overflows: 38-digit values do not fit at that scale.
+    let mut dec_sum = Some(0i128);
 
     while let Some(row) = iter.next() {
         let row = row?;
@@ -244,6 +250,10 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
                 }
                 SqlType::Binary(b) => bin_bytes += b.len(),
                 SqlType::Integer(i) => int_sum += *i as i128,
+                SqlType::Decimal(d) => {
+                    let unit = 10i128.pow((DEC_SUM_SCALE - d.scale().min(DEC_SUM_SCALE)) as u32);
+                    dec_sum = dec_sum.and_then(|s| s.checked_add(d.mantissa().checked_mul(unit)?));
+                }
                 SqlType::Null => nulls += 1,
                 _ => {}
             }
@@ -262,7 +272,8 @@ fn report_table_scan(conn: &mut impl Queryable, table: &str) -> Result<()> {
         println!("  throughput      {:.0} rows/s", count as f64 / elapsed.as_secs_f64());
     }
     println!("  replacement chars in {mangled} cells (0 = charset ok)");
-    println!("  fingerprint     rows={count} text_chars={text_chars} binary_bytes={bin_bytes} int_sum={int_sum} nulls={nulls}");
+    println!("  fingerprint     rows={count} text_chars={text_chars} binary_bytes={bin_bytes} int_sum={int_sum} dec_sum={} nulls={nulls}",
+        dec_sum.map_or("overflow".to_string(), |s| Decimal::new(s, DEC_SUM_SCALE).to_string()));
     Ok(())
 }
 
@@ -283,6 +294,89 @@ fn report_server(conn: &mut impl Queryable) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// NUMERIC / DECIMAL must come back exactly, never through a float, and the
+/// Firebird 4 types must read at all. Needs no tables, so it runs anywhere.
+fn report_numerics(conn: &mut impl Queryable) -> Result<()> {
+    println!("\n── exact numerics ──");
+    let version: Option<(Option<String>,)> = conn
+        .query_first("select rdb$get_context('SYSTEM', 'ENGINE_VERSION') from rdb$database", ())
+        .unwrap_or(None);
+    let major: u32 = version
+        .and_then(|v| v.0)
+        .and_then(|v| v.split('.').next()?.parse().ok())
+        .unwrap_or(0);
+
+    // (expression, what it must read back as, first Firebird major with the type)
+    let cases = [
+        ("cast(123.45 as numeric(9,2))", "123.45", 2),
+        ("cast(-0.005 as numeric(4,3))", "-0.005", 2),
+        ("cast(0.1 as numeric(18,2)) + cast(0.2 as numeric(18,2))", "0.30", 2),
+        ("cast(-922337203685477.5808 as numeric(18,4))", "-922337203685477.5808", 2),
+        ("cast(-1 as int128)", "-1", 4),
+        ("cast('123456789012345678901234567890.12' as numeric(38,2))", "123456789012345678901234567890.12", 4),
+        ("cast('1.5E300' as decfloat(34))", "1.5E+300", 4),
+        ("timestamp '2026-10-26 10:00:00 America/Sao_Paulo'", "2026-10-26 10:00:00.0000 America/Sao_Paulo", 4),
+    ];
+    let mut failed = 0;
+    for (expr, want, since) in cases {
+        if major < since {
+            continue;
+        }
+        let got = conn
+            .query_first::<_, Row>(&format!("select {expr} from rdb$database"), ())
+            .map_err(anyhow::Error::from)
+            .and_then(|row| row.context("no row")?.cols.into_iter().next().context("no column"))
+            .map(|col| shown(&col.value));
+        report_case(expr, want, got, &mut failed);
+    }
+
+    // Parameters: a BIGINT-sized decimal goes as a scaled INT64, a wider one as text.
+    let params = [
+        ("numeric(18,4)", "-12345.6789", 2),
+        ("numeric(38,6)", "-98765432109876543210.123456", 4),
+    ];
+    for (ty, value, since) in params {
+        if major < since {
+            continue;
+        }
+        let sent: Decimal = value.parse()?;
+        let got = conn
+            .query_first::<_, Row>(&format!("select cast(? as {ty}) from rdb$database"), (sent,))
+            .map_err(anyhow::Error::from)
+            .and_then(|row| row.context("no row")?.cols.into_iter().next().context("no column"))
+            .map(|col| shown(&col.value));
+        report_case(&format!("? as {ty}"), value, got, &mut failed);
+    }
+
+    if failed > 0 {
+        anyhow::bail!("{failed} exact-numeric checks failed");
+    }
+    Ok(())
+}
+
+fn report_case(what: &str, want: &str, got: Result<String>, failed: &mut usize) {
+    match got {
+        Ok(got) if got == want => println!("  ok    {what} = {got}"),
+        Ok(got) => {
+            *failed += 1;
+            println!("  FAIL  {what} = {got}, want {want}");
+        }
+        Err(e) => {
+            *failed += 1;
+            println!("  FAIL  {what}: {e}");
+        }
+    }
+}
+
+/// A value as the grid would print it
+fn shown(v: &SqlType) -> String {
+    match v {
+        SqlType::Text(s) => s.clone(),
+        SqlType::Decimal(d) => d.to_string(),
+        other => describe(other),
+    }
 }
 
 /// Dump every column of the fixture table with its raw Firebird type code and
@@ -378,6 +472,9 @@ fn report_capability_gaps() {
     }
 }
 
+/// Scale of the scan fingerprint's decimal sum: wider than any column here.
+const DEC_SUM_SCALE: u8 = 10;
+
 fn describe(v: &SqlType) -> String {
     match v {
         SqlType::Text(s) => format!("Text({s:?})"),
@@ -387,6 +484,7 @@ fn describe(v: &SqlType) -> String {
         SqlType::Null => "Null".to_string(),
         SqlType::Binary(b) => format!("Binary({} bytes)", b.len()),
         SqlType::Boolean(b) => format!("Boolean({b})"),
+        SqlType::Decimal(d) => format!("Decimal({d})"),
     }
 }
 

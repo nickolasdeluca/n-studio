@@ -86,6 +86,27 @@ pub fn params_to_blr(
                 values.put_i64(*i);
             }
 
+            SqlType::Decimal(d) => match i64::try_from(d.mantissa()) {
+                // A scaled BIGINT, exactly what a NUMERIC(18) is on the server
+                Ok(m) => {
+                    blr.put_slice(&[consts::blr::INT64, (-(d.scale() as i8)) as u8]);
+
+                    values.put_i64(m);
+                }
+                // Wider than a BIGINT: as text, which the server converts exactly
+                Err(_) => {
+                    let text = d.to_string();
+                    blr.put_u8(consts::blr::TEXT);
+                    blr.put_u16_le(text.len() as u16);
+
+                    values.put_slice(text.as_bytes());
+                    if text.len() % 4 != 0 {
+                        // 4 byte align
+                        values.put_slice(&[0; 4][..4 - (text.len() % 4)])
+                    }
+                }
+            },
+
             SqlType::Floating(f) => {
                 blr.put_u8(consts::blr::DOUBLE);
 

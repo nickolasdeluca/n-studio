@@ -674,19 +674,22 @@ pub fn parse_sql_response(
                 let i = resp.get_i64()?;
 
                 let null = read_null(resp, col_index)?;
-                if null {
-                    data.push(ParsedColumn::Complete(Column::new(
-                        var.alias_name.clone(),
-                        sqltype,
-                        SqlType::Null,
-                    )))
+                let value = if null {
+                    SqlType::Null
+                } else if var.scale == 0 {
+                    SqlType::Integer(i)
                 } else {
-                    data.push(ParsedColumn::Complete(Column::new(
-                        var.alias_name.clone(),
-                        sqltype,
-                        SqlType::Integer(i),
-                    )))
-                }
+                    SqlType::Decimal(decimal(i.into(), var.scale)?)
+                };
+                data.push(ParsedColumn::Complete(Column::new(var.alias_name.clone(), sqltype, value)))
+            }
+
+            ibase::SQL_INT128 => {
+                let i = resp.get_i128()?;
+
+                let null = read_null(resp, col_index)?;
+                let value = if null { SqlType::Null } else { SqlType::Decimal(decimal(i, var.scale)?) };
+                data.push(ParsedColumn::Complete(Column::new(var.alias_name.clone(), sqltype, value)))
             }
 
             ibase::SQL_DOUBLE => {
@@ -781,6 +784,11 @@ pub fn parse_sql_response(
     }
 
     Ok(data)
+}
+
+fn decimal(data: i128, scale: i16) -> Result<rsfbclient_core::Decimal, FbError> {
+    rsfbclient_core::Decimal::from_scaled(data, scale)
+        .ok_or_else(|| format!("Unsupported numeric scale {}", scale).into())
 }
 
 /// Column data parsed from a fetch response
