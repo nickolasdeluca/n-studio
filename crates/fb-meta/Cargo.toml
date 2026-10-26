@@ -1,0 +1,9 @@
+[package]
+name = "fb-meta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fb-core = { workspace = true }
+serde = { workspace = true }

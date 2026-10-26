@@ -1772,6 +1772,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-meta"
+version = "0.0.0"
+dependencies = [
+ "fb-core",
+ "serde",
+]
+
+[[package]]
 name = "fb-probe"
 version = "0.0.0"
 dependencies = [

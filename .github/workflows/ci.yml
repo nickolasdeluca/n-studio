@@ -18,7 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The grid spikes need WebKitGTK / windowing libraries; the driver does not.
-      - run: cargo test -p rsfbclient-core -p rsfbclient-rust -p fb-core -p fb-probe
+      - run: cargo test -p rsfbclient-core -p rsfbclient-rust -p fb-core -p fb-meta -p fb-probe
 
   firebird:
     name: Firebird ${{ matrix.version }}
@@ -66,7 +66,7 @@ jobs:
         run: docker compose -f docker/compose.yml up -d ${{ matrix.service }}
 
       # Build while the server starts.
-      - run: cargo build -p fb-probe --bin fb-probe && cargo test --no-run -p fb-core
+      - run: cargo build -p fb-probe --bin fb-probe && cargo test --no-run -p fb-core -p fb-meta
 
       - name: Wait for the fixture database
         run: |
@@ -107,7 +107,8 @@ jobs:
           FB_DB: ${{ matrix.db }}
           FB_USER: SYSDBA
           FB_PASS: masterkey
-        run: cargo test -p fb-core --test live
+          FB_FIXTURE: "1"
+        run: cargo test -p fb-core -p fb-meta --test live
 
       - name: Server log
         if: failure()

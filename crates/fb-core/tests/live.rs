@@ -67,7 +67,9 @@ fn server_errors_keep_their_sqlcode() {
 #[test]
 fn a_wrong_password_is_refused() {
     let Some(mut params) = ConnectParams::from_env() else { return };
-    params.password.push_str("-wrong");
+    // At the front: Legacy_Auth (2.5, and 3.0+ kept compatible with it)
+    // compares only the first 8 characters.
+    params.password.insert_str(0, "wrong-");
     match Connection::open(&params) {
         Err(Error::Server { .. }) => {}
         Err(other) => panic!("expected the server to refuse, got {other:?}"),
