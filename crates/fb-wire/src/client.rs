@@ -421,6 +421,30 @@ impl RustFbClient {
             .unwrap_or_else(err_client_not_connected)
     }
 
+    /// The next row with its blobs unread. See `FirebirdWireConnection::fetch_lazy`.
+    pub fn fetch_lazy(&mut self, stmt_handle: &mut StmtHandleData) -> Result<Option<Vec<FetchedColumn>>, FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.fetch_lazy(stmt_handle))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
+    /// Up to `max` bytes of a blob, and whether that was all of it
+    pub fn read_blob(&mut self, tr_handle: &mut RustTrHandle, id: BlobId, max: usize) -> Result<(Vec<u8>, bool), FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.read_blob(tr_handle, id, max))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
+    /// Text in the connection's character set, as a TEXT blob holds it
+    pub fn decode_text(&self, bytes: Vec<u8>) -> Result<String, FbError> {
+        self.conn
+            .as_ref()
+            .map(|conn| conn.charset.decode(bytes))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
     /// A handle to cancel what this client runs, from another thread. `None`
     /// when not connected, or before Firebird 2.5.
     pub fn cancel_handle(&self) -> Option<CancelHandle> {
@@ -1165,6 +1189,64 @@ impl FirebirdWireConnection {
         tr_handle: &mut TrHandle,
         stmt_handle: &mut StmtHandleData,
     ) -> Result<Option<Vec<Column>>, FbError> {
+        let Some(parsed) = self.next_row(stmt_handle)? else {
+            return Ok(None);
+        };
+        let mut cols = Vec::with_capacity(parsed.len());
+        for pc in parsed {
+            cols.push(pc.into_column(self, tr_handle)?);
+        }
+        Ok(Some(cols))
+    }
+
+    /// Fetch ONE row as `fetch` does, but leave its blobs unread: each comes
+    /// as its id, for `read_blob` while the transaction lasts. A blob costs
+    /// round trips of its own; a grid of rows need not pay them for every row.
+    pub fn fetch_lazy(&mut self, stmt_handle: &mut StmtHandleData) -> Result<Option<Vec<FetchedColumn>>, FbError> {
+        Ok(self.next_row(stmt_handle)?.map(|parsed| {
+            parsed
+                .into_iter()
+                .map(|pc| match pc {
+                    ParsedColumn::Complete(c) => FetchedColumn::Value(c),
+                    ParsedColumn::Blob { binary, id, .. } => FetchedColumn::Blob { id, binary },
+                })
+                .collect()
+        }))
+    }
+
+    /// Up to `max` bytes of a blob, and whether that was all of it
+    pub fn read_blob(&mut self, tr_handle: &mut TrHandle, id: BlobId, max: usize) -> Result<(Vec<u8>, bool), FbError> {
+        let handle = self.open_blob(tr_handle, id)?;
+        let mut data = Vec::new();
+        let mut complete = false;
+        let read = loop {
+            let (segment, end) = match self.get_segment(BlobHandle(handle.0)) {
+                Ok(s) => s,
+                Err(e) => break Err(e),
+            };
+            data.extend_from_slice(&segment);
+            if end {
+                complete = true;
+                break Ok(());
+            }
+            if data.len() >= max {
+                break Ok(());
+            }
+        };
+        // Closed even after a failed read, so the handle does not linger
+        let closed = self.close_blob(handle);
+        read?;
+        closed?;
+        if data.len() > max {
+            data.truncate(max);
+            complete = false;
+        }
+        Ok((data, complete))
+    }
+
+    /// The next row's columns as parsed, from the batch buffer, fetching
+    /// another batch when it is empty
+    fn next_row(&mut self, stmt_handle: &mut StmtHandleData) -> Result<Option<Vec<ParsedColumn>>, FbError> {
         let count = fetch_batch_size();
         let mut empty_batches = 0u32;
         while stmt_handle.prefetched.is_empty() && !stmt_handle.cursor_eof {
@@ -1176,15 +1258,7 @@ impl FirebirdWireConnection {
                 return Err("fetch: too many empty batches without end of cursor".into());
             }
         }
-
-        let Some(parsed) = stmt_handle.prefetched.pop_front() else {
-            return Ok(None);
-        };
-        let mut cols = Vec::with_capacity(parsed.len());
-        for pc in parsed {
-            cols.push(pc.into_column(self, tr_handle)?);
-        }
-        Ok(Some(cols))
+        Ok(stmt_handle.prefetched.pop_front())
     }
 
     /// Requests `count` rows in one op_fetch and reads every op_fetch_response
@@ -1551,9 +1625,27 @@ pub struct StmtHandle(u32);
 /// A blob handle
 pub struct BlobHandle(u32);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A blob Identificator
 pub struct BlobId(pub(crate) u64);
+
+impl BlobId {
+    pub fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// A column of a row from `fetch_lazy`
+#[derive(Debug, Clone)]
+pub enum FetchedColumn {
+    Value(Column),
+    /// A blob, not read: `binary` unless its subtype is TEXT
+    Blob { id: BlobId, binary: bool },
+}
 
 /// The connection's socket. Reading belongs to the thread driving the
 /// connection; writing is shared with [`CancelHandle`], under a lock, so an

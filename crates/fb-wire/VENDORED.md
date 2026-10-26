@@ -73,6 +73,10 @@ in the workspace manifest.
 - **A smaller buffer for `op_info_database`.** Firebird 2.5 overflows a
   65535-byte one while adding its own items, and answers with a data length
   of 0xFFFFFFFF; the reader then waited forever. 32767 for database info.
+- **Blobs left unread.** `fetch_lazy` returns each blob as its id
+  (`FetchedColumn::Blob`) instead of reading it with the row, which cost
+  three round trips per blob per row; `read_blob` reads one later, up to a
+  size, in the same transaction. `fetch` still reads them all.
 - **Blobs of every subtype.** Upstream refused any column whose blob subtype
   was not 0 or 1, so a `select *` over most system tables failed (BLR, ACL and
   format blobs). Subtype 1 is read as text, every other subtype as bytes.
