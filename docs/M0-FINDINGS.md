@@ -385,8 +385,8 @@ This also settles §1's open question: the pure-Rust driver connects to 2.5,
 and the encrypted SRP path (`op_cond_accept`, `op_cont_auth`, Arc4), which the
 FB 4.0.4 server used during development never takes, works on 3.0, 4.0 and
 5.0. Every handshake path the driver has is now exercised on every push.
-Encryption costs throughput: 100k rows take ~1.1 s encrypted against ~0.6 s
-in clear on the same runner, worth knowing before blaming the grid.
+Encryption looks like it costs throughput: 100k rows took 0.9–1.1 s encrypted
+against 0.6 s in clear (one run each, separate runners: indicative only).
 
 Images: the official `firebirdsql/firebird` publishes major tags (`3`, `4`,
 `5`) and full versions, not `3.0` / `4.0` / `5.0`; the matrix follows each
