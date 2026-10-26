@@ -1,4 +1,4 @@
-# Firebird version matrix for fbexpert integration tests.
+# Firebird version matrix for N Studio integration tests.
 #
 #   docker compose -f docker/compose.yml up -d
 #

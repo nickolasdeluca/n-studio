@@ -156,7 +156,7 @@ fn build_connect(db: &str, user: &str, crypt_level: u32, max_proto: u32) -> Vec<
         tag(&mut uid, CNCT_SPECIFIC_DATA, &v);
     }
     tag(&mut uid, CNCT_CLIENT_CRYPT, &crypt_level.to_le_bytes());
-    tag(&mut uid, CNCT_USER, b"fbexpert");
+    tag(&mut uid, CNCT_USER, b"n-studio");
     tag(&mut uid, CNCT_HOST, b"probe");
     tag(&mut uid, CNCT_USER_VERIFICATION, b"");
     put_wire_bytes(&mut p, &uid);

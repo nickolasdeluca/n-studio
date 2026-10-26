@@ -1,8 +1,13 @@
-# fbexpert — Implementation Plan (draft for review)
+# N Studio — Implementation Plan (draft for review)
 
-A cross-platform, Firebird-only DBMS IDE modeled on IBExpert. Native binaries for
-Linux, macOS and Windows. Not a generic multi-DBMS tool: every feature may assume
-Firebird semantics (dialects, PSQL, generators, domains, services API, MON$ tables).
+**N** — *Any database, One IDE.* N Studio is the application; N is the brand.
+
+A cross-platform database IDE, native binaries for Linux, macOS and Windows.
+**Firebird first**, modeled on IBExpert: until that base is stable, Firebird is
+the only engine and every Firebird feature may assume Firebird semantics
+(dialects, PSQL, generators, domains, services API, MON$ tables). Other engines
+— PostgreSQL first — come after, each with the same depth rather than a
+lowest-common-denominator SQL layer. See §8, *Engines*.
 
 ---
 
@@ -44,7 +49,7 @@ with a real 1M-row table before we commit.
 ## 2. Crate / module layout
 
 ```
-fbexpert/
+n-studio/
 ├─ crates/
 │  ├─ fb-core/       connection actor, transactions, statement exec, type mapping, cursors
 │  ├─ fb-meta/       version-aware RDB$ introspection, DDL generation, dependency graph
@@ -156,7 +161,7 @@ data comparer, query builder, ER diagrams.
 
 ## 6. Non-goals
 
-Other DBMS engines. ORM/codegen. Cloud sync. Pixel-cloning IBExpert's icons or
+Other engines before the Firebird base is stable (§8, *Engines*). ORM/codegen. Cloud sync. Pixel-cloning IBExpert's icons or
 reusing any of its code or assets — the UI *shape* is fair game, the artwork and
 trademark are not.
 
@@ -224,5 +229,19 @@ no Windows cert, no updater plugin before M2 ships. macOS users right-click-open
 Windows shows SmartScreen. Signing and package-manager presence get revisited once
 there is something to distribute.
 
-**Open:** license (affects whether `rsfbclient`'s and Qt-adjacent dependencies' terms
-matter, and whether this is public from commit one).
+**Engines: Firebird now, an engine boundary from M1.**
+PostgreSQL and others follow once Firebird is stable, so M1 draws the line they
+will plug into without building an abstraction for them yet — the second engine
+will show what it has to be, and guessing it now would bend Firebird to fit.
+What M1 does:
+- Registrations carry `engine: "firebird"`; the rest of a registration is
+  engine-specific settings, stored as such.
+- The Tauri commands and the UI speak engine-neutral data: values, result sets,
+  errors, and the explorer tree as kinds-with-counts and object lists described
+  by the backend (the UI does not hard-code Firebird's twelve kinds).
+- Everything Firebird-specific stays in the `fb-*` crates. A second engine gets
+  its own crates beside them, and a thin dispatch layer in `src-tauri`.
+
+**License: MIT** (`LICENSE`). Vendored crates keep upstream's MIT notice. The
+repository is private for now; anything written into it follows `AGENTS.md`
+(no names or data from real databases).

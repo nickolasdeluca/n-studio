@@ -3,7 +3,7 @@
 A vendored copy of [`rsfbclient-rust`](https://github.com/fernandobatels/rsfbclient)
 0.27.0 (MIT, see `LICENSE`), the pure-Rust Firebird wire protocol client.
 
-It lives here because fbexpert needs wire operations the upstream trait surface
+It lives here because N Studio needs wire operations the upstream trait surface
 cannot express — `op_info_sql` (plan), `op_info_database` (performance counters),
 `op_cancel`, and the services API all need raw socket access. Upstream is actively
 maintained and merges outside contributions, so each addition should go back as a

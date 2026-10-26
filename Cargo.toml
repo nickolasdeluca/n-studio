@@ -13,7 +13,7 @@ members = [
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/nickolasdeluca/fbexpert"
+repository = "https://github.com/nickolasdeluca/n-studio"
 
 [workspace.dependencies]
 rsfbclient = { version = "0.27", default-features = false }

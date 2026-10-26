@@ -1,19 +1,23 @@
-# fbexpert
+# N Studio
 
-A cross-platform Firebird database IDE, modeled on IBExpert. Native binaries for
-Linux, macOS and Windows.
+**N** — *Any database, One IDE.*
 
-Firebird-only by design: dialects, PSQL, generators, domains, the services API and
-the `MON$` tables are first-class, not adapters over a generic SQL abstraction.
+A cross-platform database IDE, native binaries for Linux, macOS and Windows.
 
-**Status: pre-alpha.** M0 spikes in progress — see [docs/PLAN.md](docs/PLAN.md) for the
-implementation plan and [docs/M0-FINDINGS.md](docs/M0-FINDINGS.md) for what the spikes
-have established so far.
+Firebird first, modeled on IBExpert: dialects, PSQL, generators, domains, the
+services API and the `MON$` tables are first-class, not adapters over a generic
+SQL abstraction. PostgreSQL and other engines follow once the Firebird base is
+stable, each built to the same depth.
+
+**Status: pre-alpha.** M0 (driver and grid spikes) is done; M1 (connect + explorer)
+is in progress — see [docs/PLAN.md](docs/PLAN.md) for the implementation plan and
+[docs/M0-FINDINGS.md](docs/M0-FINDINGS.md) for what the spikes established.
 
 ## Layout
 
 ```
 crates/fb-core       connection actor, transactions, cursors, type mapping
+crates/fb-meta       version-aware catalog: object kinds, counts, lists
 crates/fb-wire       vendored pure-Rust Firebird wire protocol, extended
 crates/fb-wire-core  vendored core types for it: exact decimals, Firebird 4 types
 spikes/fb-probe      M0 driver validation tool + raw handshake dumper

@@ -1,14 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "fbexpert grid spike",
+  "productName": "N Studio grid spike",
   "version": "0.0.0",
-  "identifier": "dev.fbexpert.gridspike",
+  "identifier": "dev.nstudio.gridspike",
   "build": {
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
-      { "title": "fbexpert — grid spike", "width": 1280, "height": 800 }
+      { "title": "N Studio — grid spike", "width": 1280, "height": 800 }
     ],
     "security": { "csp": null }
   },
