@@ -6,7 +6,7 @@
 #   2.5 -> 3050   3.0 -> 3053   4.0 -> 3054   5.0 -> 3055
 #
 # 2.5 comes from jacobalberty/firebird; the official firebirdsql/firebird
-# images only go back to 3.0.
+# images only go back to 3.0. Tags are major versions: latest patch of each.
 services:
   fb25:
     image: jacobalberty/firebird:2.5-ss
@@ -19,7 +19,7 @@ services:
       - ./seed:/seed:ro
 
   fb30:
-    image: firebirdsql/firebird:3.0
+    image: firebirdsql/firebird:3
     ports: ["3053:3050"]
     environment:
       FIREBIRD_ROOT_PASSWORD: masterkey
@@ -29,7 +29,7 @@ services:
       - ./seed:/seed:ro
 
   fb40:
-    image: firebirdsql/firebird:4.0
+    image: firebirdsql/firebird:4
     ports: ["3054:3050"]
     environment:
       FIREBIRD_ROOT_PASSWORD: masterkey
@@ -38,7 +38,7 @@ services:
       - ./seed:/seed:ro
 
   fb50:
-    image: firebirdsql/firebird:5.0
+    image: firebirdsql/firebird:5
     ports: ["3055:3050"]
     environment:
       FIREBIRD_ROOT_PASSWORD: masterkey
