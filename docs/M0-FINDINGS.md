@@ -360,27 +360,37 @@ zoned types report `VARYING`. The grid will want the declared type for
 alignment and editing; that belongs in `fb-core`'s column metadata, from the
 XSQLDA, not in the value.
 
-## 5. Container matrix — still blocked
+## 5. Version matrix — done in CI (2026-10-26)
 
-Pending: the 2.5 / 3.0 / 4.0 / 5.0 matrix. (Reading the performance block from a real
-query is done — §9 — but only against FB 4.0.4.)
+Containers cannot run on the dev host (it does not handle virtualization well),
+so the matrix runs in GitHub Actions: `.github/workflows/ci.yml`. Each target
+starts its service from `docker/compose.yml`, is seeded from `docker/seed/`
+plus 100k `BULK_ROWS`, and is probed by `fb-probe`, which now exits non-zero on
+an unseeded fixture, mangled text or any value that does not read back exactly.
 
-`docker/compose.yml` and the fixture SQL in `docker/seed/` are written and ready.
+| Target | Server | Handshake taken | Result | 100k rows |
+|---|---|---|---|---|
+| 2.5 (`jacobalberty/firebird:2.5-ss`) | 2.5.9 | pre-3.0 protocol | all checks pass | 0.62 s |
+| 3.0, legacy setup (`fb30`) | 3.0.14 | Legacy_Auth, no encryption | all checks pass | 0.62 s |
+| 3.0, defaults (`fb30srp`) | 3.0.14 | Srp (SHA-1), wire encrypted | all checks pass | 1.10 s |
+| 4.0 | 4.0.7 | Srp256, Arc4 | all checks pass | 0.87 s |
+| 5.0 | 5.0.4 | Srp256, Arc4 | all checks pass | 1.10 s |
 
-The dev machine has no container runtime — no Docker, Podman, Colima, Lima or OrbStack —
-and Homebrew has no `firebird` formula. Options, cheapest first:
+"All checks" covers the exact-numerics block (§12), the fixture's extremes
+(BIGINT and NUMERIC(18,4) limits, `9999-12-31` timestamps, BOOLEAN on 3.0+,
+INT128, DECFLOAT and the zoned types on 4.0+, a NULL INT128) and the
+WIN1252 / UTF8 accented-text round trip.
 
-1. **`brew install colima docker docker-compose`** then run the `firebirdsql/firebird`
-   images. Standard, scriptable, gives the whole version matrix and the same setup CI uses.
-2. **Point the spike at an existing Firebird server** on the network. Fast, but only
-   covers whichever version that server runs, and the spike would touch real data
-   (read-only `SELECT`s, but still).
-3. **Native Firebird install** from firebirdsql.org — one version per machine, no matrix.
+This also settles §1's open question: the pure-Rust driver connects to 2.5,
+and the encrypted SRP path (`op_cond_accept`, `op_cont_auth`, Arc4), which the
+FB 4.0.4 server used during development never takes, works on 3.0, 4.0 and
+5.0. Every handshake path the driver has is now exercised on every push.
+Encryption costs throughput: 100k rows take ~1.1 s encrypted against ~0.6 s
+in clear on the same runner, worth knowing before blaming the grid.
 
-~~Recommendation: option 1.~~ Ruled out: this host does not handle virtualization
-well, so no container runtime here. The matrix moves to CI (GitHub Actions runners
-have Docker), and local development uses existing servers on the network (option 2),
-read-only.
+Images: the official `firebirdsql/firebird` publishes major tags (`3`, `4`,
+`5`) and full versions, not `3.0` / `4.0` / `5.0`; the matrix follows each
+major's latest patch.
 
 ---
 
@@ -396,5 +406,5 @@ The driver work is no longer a background task running parallel to the UI. Order
 ## 7. Not blocked, proceeding
 
 - ~~Tauri shell + 1M-row virtualized grid~~ — done, §10; Slint compared, §11.
-- `docker/compose.yml` for the version matrix, ready for whenever a runtime exists.
+- ~~`docker/compose.yml` for the version matrix~~ — running in CI, §5.
 - Workspace scaffold, MIT license.
