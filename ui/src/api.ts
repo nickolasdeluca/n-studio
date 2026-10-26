@@ -174,6 +174,25 @@ export interface ResultView {
   endedEarly: boolean;
   fetchMs: number;
   performance: Performance | null;
+  /** How the rows are sorted; `null` is fetch order */
+  sort: Sort | null;
+}
+
+export interface Sort {
+  column: number;
+  descending: boolean;
+}
+
+export interface ExportOptions {
+  delimiter: string;
+  header: boolean;
+  bom: boolean;
+}
+
+export interface ExportSummary {
+  rows: number;
+  /** The transaction had ended: blob columns hold their markers */
+  blobsUnread: boolean;
 }
 
 export interface Executed {
@@ -247,6 +266,9 @@ export const api = {
   resultBlob: (result: number, row: number, col: number, max: number) =>
     invoke<BlobView | null>("result_blob", { result, row, col, max }),
   resultClose: (result: number) => invoke<void>("result_close", { result }),
+  resultSort: (result: number, sort: Sort | null) => invoke<ResultView>("result_sort", { result, sort }),
+  resultExport: (result: number, path: string, options: ExportOptions) =>
+    invoke<ExportSummary>("result_export", { result, path, options }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

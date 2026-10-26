@@ -1,20 +1,25 @@
 //! The SQL editor's commands: its transaction, its statements, and the rows
 //! they return, kept here and read by the grid a window at a time.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fb_core::{
-    ColumnInfo, Connection, CursorId, ExecuteOptions, Performance, Records, StatementType, TxEnd, TxId, TxOptions,
-    Value,
+    ColumnInfo, ColumnKind, Connection, CursorId, ExecuteOptions, Performance, Records, StatementType, TxEnd, TxId,
+    TxOptions, Value,
 };
 use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::commands::blocking;
 use crate::error::{AppError, AppResult};
-use crate::results::{display, Cell, Rows};
+use crate::export::{ExportOptions, Writer};
+use crate::results::{display, Cell, Rows, Sort};
 
 /// Every open result, by an id of its own: a cursor's id is only unique
 /// within its connection
@@ -32,6 +37,9 @@ struct ResultSet {
     /// Open until the rows run out or the transaction ends
     cursor: Option<CursorId>,
     rows: Rows,
+    /// The columns' names, for an export's header
+    names: Vec<String>,
+    sort: Option<Sort>,
     fetch_ms: f64,
     /// The transaction ended before the rows ran out: there are no more
     ended_early: bool,
@@ -49,6 +57,7 @@ impl ResultSet {
             ended_early: self.ended_early,
             fetch_ms: self.fetch_ms,
             performance: self.performance.clone(),
+            sort: self.sort,
         }
     }
 
@@ -138,6 +147,7 @@ pub struct ResultView {
     eof: bool,
     ended_early: bool,
     fetch_ms: f64,
+    sort: Option<Sort>,
     /// With the last rows, when the statement ran with `performance`
     performance: Option<Performance>,
 }
@@ -205,6 +215,8 @@ pub async fn editor_execute(
                     tx,
                     cursor: Some(cursor),
                     rows: Rows::new(kinds),
+                    names: executed.columns.iter().map(|c| c.name.clone()).collect(),
+                    sort: None,
                     fetch_ms: 0.0,
                     ended_early: false,
                     tx_ended: false,
@@ -244,6 +256,80 @@ pub async fn result_fetch(app: AppHandle, result: u64, max: usize) -> AppResult<
         let mut set = set.lock().unwrap();
         set.fetch(max)?;
         Ok(set.view(result))
+    })
+    .await
+}
+
+/// Sorts the rows by a column, or puts them back in fetch order (`None`).
+/// The rows not fetched yet are fetched first: a sort of some of them would
+/// show an order the rest could break.
+#[tauri::command]
+pub async fn result_sort(app: AppHandle, result: u64, sort: Option<Sort>) -> AppResult<ResultView> {
+    blocking(app, move |state| {
+        let set = state.results.get(result)?;
+        let mut set = set.lock().unwrap();
+        if let Some(Sort { column, .. }) = sort {
+            if set.rows.kinds().get(column).is_none_or(|k| matches!(k, ColumnKind::Blob | ColumnKind::TextBlob)) {
+                return Err(AppError::Invalid { message: "Blob columns cannot be sorted.".into() });
+            }
+            set.fetch(usize::MAX)?;
+        }
+        set.rows.sort(sort);
+        set.sort = sort;
+        Ok(set.view(result))
+    })
+    .await
+}
+
+/// What an export wrote
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSummary {
+    rows: usize,
+    /// The transaction ended, so blob columns hold their markers
+    blobs_unread: bool,
+}
+
+/// Largest blob an export reads whole; past it, the blob is cut there
+const MAX_EXPORT_BLOB: usize = 16 * 1024 * 1024;
+
+/// Writes every row, fetching the rest first, in the order the grid shows
+/// them. Blobs are read while the transaction lasts: text as is, others as
+/// hex.
+#[tauri::command]
+pub async fn result_export(
+    app: AppHandle,
+    result: u64,
+    path: PathBuf,
+    options: ExportOptions,
+) -> AppResult<ExportSummary> {
+    blocking(app, move |state| {
+        let set = state.results.get(result)?;
+        let mut set = set.lock().unwrap();
+        set.fetch(usize::MAX)?;
+        let file = File::create(&path).map_err(|e| AppError::storage(&path, e))?;
+        let write = |e| AppError::storage(&path, e);
+        let mut out = Writer::new(BufWriter::new(file), options, &set.names).map_err(write)?;
+        let blobs = !set.tx_ended;
+        let cols = set.rows.kinds().len();
+        for r in 0..set.rows.len() {
+            let mut cells: Vec<Option<Cow<str>>> = set.rows.row(r).map(|c| c.map(Cow::Borrowed)).collect();
+            for (c, cell) in cells.iter_mut().enumerate().take(cols) {
+                let Some((id, text)) = set.rows.blob(r, c).filter(|_| blobs) else { continue };
+                let content = set.conn.read_blob(set.tx, id, text, MAX_EXPORT_BLOB)?;
+                *cell = Some(Cow::Owned(match content.text {
+                    Some(text) => text,
+                    None => content.bytes.iter().fold(String::from("0x"), |mut s, b| {
+                        s.push_str(&format!("{b:02X}"));
+                        s
+                    }),
+                }));
+            }
+            out.row(cells.iter().map(|c| c.as_deref())).map_err(write)?;
+        }
+        out.finish().map_err(write)?;
+        let has_blobs = set.rows.kinds().iter().any(|k| matches!(k, ColumnKind::Blob | ColumnKind::TextBlob));
+        Ok(ExportSummary { rows: set.rows.len(), blobs_unread: has_blobs && !blobs })
     })
     .await
 }

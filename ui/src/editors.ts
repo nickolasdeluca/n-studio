@@ -8,6 +8,7 @@ import {
   isAppError,
   type ColumnInfo,
   type Executed,
+  type ExportOptions,
   type Isolation,
   type ResultView,
   type StatementRange,
@@ -70,6 +71,11 @@ interface State {
   run(id: string, mode: RunMode, input: RunInput, onError?: (range: { from: number; to: number }) => void): Promise<void>;
   end(id: string, how: TxEnd): Promise<void>;
   fetchMore(id: string, max: number): Promise<void>;
+  /** Sorts the last select's rows by a column: ascending, descending, then
+   *  back to fetch order. Fetches the rest first. */
+  sort(id: string, column: number): Promise<void>;
+  /** Writes the last select's rows to a file, fetching the rest first */
+  exportRows(id: string, path: string, options: ExportOptions): Promise<void>;
   /** Stops the statement or fetch the tab is running */
   cancel(id: string): Promise<void>;
   /** The registration disconnected: its transactions and results are gone */
@@ -225,6 +231,29 @@ export const useEditors = create<State>()((set, get) => {
       }
     },
 
+    async sort(id, column) {
+      const tab = get().tabs[id];
+      const result = tab?.outcome?.result;
+      if (!result || tab.running || tab.fetching) return;
+      const now = result.sort?.column === column ? result.sort : null;
+      const next = !now ? { column, descending: false } : !now.descending ? { column, descending: true } : null;
+      await whileFetching(id, result.id, () => api.resultSort(result.id, next));
+    },
+
+    async exportRows(id, path, options) {
+      const tab = get().tabs[id];
+      const result = tab?.outcome?.result;
+      if (!result || tab.running || tab.fetching) return;
+      await whileFetching(id, result.id, async () => {
+        const summary = await api.resultExport(result.id, path, options);
+        log(id, "info", t("{n} row(s) exported to {path}", { n: n(summary.rows), path }));
+        if (summary.blobsUnread) {
+          log(id, "info", t("The transaction had ended: blob columns were exported as (MEMO) and (BLOB)."));
+        }
+        return api.resultFetch(result.id, 0);
+      });
+    },
+
     async cancel(id) {
       const tab = get().tabs[id];
       if (!tab || !(tab.running || tab.fetching)) return;
@@ -248,6 +277,24 @@ export const useEditors = create<State>()((set, get) => {
       }
     },
   };
+
+  /** Runs `work`, which may fetch the rest of a result, with the tab showing
+   *  it fetches; the result's view is what `work` returns. On a failure (or
+   *  a cancel) the rows fetched so far stay. */
+  async function whileFetching(id: string, resultId: number, work: () => Promise<ResultView>) {
+    const update = (view: ResultView) =>
+      patch(id, (tab) => (tab.outcome?.result?.id === view.id ? { outcome: { ...tab.outcome, result: view } } : {}));
+    patch(id, { fetching: true });
+    try {
+      update(await work());
+    } catch (e) {
+      log(id, "error", errorText(e));
+      patch(id, { bottom: "messages" });
+      await api.resultFetch(resultId, 0).then(update, () => {});
+    } finally {
+      patch(id, { fetching: false });
+    }
+  }
 
   /** Runs one statement, starting a transaction first if there is none,
    *  and asking its parameters' values if it has any */

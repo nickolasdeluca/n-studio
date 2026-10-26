@@ -20,6 +20,7 @@
     "@lezer/highlight": "1.2.5",
     "@tanstack/react-virtual": "3.14.15",
     "@tauri-apps/api": "2.12.3",
+    "@tauri-apps/plugin-dialog": "2.8.2",
     "dockview-react": "8.5.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",

@@ -4,6 +4,7 @@
 mod commands;
 mod editor;
 mod error;
+mod export;
 mod registry;
 mod results;
 mod secrets;
@@ -12,6 +13,7 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let registry = registry::Registry::load(&dir)?;
@@ -35,6 +37,8 @@ fn main() {
             editor::editor_execute,
             editor::result_fetch,
             editor::result_rows,
+            editor::result_sort,
+            editor::result_export,
             editor::result_blob,
             editor::result_close,
             editor::sql_statements,

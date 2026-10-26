@@ -25,6 +25,8 @@ interface Props {
   cursor: GridCursor;
   onCursor(cursor: GridCursor): void;
   onFetchMore(max: number): Promise<void>;
+  /** A header was clicked: sort by that column, or stop sorting */
+  onSort(col: number): void;
 }
 
 const numeric = (k: ColumnKind) => k === "integer" || k === "decimal" || k === "float";
@@ -46,7 +48,7 @@ function initialWidth(c: ColumnInfo): number {
   return Math.round(Math.max(60, Math.min(Math.max(name, content), 360)));
 }
 
-export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore }: Props) {
+export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, Cell[][]>());
   const inflight = useRef(new Set<number>());
@@ -61,6 +63,13 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore }: P
     setWidths(columns.map(initialWidth));
     scrollRef.current?.scrollTo({ top: 0, left: 0 });
   }, [result.id, columns]);
+
+  // Sorted another way: every page holds other rows now
+  const order = result.sort ? `${result.sort.column}:${result.sort.descending}` : "";
+  useEffect(() => {
+    pages.current.clear();
+    rerender();
+  }, [order]);
 
   // More rows arrived: the page that was the last one may have grown
   useEffect(() => {
@@ -218,20 +227,26 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore }: P
           <div className="sticky left-0 z-10 shrink-0 border-r border-line bg-panel-2" style={{ width: GUTTER_W }} />
           {virtualCols.map((c) => {
             const col = columns[c.index];
+            const sorted = result.sort?.column === c.index ? result.sort : null;
+            const hint = blob[c.index] ? t("Blob columns cannot be sorted") : t("Click to sort");
             return (
               <div
                 key={c.key}
                 role="columnheader"
-                title={`${col.name}\n${col.typeName}${col.relation ? `\n${col.relation}.${col.field}` : ""}`}
-                className={`absolute top-0 flex h-full items-center border-r border-line px-1.5 font-semibold text-muted ${
+                aria-sort={sorted ? (sorted.descending ? "descending" : "ascending") : undefined}
+                title={`${col.name}\n${col.typeName}${col.relation ? `\n${col.relation}.${col.field}` : ""}\n${hint}`}
+                onClick={() => !blob[c.index] && onSort(c.index)}
+                className={`absolute top-0 flex h-full items-center gap-1 border-r border-line px-1.5 font-semibold text-muted ${
                   c.index === cursor.col ? "text-fg" : ""
-                } ${align[c.index] ? "justify-end" : ""}`}
+                } ${align[c.index] ? "justify-end" : ""} ${blob[c.index] ? "" : "cursor-pointer hover:bg-hover"}`}
                 style={{ left: c.start, width: c.size }}
               >
                 <span className="truncate">{col.name}</span>
+                {sorted && <span className="shrink-0 text-accent">{sorted.descending ? "▼" : "▲"}</span>}
                 <span
                   className="absolute top-0 right-[-3px] z-10 h-full w-[6px] cursor-col-resize"
                   onMouseDown={(e) => startResize(c.index, e)}
+                  onClick={(e) => e.stopPropagation()}
                 />
               </div>
             );

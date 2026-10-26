@@ -1,5 +1,7 @@
+import { save } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
-import { errorText } from "../api";
+import { errorText, type ExportOptions } from "../api";
+import { useEditors } from "../editors";
 import { panelTitle } from "../dock";
 import { t } from "../i18n";
 import type { ParamRequest, ParamValue } from "../params";
@@ -23,7 +25,105 @@ export function Dialogs() {
       return <PendingDialog tabs={dialog.tabs} action={dialog.action} />;
     case "params":
       return <ParamsDialog request={dialog.request} />;
+    case "export":
+      return <ExportDialog tab={dialog.tab} />;
   }
+}
+
+const formats = [
+  { id: "csv", label: "CSV, comma separated", delimiter: ",", ext: "csv" },
+  { id: "csv-semicolon", label: "CSV, semicolon separated", delimiter: ";", ext: "csv" },
+  { id: "tsv", label: "TSV, tab separated", delimiter: "\t", ext: "tsv" },
+] as const;
+
+/** The last export's choices, for the next one */
+let lastExport: { format: (typeof formats)[number]["id"]; header: boolean; bom: boolean } = {
+  format: "csv",
+  header: true,
+  bom: true,
+};
+
+function ExportDialog({ tab }: { tab: string }) {
+  const [choice, setChoice] = useState(lastExport);
+  const [error, setError] = useState<string | null>(null);
+  const close = () => useStore.getState().openDialog(null);
+  const format = formats.find((f) => f.id === choice.format) ?? formats[0];
+
+  const exportRows = async () => {
+    setError(null);
+    let path: string | null;
+    try {
+      path = await save({
+        title: t("Export Rows"),
+        defaultPath: `${panelTitle(tab).replace(/[\\/:*?"<>|]/g, "_")}.${format.ext}`,
+        filters: [{ name: format.ext.toUpperCase(), extensions: [format.ext] }],
+      });
+    } catch (e) {
+      setError(errorText(e));
+      return;
+    }
+    if (!path) return;
+    lastExport = choice;
+    close();
+    const options: ExportOptions = { delimiter: format.delimiter, header: choice.header, bom: choice.bom };
+    await useEditors.getState().exportRows(tab, path, options);
+  };
+
+  return (
+    <Modal
+      title={t("Export Rows")}
+      width="w-[26rem]"
+      onCancel={close}
+      onSubmit={() => void exportRows()}
+      footer={
+        <>
+          <span className="flex-1" />
+          <Button onClick={close}>{t("Cancel")}</Button>
+          <Button primary submit>
+            {t("Export…")}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-2.5">
+        <Field label={t("Format")}>
+          <select
+            className={inputClass}
+            value={choice.format}
+            onChange={(e) => setChoice({ ...choice, format: e.target.value as typeof choice.format })}
+          >
+            {formats.map((f) => (
+              <option key={f.id} value={f.id}>
+                {t(f.label)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={choice.header}
+            onChange={(e) => setChoice({ ...choice, header: e.target.checked })}
+            className="accent-[var(--accent)]"
+          />
+          {t("Column names on the first line")}
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={choice.bom}
+            onChange={(e) => setChoice({ ...choice, bom: e.target.checked })}
+            className="accent-[var(--accent)]"
+          />
+          {t("UTF-8 byte order mark (for Excel)")}
+        </label>
+        <p className="text-muted">
+          {t("Every row is exported, in the grid's order: the rows not fetched yet are fetched first. Blobs are read in full while the transaction lasts.")}
+        </p>
+        {error && <p className="rounded border border-danger/40 px-2.5 py-1.5 text-danger">{error}</p>}
+      </div>
+    </Modal>
+  );
 }
 
 /** What a value of each kind looks like, as the server reads it from text */

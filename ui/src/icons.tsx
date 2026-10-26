@@ -136,6 +136,7 @@ const glyphs: Record<string, ReactNode> = {
   next: <path d="M5.5 3.5 10.5 8l-5 4.5" />,
   last: <path d="M12 3.5v9M4 3.5 9 8l-5 4.5" />,
   "fetch-all": <path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3.5 13.5h9" />,
+  export: <path d="M8 10V2.5M5 5.5 8 2.5l3 3M3.5 8.5v5h9v-5" />,
   panel: (
     <>
       <rect x="2.2" y="2.6" width="11.6" height="10.8" rx="1" />

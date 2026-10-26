@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The main window: core APIs and the app's own commands",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-destroy"]
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-save"]
 }

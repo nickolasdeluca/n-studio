@@ -359,6 +359,7 @@ function Empty({ children }: { children: ReactNode }) {
 function Results({ tab, cursor, setCursor }: { tab: EditorTab; cursor: GridCursor; setCursor(c: GridCursor): void }) {
   const outcome = tab.outcome;
   const fetchMore = useCallback((max: number) => useEditors.getState().fetchMore(tab.id, max), [tab.id]);
+  const sort = useCallback((col: number) => void useEditors.getState().sort(tab.id, col), [tab.id]);
   if (!outcome) return <Empty>{t("Execute a statement with F9 or Ctrl+Enter.")}</Empty>;
   const { executed, result } = outcome;
 
@@ -396,10 +397,24 @@ function Results({ tab, cursor, setCursor }: { tab: EditorTab; cursor: GridCurso
               })}
         </span>
         {result.endedEarly && <span className="ml-2 text-faint">{t("(the transaction ended before all rows were fetched)")}</span>}
+        <span className="flex-1" />
+        <Nav
+          icon="export"
+          label={t("Export Rows… (fetches all)")}
+          disabled={tab.running || tab.fetching || result.rows === 0}
+          onClick={() => useStore.getState().openDialog({ type: "export", tab: tab.id })}
+        />
       </div>
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1">
-          <ResultGrid result={result} columns={executed.columns} cursor={cursor} onCursor={setCursor} onFetchMore={fetchMore} />
+          <ResultGrid
+            result={result}
+            columns={executed.columns}
+            cursor={cursor}
+            onCursor={setCursor}
+            onFetchMore={fetchMore}
+            onSort={sort}
+          />
         </div>
         {isBlob(executed.columns[cursor.col]?.kind) && result.rows > 0 && (
           <div className="w-[38%] min-w-64 shrink-0 border-l border-line">

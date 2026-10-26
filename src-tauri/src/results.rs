@@ -5,6 +5,8 @@
 //! offset per cell: a heap allocation per cell cost ~45 bytes of overhead
 //! each, 1.3 GB for 1M rows x 30 columns (see docs/M0-FINDINGS.md).
 
+use std::cmp::Ordering;
+
 use chrono::{NaiveDateTime, Timelike};
 use fb_core::{ColumnKind, Value};
 
@@ -65,18 +67,61 @@ pub struct Rows {
     /// For each blob column, its blobs' ids by row (0 for null): the cell
     /// shows a marker, the content is read when asked for
     blobs: Vec<Option<Vec<u64>>>,
+    /// The rows in a sorted order, by their place in fetch order
+    order: Option<Vec<u32>>,
+}
+
+/// How the grid has the rows sorted
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sort {
+    pub column: usize,
+    pub descending: bool,
 }
 
 impl Rows {
     pub fn new(kinds: Vec<ColumnKind>) -> Self {
         let blobs = kinds.iter().map(|k| matches!(k, ColumnKind::Blob | ColumnKind::TextBlob).then(Vec::new)).collect();
-        Self { kinds, pages: Vec::new(), len: 0, blobs }
+        Self { kinds, pages: Vec::new(), len: 0, blobs, order: None }
+    }
+
+    /// Row `row` as shown: its place in fetch order
+    fn physical(&self, row: usize) -> usize {
+        self.order.as_ref().map_or(row, |o| o[row] as usize)
+    }
+
+    fn cell(&self, row: usize, col: usize) -> Option<&str> {
+        self.pages[row / PAGE].cell((row % PAGE) * self.kinds.len() + col)
+    }
+
+    /// Sorts the rows by a column, as its kind compares: numbers by value,
+    /// text ignoring case, nulls first. Ties keep fetch order. `None` goes
+    /// back to fetch order. Blob columns hold markers, not their content.
+    pub fn sort(&mut self, sort: Option<Sort>) {
+        let Some(Sort { column, descending }) = sort else {
+            self.order = None;
+            return;
+        };
+        let kind = self.kinds[column];
+        let mut order: Vec<u32> = (0..self.len as u32).collect();
+        order.sort_by(|&a, &b| {
+            let by = compare(kind, self.cell(a as usize, column), self.cell(b as usize, column));
+            if descending {
+                by.reverse()
+            } else {
+                by
+            }
+        });
+        self.order = Some(order);
     }
 
     /// The blob in row `row` of column `col`: its id and whether it is text.
     /// `None` for a null, or a column without blobs.
     pub fn blob(&self, row: usize, col: usize) -> Option<(u64, bool)> {
-        let id = *self.blobs.get(col)?.as_ref()?.get(row)?;
+        if row >= self.len {
+            return None;
+        }
+        let id = *self.blobs.get(col)?.as_ref()?.get(self.physical(row))?;
         (id != 0).then(|| (id, self.kinds[col] == ColumnKind::TextBlob))
     }
 
@@ -96,19 +141,77 @@ impl Rows {
         let kinds = &self.kinds;
         let page = self.pages.last_mut().expect("pushed above");
         page.push(row.iter().zip(kinds).map(|(v, k)| display(v, *k)));
+        // Rows fetched after a sort come after the sorted ones
+        if let Some(order) = &mut self.order {
+            order.push(self.len as u32);
+        }
         self.len += 1;
     }
 
-    /// Rows `from..from + count`, as many as there are
+    /// Rows `from..from + count` as shown, as many as there are
     pub fn slice(&self, from: usize, count: usize) -> Vec<Vec<Cell>> {
-        let cols = self.kinds.len();
         (from..(from.saturating_add(count)).min(self.len))
-            .map(|r| {
-                let page = &self.pages[r / PAGE];
-                let at = (r % PAGE) * cols;
-                (0..cols).map(|c| page.cell(at + c).map(str::to_owned)).collect()
-            })
+            .map(|r| self.row(r).map(|c| c.map(str::to_owned)).collect())
             .collect()
+    }
+
+    /// Row `row` as shown
+    pub fn row(&self, row: usize) -> impl Iterator<Item = Option<&str>> {
+        let r = self.physical(row);
+        (0..self.kinds.len()).map(move |c| self.cell(r, c))
+    }
+
+    pub fn kinds(&self) -> &[ColumnKind] {
+        &self.kinds
+    }
+}
+
+/// Two cells of a column, by its kind; null first
+fn compare(kind: ColumnKind, a: Option<&str>, b: Option<&str>) -> Ordering {
+    let (a, b) = match (a, b) {
+        (Some(a), Some(b)) => (a, b),
+        (a, b) => return a.is_some().cmp(&b.is_some()),
+    };
+    match kind {
+        ColumnKind::Integer | ColumnKind::Decimal => compare_decimal(a, b),
+        ColumnKind::Float => {
+            let f = |s: &str| s.parse::<f64>().unwrap_or(f64::NAN);
+            f(a).total_cmp(&f(b))
+        }
+        // Dates and times read in ISO order; other kinds as text, case aside
+        _ => {
+            let fold = |s: &str| s.chars().flat_map(char::to_lowercase).collect::<Vec<_>>();
+            let by = if a.is_ascii() && b.is_ascii() {
+                a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+            } else {
+                fold(a).cmp(&fold(b))
+            };
+            by.then_with(|| a.cmp(b))
+        }
+    }
+}
+
+/// Two exact numbers as `display` writes them (`-12.50`, any length), by
+/// value: an INT128 or a NUMERIC(38) would not fit a float
+fn compare_decimal(a: &str, b: &str) -> Ordering {
+    fn parts(s: &str) -> (bool, &str, &str) {
+        let (negative, s) = s.strip_prefix('-').map_or((false, s), |s| (true, s));
+        let (int, frac) = s.split_once('.').unwrap_or((s, ""));
+        let int = int.trim_start_matches('0');
+        let frac = frac.trim_end_matches('0');
+        // -0 is 0
+        (negative && !(int.is_empty() && frac.is_empty()), int, frac)
+    }
+    let (na, ia, fa) = parts(a);
+    let (nb, ib, fb) = parts(b);
+    if na != nb {
+        return nb.cmp(&na);
+    }
+    let magnitude = ia.len().cmp(&ib.len()).then_with(|| ia.cmp(ib)).then_with(|| fa.cmp(fb));
+    if na {
+        magnitude.reverse()
+    } else {
+        magnitude
     }
 }
 
@@ -196,6 +299,45 @@ mod tests {
         assert_eq!(display(&Value::Null, ColumnKind::Text), None);
         let long = d(Value::Text("é".repeat(MAX_CELL)), ColumnKind::TextBlob);
         assert!(long.len() <= MAX_CELL + "…".len() && long.ends_with('…'));
+    }
+
+    #[test]
+    fn sorts_by_value_with_nulls_first() {
+        let mut rows = Rows::new(vec![ColumnKind::Decimal, ColumnKind::Text, ColumnKind::TextBlob]);
+        let numbers = ["10.5", "-2", "9.75", "-10.25", "0", "170141183460469231731687303715884105727"];
+        for (i, n) in numbers.iter().enumerate() {
+            let text = Value::Text(["b", "A", "a", "Ç", "c", "B"][i].into());
+            rows.push(vec![Value::Text(n.to_string()), text, Value::BlobRef { id: i as u64 + 1, text: true }]);
+        }
+        rows.push(vec![Value::Null, Value::Null, Value::Null]);
+        let column =
+            |rows: &Rows, c: usize| (0..rows.len()).map(|r| rows.slice(r, 1)[0][c].clone()).collect::<Vec<_>>();
+        let numbers = |rows: &Rows| column(rows, 0);
+
+        rows.sort(Some(Sort { column: 0, descending: false }));
+        let sorted = numbers(&rows);
+        assert_eq!(sorted[0], None);
+        let shown: Vec<_> = sorted[1..].iter().map(|c| c.clone().unwrap()).collect();
+        let mut expected = shown.clone();
+        expected.sort_by(|a, b| compare_decimal(a, b));
+        assert_eq!(shown, expected);
+        assert_eq!(compare_decimal("-10.25", "-2"), Ordering::Less);
+        assert_eq!(compare_decimal("9.75", "10.5"), Ordering::Less);
+        assert_eq!(compare_decimal("-0", "0.00"), Ordering::Equal);
+        assert_eq!(compare_decimal("170141183460469231731687303715884105727", "9.5"), Ordering::Greater);
+        // The blob ids follow their rows
+        let first = rows.slice(1, 1)[0][1].clone();
+        let (id, _) = rows.blob(1, 2).unwrap();
+        assert_eq!(first, Some(["b", "A", "a", "Ç", "c", "B"][id as usize - 1].to_string()));
+
+        rows.sort(Some(Sort { column: 1, descending: true }));
+        assert_eq!(
+            column(&rows, 1),
+            ["Ç", "c", "b", "B", "a", "A"].map(|s| Some(s.to_string())).into_iter().chain([None]).collect::<Vec<_>>()
+        );
+
+        rows.sort(None);
+        assert_eq!(rows.slice(0, 1)[0][1], Some("b".into()));
     }
 
     #[test]
