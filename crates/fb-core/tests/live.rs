@@ -179,14 +179,14 @@ fn fixture_writes_report_records_and_table_counters() {
     let tx = conn.begin(TxOptions { lock_wait: LockWait::NoWait, ..Default::default() }).unwrap();
     let options = ExecuteOptions::default();
 
-    let inserted = conn.execute(tx, "insert into tipos (c_integer) values (1)", options).unwrap();
+    let inserted = conn.execute(tx, "insert into tipos (id, c_integer) values (999999, 1)", options).unwrap();
     assert_eq!(inserted.statement_type, StatementType::Insert);
     assert_eq!(inserted.records.inserted, 1);
     let performance = inserted.performance.expect("no cursor: final already");
     let tipos = performance.tables.iter().find(|t| t.table == "TIPOS").expect("{performance:?}");
     assert_eq!(tipos.inserts, 1);
 
-    let updated = conn.execute(tx, "update tipos set c_integer = 2 where c_integer = 1", options).unwrap();
+    let updated = conn.execute(tx, "update tipos set c_integer = 2 where id = 999999", options).unwrap();
     assert!(updated.records.updated >= 1);
 
     let procedure = conn.execute(tx, "execute procedure p_fixture(3)", options).unwrap();
