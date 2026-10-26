@@ -21,6 +21,9 @@ rsfbclient-rust = "0.27"
 rsfbclient-native = "0.27"
 anyhow = "1"
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+fb-core = { path = "crates/fb-core" }
 
 # M0: vendored copies of the pure-Rust wire driver and its core types, so we can
 # instrument them and add what they lack (op_info_sql, op_info_database,

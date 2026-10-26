@@ -1763,8 +1763,11 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "fb-core"
 version = "0.0.0"
 dependencies = [
- "rsfbclient",
+ "chrono",
  "rsfbclient-core",
+ "rsfbclient-rust",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 

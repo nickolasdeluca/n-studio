@@ -66,7 +66,7 @@ jobs:
         run: docker compose -f docker/compose.yml up -d ${{ matrix.service }}
 
       # Build while the server starts.
-      - run: cargo build -p fb-probe --bin fb-probe
+      - run: cargo build -p fb-probe --bin fb-probe && cargo test --no-run -p fb-core
 
       - name: Wait for the fixture database
         run: |
@@ -99,6 +99,15 @@ jobs:
           FB_USER: SYSDBA
           FB_PASS: masterkey
         run: target/debug/fb-probe --bulk 100000
+
+      - name: Live tests
+        env:
+          FB_HOST: localhost
+          FB_PORT: ${{ matrix.port }}
+          FB_DB: ${{ matrix.db }}
+          FB_USER: SYSDBA
+          FB_PASS: masterkey
+        run: cargo test -p fb-core --test live
 
       - name: Server log
         if: failure()

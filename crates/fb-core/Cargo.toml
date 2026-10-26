@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rsfbclient = { workspace = true, features = ["pure_rust"] }
 rsfbclient-core = { workspace = true }
+rsfbclient-rust = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"
