@@ -171,7 +171,7 @@ Until it lands, the driver handles narrow, BLOB-free result sets only.
 
 ## 8. Resolution (2026-10-26)
 
-Against a second FB 4.0.4 server (the ERP database, 1322 tables), cross-checked by reading
+Against a second FB 4.0.4 server (a production ERP database, 1322 tables), cross-checked by reading
 the same queries with an independent pure-Python driver (`firebirdsql`):
 
 **§3, SRP "unavailable database" — not a server problem.** Servers with wire

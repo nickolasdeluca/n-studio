@@ -1,7 +1,7 @@
 # crates/fb-wire
 
 A vendored copy of [`rsfbclient-rust`](https://github.com/fernandobatels/rsfbclient)
-0.27.0 (MIT), the pure-Rust Firebird wire protocol client.
+0.27.0 (MIT, see `LICENSE`), the pure-Rust Firebird wire protocol client.
 
 It lives here because fbexpert needs wire operations the upstream trait surface
 cannot express — `op_info_sql` (plan), `op_info_database` (performance counters),
