@@ -13,6 +13,7 @@ use fb_meta::{DbObject, ObjectKind};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::editor::Results;
 use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
 use crate::secrets;
@@ -21,14 +22,15 @@ pub struct AppState {
     registry: Mutex<Registry>,
     /// Open connections, by registration id
     sessions: Mutex<HashMap<String, Arc<Connection>>>,
+    pub(crate) results: Results,
 }
 
 impl AppState {
     pub fn new(registry: Registry) -> Self {
-        Self { registry: Mutex::new(registry), sessions: Mutex::default() }
+        Self { registry: Mutex::new(registry), sessions: Mutex::default(), results: Results::default() }
     }
 
-    fn session(&self, id: &str) -> AppResult<Arc<Connection>> {
+    pub(crate) fn session(&self, id: &str) -> AppResult<Arc<Connection>> {
         self.sessions
             .lock()
             .unwrap()
@@ -38,7 +40,7 @@ impl AppState {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     app: AppHandle,
     f: impl FnOnce(&AppState) -> AppResult<T> + Send + 'static,
 ) -> AppResult<T> {
@@ -110,6 +112,7 @@ pub async fn save_registration(
 pub async fn delete_registration(app: AppHandle, id: String) -> AppResult<()> {
     blocking(app, move |state| {
         state.sessions.lock().unwrap().remove(&id);
+        state.results.close_session(&id);
         state.registry.lock().unwrap().remove(&id)?;
         secrets::delete(&id)
     })
@@ -167,6 +170,7 @@ pub async fn connect(
         }
         let info = conn.info().clone();
         // Replacing a session drops the old connection, which detaches.
+        state.results.close_session(&id);
         state.sessions.lock().unwrap().insert(id, Arc::new(conn));
         Ok(info)
     })
@@ -177,6 +181,7 @@ pub async fn connect(
 pub fn disconnect(state: State<'_, AppState>, id: String) {
     // The connection's thread detaches once the last request using it ends.
     state.sessions.lock().unwrap().remove(&id);
+    state.results.close_session(&id);
 }
 
 /// The explorer's kinds for a connected database, with their counts

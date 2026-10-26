@@ -2,8 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod editor;
 mod error;
 mod registry;
+mod results;
 mod secrets;
 
 use tauri::Manager;
@@ -26,6 +28,12 @@ fn main() {
             commands::disconnect,
             commands::explorer_tree,
             commands::object_list,
+            editor::editor_begin,
+            editor::editor_end,
+            editor::editor_execute,
+            editor::result_fetch,
+            editor::result_rows,
+            editor::result_close,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

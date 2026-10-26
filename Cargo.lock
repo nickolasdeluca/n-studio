@@ -4198,6 +4198,7 @@ dependencies = [
 name = "n-studio"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "fb-core",
  "fb-meta",
  "keyring",
