@@ -27,6 +27,12 @@ use rsfbclient_core::{ibase, Charset, Column, Dialect, FbError, FreeStmtOp, SqlT
 /// blob, and the reader loops forever.
 pub const BUFFER_LENGTH: u32 = u16::MAX as u32;
 
+/// Reply buffer for `op_info_database`. Firebird 2.5's server adds its own
+/// items to the reply and, given a 65535-byte buffer, overflows: the reply
+/// says its data is 0xFFFFFFFF bytes long, and a reader waits forever.
+/// 32767 leaves it room, and is far more than the counters take.
+pub const DB_INFO_BUFFER_LENGTH: u32 = i16::MAX as u32;
+
 /// Highest protocol type offered at handshake.
 ///
 /// ptype 5 is `lazy_send`, which lets the server batch several responses into
@@ -425,7 +431,7 @@ pub fn info_database(db_handle: u32, requested_items: &[u8]) -> Bytes {
     req.put_u32(db_handle);
     req.put_u32(0); // Incarnation of object
     req.put_wire_bytes(requested_items);
-    req.put_u32(BUFFER_LENGTH);
+    req.put_u32(DB_INFO_BUFFER_LENGTH);
 
     req.freeze()
 }

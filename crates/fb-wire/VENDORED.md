@@ -64,6 +64,9 @@ in the workspace manifest.
   statement, selects included. The two requests now go out together; the
   full counts stay on the statement (`StmtHandleData::records`).
   `RustFbClient::statement_plans` likewise asks for both plans at once.
+- **A smaller buffer for `op_info_database`.** Firebird 2.5 overflows a
+  65535-byte one while adding its own items, and answers with a data length
+  of 0xFFFFFFFF; the reader then waited forever. 32767 for database info.
 - **Blobs of every subtype.** Upstream refused any column whose blob subtype
   was not 0 or 1, so a `select *` over most system tables failed (BLR, ACL and
   format blobs). Subtype 1 is read as text, every other subtype as bytes.

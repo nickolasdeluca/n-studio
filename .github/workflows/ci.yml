@@ -119,7 +119,11 @@ jobs:
           FB_DB: ${{ matrix.db }}
           FB_USER: SYSDBA
           FB_PASS: masterkey
-        run: target/debug/fb-probe --bulk 100000
+        # A driver that waits on a reply that never comes hangs, not fails
+        timeout-minutes: 5
+        run: |
+          target/debug/fb-probe --bulk 100000
+          target/debug/fb-probe --perf 'select count(*) from rdb$relations'
 
       - name: Live tests
         env:
@@ -129,6 +133,7 @@ jobs:
           FB_USER: SYSDBA
           FB_PASS: masterkey
           FB_FIXTURE: "1"
+        timeout-minutes: 5
         run: cargo test -p fb-core -p fb-meta --test live
 
       - name: Server log
