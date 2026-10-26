@@ -17,7 +17,7 @@ use crate::{
     srp::*,
     util::*,
     wire::*,
-    xsqlda::{parse_xsqlda, xsqlda_to_blr, ColumnDesc, PrepareInfo, XSqlVar, XSQLDA_DESCRIBE_VARS},
+    xsqlda::{parse_select_items, parse_xsqlda, xsqlda_to_blr, ColumnDesc, PrepareInfo, XSqlVar, XSQLDA_DESCRIBE_VARS},
 };
 use rsfbclient_core::*;
 
@@ -418,6 +418,14 @@ impl RustFbClient {
         self.conn
             .as_mut()
             .map(|conn| conn.database_counters(db_handle))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
+    /// The statement's parameters. See `FirebirdWireConnection::describe_params`.
+    pub fn describe_params(&mut self, stmt_handle: &mut StmtHandleData) -> Result<Vec<ColumnDesc>, FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.describe_params(stmt_handle))
             .unwrap_or_else(err_client_not_connected)
     }
 
@@ -1013,6 +1021,46 @@ impl FirebirdWireConnection {
         let (classic, explained) = parse_plans(data)?;
         let decode = |text: Option<Bytes>| text.map(|t| self.charset.decode(&t[..])).transpose();
         Ok((decode(classic)?, decode(explained)?))
+    }
+
+    /// The statement's parameters as the server declares them: type,
+    /// subtype or charset, scale, length, nullability. One round trip, and
+    /// none for a statement without parameters.
+    pub fn describe_params(&mut self, stmt_handle: &mut StmtHandleData) -> Result<Vec<ColumnDesc>, FbError> {
+        if stmt_handle.param_count == 0 {
+            return Ok(Vec::new());
+        }
+        self.socket.write_all(&info_sql(
+            stmt_handle.handle.0,
+            &[
+                ibase::isc_info_sql_bind as u8,
+                ibase::isc_info_sql_describe_vars as u8,
+                ibase::isc_info_sql_sqlda_seq as u8,
+                ibase::isc_info_sql_type as u8,
+                ibase::isc_info_sql_sub_type as u8,
+                ibase::isc_info_sql_scale as u8,
+                ibase::isc_info_sql_length as u8,
+                ibase::isc_info_sql_null_ind as u8,
+                ibase::isc_info_sql_describe_end as u8,
+            ],
+        ))?;
+        self.socket.flush()?;
+        let mut data = self.read_response()?.data;
+
+        // The bind section's header, then its variables as the select
+        // section lists columns
+        if data.remaining() < 8
+            || data[..2] != [ibase::isc_info_sql_bind as u8, ibase::isc_info_sql_describe_vars as u8]
+        {
+            return Err("describe_params: unexpected reply".into());
+        }
+        data.advance(4)?;
+        let count = data.get_u32_le()? as usize;
+        let mut vars = Vec::with_capacity(count.min(1024));
+        if parse_select_items(&mut data, &mut vars)? {
+            return Err("describe_params: too many parameters to describe".into());
+        }
+        Ok(vars.iter().map(ColumnDesc::from).collect())
     }
 
     /// Row counts. See `RustFbClient::statement_records`.

@@ -140,6 +140,58 @@ fn classify(text: &str, range: &Range<usize>, tokens: &[&Token], words: &[String
     }
 }
 
+/// A statement's parameters, ready to bind: `sql` with every `:name`
+/// replaced by `?`, and each position's name (`None` for a `?`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Parameters {
+    pub sql: String,
+    pub names: Vec<Option<String>>,
+}
+
+/// Finds a statement's parameters. Firebird takes only `?`; `:name` is the
+/// editor's, bound by position like IBExpert does. In PSQL (`EXECUTE BLOCK`,
+/// `CREATE PROCEDURE` and the like) `:name` is a variable and stays, and only
+/// `?` counts: `EXECUTE BLOCK (x INT = ?)` takes one.
+pub fn parameters(statement: &str) -> Parameters {
+    let tokens = tokenize(statement);
+    let psql = is_psql(statement, &tokens);
+    let mut sql = String::with_capacity(statement.len());
+    let mut names = Vec::new();
+    let mut at = 0;
+    for t in tokens.iter().filter(|t| t.kind == TokenKind::Param) {
+        let text = &statement[t.range.clone()];
+        if text == "?" {
+            names.push(None);
+        } else if !psql {
+            sql.push_str(&statement[at..t.range.start]);
+            sql.push('?');
+            at = t.range.end;
+            names.push(Some(text[1..].to_ascii_uppercase()));
+        }
+    }
+    sql.push_str(&statement[at..]);
+    Parameters { sql, names }
+}
+
+/// Whether a statement holds PSQL, where `:name` is a variable
+fn is_psql(text: &str, tokens: &[Token]) -> bool {
+    let words: Vec<String> = tokens
+        .iter()
+        .filter(|t| !t.kind.is_trivia())
+        .take(5)
+        .take_while(|t| t.kind == TokenKind::Word)
+        .map(|t| text[t.range.clone()].to_ascii_uppercase())
+        .collect();
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    const BODIES: &[&str] = &["PROCEDURE", "TRIGGER", "FUNCTION", "PACKAGE"];
+    match w.as_slice() {
+        ["EXECUTE", "BLOCK", ..] => true,
+        ["CREATE", "OR", "ALTER", kind, ..] => BODIES.contains(kind),
+        ["CREATE" | "ALTER" | "RECREATE", kind, ..] => BODIES.contains(kind),
+        _ => false,
+    }
+}
+
 /// Converts a byte offset into `text` to a UTF-16 offset, which is how an
 /// editor in a web view counts
 pub fn utf16_offset(text: &str, byte: usize) -> usize {
@@ -244,6 +296,24 @@ COMMIT;";
         let units = utf16_offset(text, byte);
         assert_eq!(units, "select 'ação 😀' ".encode_utf16().count());
         assert_eq!(byte_offset(text, units), byte);
+    }
+
+    #[test]
+    fn named_parameters_become_positional() {
+        let p = parameters("select * from t where a = :id and b = ? and c = :Id and d = ':no'");
+        assert_eq!(p.sql, "select * from t where a = ? and b = ? and c = ? and d = ':no'");
+        assert_eq!(p.names, vec![Some("ID".into()), None, Some("ID".into())]);
+    }
+
+    #[test]
+    fn psql_variables_are_not_parameters() {
+        let block = "execute block (x int = ?) returns (y int) as begin y = :x; suspend; end";
+        let p = parameters(block);
+        assert_eq!(p.sql, block);
+        assert_eq!(p.names, vec![None]);
+        let proc = "create or alter procedure p (a int) as declare v int; begin v = :a; end";
+        assert_eq!(parameters(proc).names, Vec::<Option<String>>::new());
+        assert_eq!(parameters(proc).sql, proc);
     }
 
     #[test]

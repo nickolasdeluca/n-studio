@@ -80,4 +80,8 @@ in the workspace manifest.
 - **Blobs of every subtype.** Upstream refused any column whose blob subtype
   was not 0 or 1, so a `select *` over most system tables failed (BLR, ACL and
   format blobs). Subtype 1 is read as text, every other subtype as bytes.
+- **Parameter descriptions.** `RustFbClient::describe_params` reads a
+  prepared statement's input parameters over `op_info_sql`
+  (`isc_info_sql_bind`) as `ColumnDesc`s, for an editor to ask their values
+  by type.
 - **`trace()`**, gated behind `FBW_TRACE=1`, dumping wire packets.
