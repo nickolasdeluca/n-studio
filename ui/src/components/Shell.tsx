@@ -1,8 +1,10 @@
 import {
+  DockviewDefaultTab,
   DockviewReact,
   type DockviewApi,
   type DockviewReadyEvent,
   type DockviewTheme,
+  type IDockviewPanelHeaderProps,
   type IDockviewPanelProps,
 } from "dockview-react";
 import { useEffect, useRef, type ReactNode } from "react";
@@ -10,6 +12,7 @@ import { serverSummary } from "../api";
 import { openEditor, setDock } from "../dock";
 import { useEditors } from "../editors";
 import { t } from "../i18n";
+import { guardQuit, request } from "../pending";
 import { Icon } from "../icons";
 import { useStore } from "../store";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
@@ -28,6 +31,12 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   sql: (props) => <SqlEditor {...(props as IDockviewPanelProps<{ tab: string }>)} />,
 };
 
+const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = {
+  sql: (props) => (
+    <DockviewDefaultTab {...props} closeActionOverride={() => request({ kind: "close", tab: props.api.id })} />
+  ),
+};
+
 /** The panels the View menu can bring back */
 const panels = [
   { id: "explorer", title: "Database Explorer" },
@@ -39,6 +48,7 @@ export function Shell() {
 
   useEffect(() => {
     void useStore.getState().load();
+    void guardQuit();
   }, []);
 
   // F12, as in IBExpert: an SQL editor on the selected database
@@ -77,7 +87,7 @@ export function Shell() {
     <div className="flex h-full flex-col">
       <Toolbar dock={dock} />
       <div className="min-h-0 flex-1">
-        <DockviewReact components={components} onReady={onReady} theme={theme} />
+        <DockviewReact components={components} tabComponents={tabComponents} onReady={onReady} theme={theme} />
       </div>
       <StatusBar />
       <Dialogs />

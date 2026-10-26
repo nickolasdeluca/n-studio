@@ -22,8 +22,18 @@ export function openEditor(registration: string) {
   dock.addPanel({
     id: tab,
     component: "sql",
+    // Its close button asks first when a transaction is active
+    tabComponent: "sql",
     title: `${t("SQL Editor")} ${count}${name ? ` · ${name}` : ""}`,
     params: { tab },
     position: beside ? { referencePanel: beside.id } : { direction: "right" },
   });
+}
+
+export function closePanel(id: string) {
+  dock?.getPanel(id)?.api.close();
+}
+
+export function panelTitle(id: string): string {
+  return dock?.getPanel(id)?.title ?? id;
 }

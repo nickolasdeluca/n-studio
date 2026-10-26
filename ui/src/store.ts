@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { useEditors } from "./editors";
 import { t } from "./i18n";
+import { activeTabs, type PendingAction } from "./pending";
 
 interface Loadable<T> {
   data?: T;
@@ -33,7 +34,9 @@ export const keys = {
 export type Dialog =
   | { type: "registration"; registration: Registration | null }
   | { type: "password"; id: string; error?: string }
-  | { type: "delete"; id: string };
+  | { type: "delete"; id: string }
+  /** Editors whose transactions an action would end: commit or roll back? */
+  | { type: "pending"; tabs: string[]; action: PendingAction };
 
 /** What the tree has selected: a registration, and maybe a kind and object */
 export interface Selection {
@@ -61,7 +64,8 @@ interface State {
   select(selection: Selection | null): void;
   toggle(key: NodeKey, open?: boolean): void;
   connect(id: string, password?: string, remember?: boolean): Promise<void>;
-  disconnect(id: string): Promise<void>;
+  /** Asks first when editors on it have active transactions, unless `force` */
+  disconnect(id: string, force?: boolean): Promise<void>;
   refresh(id: string): Promise<void>;
   loadObjects(id: string, kind: ObjectKind): Promise<void>;
   saveRegistration(registration: Registration, password: string | null): Promise<Registration>;
@@ -137,7 +141,11 @@ export const useStore = create<State>()((set, get) => ({
     }
   },
 
-  async disconnect(id) {
+  async disconnect(id, force = false) {
+    if (!force && activeTabs((registration) => registration === id).length > 0) {
+      set({ dialog: { type: "pending", tabs: activeTabs((r) => r === id), action: { kind: "disconnect", id } } });
+      return;
+    }
     await api.disconnect(id);
     useEditors.getState().sessionClosed(id);
     set((s) => {
