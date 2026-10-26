@@ -9,8 +9,8 @@ services API and the `MON$` tables are first-class, not adapters over a generic
 SQL abstraction. PostgreSQL and other engines follow once the Firebird base is
 stable, each built to the same depth.
 
-**Status: pre-alpha.** M0 (driver and grid spikes) and M1 (connect + explorer)
-are done; M2 (the SQL editor) is in progress — see [docs/PLAN.md](docs/PLAN.md) for the implementation plan and
+**Status: pre-alpha.** M0 (driver and grid spikes), M1 (connect + explorer) and
+M2 (the SQL editor) are done; M3 (read-only object viewers) is next — see [docs/PLAN.md](docs/PLAN.md) for the implementation plan and
 [docs/M0-FINDINGS.md](docs/M0-FINDINGS.md) for what the spikes established.
 
 ## Layout

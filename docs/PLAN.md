@@ -128,7 +128,7 @@ tree with live counts, and the object-list panel beneath it. Matches screenshot 
 The planned *client library override* does not apply: the driver is pure Rust and
 loads no `fbclient`; the auth plugin choice took its place.
 
-### M2 — SQL Editor (the core loop)
+### M2 — SQL Editor (the core loop) — done
 Multi-tab editor windows, Firebird syntax highlighting, execute / execute-all /
 execute-to-cursor, streamed results grid with the record navigator and `<null>`
 rendering, Messages / Query columns / Explain plan bottom tabs, Performance Analysis
@@ -136,8 +136,12 @@ tab, transaction toolbar + TIL selector, status bar. This is screenshots 2 and 3
 
 In place: all of the above, plus parameters: `?` and `:name` are asked for in a
 dialog that shows each one's declared type, remembered per tab; `:name` is bound
-by position and is left alone in PSQL, where it is a variable. Still to come
-before M2 closes: sorting and export in the grid.
+by position and is left alone in PSQL, where it is a variable. Also: cancel of a
+running statement (`op_cancel`), blobs read on demand in a viewer beside the
+grid, commit-or-roll-back prompts before a tab, a connection or the app closes
+over an active transaction, sorting by a header click (every row fetched first;
+numbers by value, text ignoring case, nulls first) and export to CSV or TSV
+(every row, in the grid's order, blobs read in full while the transaction lasts).
 
 ### M3 — Object viewers (read-only)
 Per-object-type editors with the IBExpert tab layout: Fields, Constraints, Indices,
