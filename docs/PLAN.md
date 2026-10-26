@@ -121,10 +121,12 @@ Prove the risky assumptions before any UI is built:
 Exit criterion: a throwaway binary that connects, runs `SELECT`, streams the grid,
 and prints the same performance block as the screenshot.
 
-### M1 — Connect + Explorer
+### M1 — Connect + Explorer — done
 Database registration dialog (path/alias, host/port, user, role, charset, dialect,
-client library override), keychain-stored credentials, connect/disconnect, the object
+auth plugin), keychain-stored credentials, connect/disconnect, the object
 tree with live counts, and the object-list panel beneath it. Matches screenshot 1's left column.
+The planned *client library override* does not apply: the driver is pure Rust and
+loads no `fbclient`; the auth plugin choice took its place.
 
 ### M2 — SQL Editor (the core loop)
 Multi-tab editor windows, Firebird syntax highlighting, execute / execute-all /
