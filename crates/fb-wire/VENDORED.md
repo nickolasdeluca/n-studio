@@ -52,4 +52,15 @@ in the workspace manifest.
   `RustFbClient::database_counters` over `op_info_database`: page reads, writes,
   fetches and marks, memory, buffers, and per-table record counters. Inherent
   methods for now; upstream would want them as a trait in `rsfbclient-core`.
+- **Column descriptions and row counts.** `StmtHandleData::columns()` keeps
+  each output column as the server described it (`ColumnDesc`: declared type,
+  subtype or charset, scale, length, nullability, source table and field),
+  since `coerce` rewrites the types the client reads.
+  `RustFbClient::statement_records` reads `isc_info_sql_records`: the rows a
+  statement selected, inserted, updated and deleted.
+- **One round trip per execute.** Upstream asked for the affected-row count
+  only after the execute's reply: a second network latency on every
+  statement, selects included. The two requests now go out together; the
+  full counts stay on the statement (`StmtHandleData::records`).
+  `RustFbClient::statement_plans` likewise asks for both plans at once.
 - **`trace()`**, gated behind `FBW_TRACE=1`, dumping wire packets.

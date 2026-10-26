@@ -12,11 +12,11 @@ use crate::{
     arc4::*,
     blr,
     consts::{AuthPluginType, ProtocolVersion, WireOp},
-    info::{parse_plan, DatabaseCounters, COUNTER_ITEMS},
+    info::{parse_plan, parse_plans, DatabaseCounters, RecordCounts, COUNTER_ITEMS},
     srp::*,
     util::*,
     wire::*,
-    xsqlda::{parse_xsqlda, xsqlda_to_blr, PrepareInfo, XSqlVar, XSQLDA_DESCRIBE_VARS},
+    xsqlda::{parse_xsqlda, xsqlda_to_blr, ColumnDesc, PrepareInfo, XSqlVar, XSQLDA_DESCRIBE_VARS},
 };
 use rsfbclient_core::*;
 
@@ -131,6 +131,8 @@ pub struct StmtHandleData {
     handle: RustStmtHandle,
     /// Output xsqlda
     xsqlda: Vec<XSqlVar>,
+    /// The output columns as described, before coercion
+    columns: Vec<ColumnDesc>,
     /// Blr representation of the above
     blr: Bytes,
     /// Number of parameters
@@ -141,6 +143,8 @@ pub struct StmtHandleData {
     prefetched: VecDeque<Vec<ParsedColumn>>,
     /// Cursor exhausted on the server (do not request more batches).
     cursor_eof: bool,
+    /// What the last execute selected, inserted, updated and deleted
+    records: RecordCounts,
 }
 
 impl StmtHandleData {
@@ -148,6 +152,17 @@ impl StmtHandleData {
     /// prepare, so a grid can draw its header before any row arrives.
     pub fn column_names(&self) -> impl Iterator<Item = &str> {
         self.xsqlda.iter().map(|v| v.alias_name.as_str())
+    }
+
+    /// The output columns with their declared types, as the server
+    /// described them at prepare
+    pub fn columns(&self) -> &[ColumnDesc] {
+        &self.columns
+    }
+
+    /// The row counts the last execute reported, read with it
+    pub fn records(&self) -> RecordCounts {
+        self.records
     }
 }
 
@@ -376,6 +391,19 @@ impl RustFbClient {
             .unwrap_or_else(err_client_not_connected)
     }
 
+    /// The classic plan and, with `explained` (Firebird 3+ only), the
+    /// explained one too, in one round trip.
+    pub fn statement_plans(
+        &mut self,
+        stmt_handle: &mut StmtHandleData,
+        explained: bool,
+    ) -> Result<(Option<String>, Option<String>), FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.statement_plans(stmt_handle, explained))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
     /// A snapshot of the attachment's performance counters.
     pub fn database_counters(
         &mut self,
@@ -384,6 +412,15 @@ impl RustFbClient {
         self.conn
             .as_mut()
             .map(|conn| conn.database_counters(db_handle))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
+    /// How many rows an executed statement selected, inserted, updated and
+    /// deleted.
+    pub fn statement_records(&mut self, stmt_handle: &mut StmtHandleData) -> Result<RecordCounts, FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.statement_records(stmt_handle))
             .unwrap_or_else(err_client_not_connected)
     }
 }
@@ -868,6 +905,7 @@ impl FirebirdWireConnection {
         }
 
         // Coerce the output columns and transform to blr
+        let columns = xsqlda.iter().map(ColumnDesc::from).collect();
         for var in xsqlda.iter_mut() {
             var.coerce()?;
         }
@@ -878,10 +916,12 @@ impl FirebirdWireConnection {
             StmtHandleData {
                 handle: stmt_handle,
                 xsqlda,
+                columns,
                 blr,
                 param_count,
                 prefetched: VecDeque::new(),
                 cursor_eof: false,
+                records: RecordCounts::default(),
             },
         ))
     }
@@ -908,6 +948,37 @@ impl FirebirdWireConnection {
             Some(text) => Ok(Some(self.charset.decode(&text[..])?)),
             None => Ok(None),
         }
+    }
+
+    /// Both plans. See `RustFbClient::statement_plans`.
+    pub fn statement_plans(
+        &mut self,
+        stmt_handle: &mut StmtHandleData,
+        explained: bool,
+    ) -> Result<(Option<String>, Option<String>), FbError> {
+        let items: &[u8] = if explained {
+            &[ibase::isc_info_sql_get_plan as u8, ibase::isc_info_sql_explain_plan as u8]
+        } else {
+            &[ibase::isc_info_sql_get_plan as u8]
+        };
+        self.socket.write_all(&info_sql(stmt_handle.handle.0, items))?;
+        self.socket.flush()?;
+
+        let data = self.read_response()?.data;
+        let (classic, explained) = parse_plans(data)?;
+        let decode = |text: Option<Bytes>| text.map(|t| self.charset.decode(&t[..])).transpose();
+        Ok((decode(classic)?, decode(explained)?))
+    }
+
+    /// Row counts. See `RustFbClient::statement_records`.
+    pub fn statement_records(&mut self, stmt_handle: &mut StmtHandleData) -> Result<RecordCounts, FbError> {
+        self.socket
+            .write_all(&info_sql(stmt_handle.handle.0, &[ibase::isc_info_sql_records as u8]))?;
+        self.socket.flush()?;
+
+        let data = self.read_response()?.data;
+
+        RecordCounts::parse(data)
     }
 
     /// Performance counters. See `RustFbClient::database_counters`.
@@ -961,26 +1032,33 @@ impl FirebirdWireConnection {
         // Execute
         let params = blr::params_to_blr(self, tr_handle, params)?;
 
+        // The row counts are asked for in the same round trip: upstream sent
+        // the request only after the execute's reply, a second network
+        // latency on every statement, selects included.
         self.socket.write_all(&execute(
             tr_handle.0,
             stmt_handle.handle.0,
             &params.blr,
             &params.values,
         ))?;
-        self.socket.flush()?;
-
-        self.read_response()?;
-
-        // Get affected rows
         self.socket.write_all(&info_sql(
             stmt_handle.handle.0,
-            &[ibase::isc_info_sql_records as u8], // Request affected rows,
+            &[ibase::isc_info_sql_records as u8],
         ))?;
         self.socket.flush()?;
 
-        let mut data = self.read_response()?.data;
+        // Both replies are read before either error is reported, as in
+        // prepare_statement: the info reply follows a failed execute too.
+        let (executed, records) = self.read_reply(|r, lazy| {
+            let executed = op_response(r, lazy)?;
+            let records = op_response(r, lazy)?;
+            Ok((executed, records))
+        })?;
+        executed?;
+        let records = RecordCounts::parse(records?.data)?;
+        stmt_handle.records = records;
 
-        parse_info_sql_affected_rows(&mut data)
+        Ok((records.inserted + records.updated + records.deleted) as usize)
     }
 
     /// Execute the prepared statement with parameters, returning data

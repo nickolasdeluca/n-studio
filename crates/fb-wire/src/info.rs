@@ -251,6 +251,20 @@ fn parse_table_counts(
 
 /// The plan text out of an `op_info_sql` reply to one plan item, or `None`
 /// when the statement has no plan (DDL, `EXECUTE PROCEDURE`, ...).
+/// The classic and the explained plan, from one reply asking for both.
+pub fn parse_plans(data: Bytes) -> Result<(Option<Bytes>, Option<Bytes>), FbError> {
+    let (mut classic, mut explained) = (None, None);
+    for (item, value) in parse_info_items(data)? {
+        let value = if value.is_empty() { None } else { Some(value) };
+        match item as u32 {
+            ibase::isc_info_sql_get_plan => classic = value,
+            ibase::isc_info_sql_explain_plan => explained = value,
+            _ => {}
+        }
+    }
+    Ok((classic, explained))
+}
+
 pub fn parse_plan(data: Bytes) -> Result<Option<Bytes>, FbError> {
     for (item, value) in parse_info_items(data)? {
         if item as u32 == ibase::isc_info_sql_get_plan
@@ -262,9 +276,56 @@ pub fn parse_plan(data: Bytes) -> Result<Option<Bytes>, FbError> {
     Ok(None)
 }
 
+/// Rows an executed statement touched, from `isc_info_sql_records`
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordCounts {
+    pub selected: i64,
+    pub inserted: i64,
+    pub updated: i64,
+    pub deleted: i64,
+}
+
+impl RecordCounts {
+    /// The reply nests a second clumplet stream inside its one item.
+    pub fn parse(data: Bytes) -> Result<Self, FbError> {
+        let mut counts = Self::default();
+        for (item, value) in parse_info_items(data)? {
+            if item as u32 != ibase::isc_info_sql_records {
+                continue;
+            }
+            for (item, value) in parse_info_items(value)? {
+                let n = vax_integer(&value)?;
+                match item as u32 {
+                    ibase::isc_info_req_select_count => counts.selected = n,
+                    ibase::isc_info_req_insert_count => counts.inserted = n,
+                    ibase::isc_info_req_update_count => counts.updated = n,
+                    ibase::isc_info_req_delete_count => counts.deleted = n,
+                    _ => {}
+                }
+            }
+        }
+        Ok(counts)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_counts_parse_the_nested_items() {
+        let reply = Bytes::from_static(&[
+            23, 29, 0, //
+            13, 4, 0, 0, 0, 0, 0, // selected 0
+            14, 4, 0, 0, 0, 0, 0, // inserted 0
+            15, 4, 0, 0x2c, 0x01, 0, 0, // updated 300
+            16, 4, 0, 7, 0, 0, 0, // deleted 7
+            1, // end of the nested stream
+            1,
+        ]);
+        let counts = RecordCounts::parse(reply).unwrap();
+        assert_eq!(counts, RecordCounts { selected: 0, inserted: 0, updated: 300, deleted: 7 });
+    }
 
     #[test]
     fn vax_integers_sign_extend_from_their_width() {

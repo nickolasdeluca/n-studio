@@ -58,6 +58,42 @@ pub struct XSqlVar {
     pub alias_name: String,
 }
 
+/// An output column as the server described it, before `coerce` changes its
+/// type to what the client reads (a DECFLOAT is read as text, but it is
+/// still a DECFLOAT to whoever asks what the column is).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnDesc {
+    /// The `SQL_*` type code, without the nullable bit
+    pub sqltype: i16,
+    /// The blob subtype, or the character set id of a text column
+    pub subtype: i16,
+    pub scale: i16,
+    /// In bytes, as the server sends it
+    pub length: i16,
+    pub nullable: bool,
+    /// The table column it comes from, if any
+    pub field_name: String,
+    pub relation_name: String,
+    pub owner_name: String,
+    pub alias_name: String,
+}
+
+impl From<&XSqlVar> for ColumnDesc {
+    fn from(var: &XSqlVar) -> Self {
+        Self {
+            sqltype: var.sqltype & !1,
+            subtype: var.sqlsubtype,
+            scale: var.scale,
+            length: var.data_length,
+            nullable: var.sqltype & 1 == 1,
+            field_name: var.field_name.clone(),
+            relation_name: var.relation_name.clone(),
+            owner_name: var.owner_name.clone(),
+            alias_name: var.alias_name.clone(),
+        }
+    }
+}
+
 impl XSqlVar {
     /// Coerces the data types of this XSqlVar as necessary
     pub fn coerce(&mut self) -> Result<(), FbError> {
