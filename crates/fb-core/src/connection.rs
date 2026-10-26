@@ -1,12 +1,17 @@
 use rsfbclient_core::{
-    FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, SqlType, StmtType, TrDataAccessMode,
-    TrIsolationLevel, TrOp, TrRecordVersion, TransactionConfiguration,
+    FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, SqlType, StmtType, TrDataAccessMode, TrIsolationLevel, TrOp,
+    TrRecordVersion, TransactionConfiguration,
 };
-use rsfbclient_rust::{RustFbClient, RustFbClientAttachmentConfig};
+use rsfbclient_rust::{DatabaseCounters, RustFbClient, RustFbClientAttachmentConfig};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
+use std::time::Instant;
 
+use crate::editor::{
+    ColumnInfo, CursorId, ExecuteOptions, Executed, Fetched, Performance, StatementType, TxEnd, TxId, TxOptions,
+};
 use crate::error::{Error, Result};
 use crate::params::{charset_by_name, ConnectParams, Dialect};
 use crate::value::Value;
@@ -44,6 +49,12 @@ type Reply<T> = Sender<Result<T>>;
 
 enum Request {
     Query { sql: String, params: Vec<Value>, reply: Reply<QueryResult> },
+    Begin { options: TxOptions, reply: Reply<TxId> },
+    End { tx: TxId, how: TxEnd, reply: Reply<()> },
+    Execute { tx: TxId, sql: String, options: ExecuteOptions, explained: bool, reply: Reply<Executed> },
+    Fetch { cursor: CursorId, max: usize, reply: Reply<Fetched> },
+    CursorPerformance { cursor: CursorId, reply: Reply<Option<Performance>> },
+    CloseCursor { cursor: CursorId, reply: Reply<()> },
 }
 
 impl Connection {
@@ -84,6 +95,24 @@ impl Connection {
                         Request::Query { sql, params, reply } => {
                             let _ = reply.send(actor.query(&sql, params));
                         }
+                        Request::Begin { options, reply } => {
+                            let _ = reply.send(actor.begin(options));
+                        }
+                        Request::End { tx, how, reply } => {
+                            let _ = reply.send(actor.end(tx, how));
+                        }
+                        Request::Execute { tx, sql, options, explained, reply } => {
+                            let _ = reply.send(actor.execute(tx, &sql, options, explained));
+                        }
+                        Request::Fetch { cursor, max, reply } => {
+                            let _ = reply.send(actor.fetch(cursor, max));
+                        }
+                        Request::CursorPerformance { cursor, reply } => {
+                            let _ = reply.send(actor.cursor_performance(cursor));
+                        }
+                        Request::CloseCursor { cursor, reply } => {
+                            let _ = reply.send(actor.close_cursor(cursor));
+                        }
                     }
                 }
                 actor.detach();
@@ -105,6 +134,41 @@ impl Connection {
     /// query, which needs a cursor and a transaction it controls.
     pub fn query(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult> {
         self.call(|reply| Request::Query { sql: sql.to_string(), params, reply })
+    }
+
+    /// Starts a transaction the caller ends with [`Connection::end`]. One
+    /// left open is rolled back when the connection closes.
+    pub fn begin(&self, options: TxOptions) -> Result<TxId> {
+        self.call(|reply| Request::Begin { options, reply })
+    }
+
+    /// Commits or rolls back. Ending it for good closes its open cursors.
+    pub fn end(&self, tx: TxId, how: TxEnd) -> Result<()> {
+        self.call(|reply| Request::End { tx, how, reply })
+    }
+
+    /// Prepares and runs one statement in `tx`. A select leaves a cursor open
+    /// to [`fetch`](Connection::fetch) from; a COMMIT or ROLLBACK ends `tx`.
+    pub fn execute(&self, tx: TxId, sql: &str, options: ExecuteOptions) -> Result<Executed> {
+        let explained = self.info.major >= 3;
+        self.call(|reply| Request::Execute { tx, sql: sql.to_string(), options, explained, reply })
+    }
+
+    /// Up to `max` more rows. At the end of the rows the cursor closes.
+    pub fn fetch(&self, cursor: CursorId, max: usize) -> Result<Fetched> {
+        self.call(|reply| Request::Fetch { cursor, max, reply })
+    }
+
+    /// What an open cursor's statement has cost so far, if it was executed
+    /// with `performance`
+    pub fn cursor_performance(&self, cursor: CursorId) -> Result<Option<Performance>> {
+        self.call(|reply| Request::CursorPerformance { cursor, reply })
+    }
+
+    /// Drops a cursor before its end. Closing one that is gone is not an
+    /// error: it may have reached its end, or its transaction ended.
+    pub fn close_cursor(&self, cursor: CursorId) -> Result<()> {
+        self.call(|reply| Request::CloseCursor { cursor, reply })
     }
 
     fn call<T>(&self, request: impl FnOnce(Reply<T>) -> Request) -> Result<T> {
@@ -144,6 +208,20 @@ struct Actor {
     cli: RustFbClient,
     db: rsfbclient_rust::DbHandle,
     dialect: rsfbclient_core::Dialect,
+    transactions: HashMap<TxId, rsfbclient_rust::TrHandle>,
+    cursors: HashMap<CursorId, Cursor>,
+    /// Ids are never reused, so a stale one cannot name something new
+    next_id: u64,
+    /// Relation ids to names, for the performance tables; refreshed when an id
+    /// it does not know turns up
+    relations: HashMap<u16, String>,
+}
+
+struct Cursor {
+    tx: TxId,
+    stmt: rsfbclient_rust::StmtHandleData,
+    /// The counters before it executed, when it runs with `performance`
+    before: Option<DatabaseCounters>,
 }
 
 impl Actor {
@@ -155,7 +233,15 @@ impl Actor {
         let mut cli = RustFbClient::new(charset);
         let dialect = dialect.into();
         let db = cli.attach_database(config, dialect, false)?;
-        Ok(Self { cli, db, dialect })
+        Ok(Self {
+            cli,
+            db,
+            dialect,
+            transactions: HashMap::new(),
+            cursors: HashMap::new(),
+            next_id: 1,
+            relations: HashMap::new(),
+        })
     }
 
     fn query(&mut self, sql: &str, params: Vec<Value>) -> Result<QueryResult> {
@@ -194,8 +280,240 @@ impl Actor {
         Ok(QueryResult { columns, rows })
     }
 
+    fn id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn begin(&mut self, options: TxOptions) -> Result<TxId> {
+        let tr = self.cli.begin_transaction(&mut self.db, options.into())?;
+        let id = self.id();
+        self.transactions.insert(id, tr);
+        Ok(id)
+    }
+
+    fn end(&mut self, tx: TxId, how: TxEnd) -> Result<()> {
+        let tr = self.transactions.get_mut(&tx).ok_or_else(|| no_such("transaction"))?;
+        if how.closes() {
+            let ids: Vec<CursorId> = self.cursors.iter().filter(|(_, c)| c.tx == tx).map(|(id, _)| *id).collect();
+            for id in ids {
+                if let Some(mut c) = self.cursors.remove(&id) {
+                    // The transaction's end frees them on the server anyway
+                    let _ = self.cli.free_statement(&mut c.stmt, FreeStmtOp::Drop);
+                }
+            }
+        }
+        let op = match how {
+            TxEnd::Commit => TrOp::Commit,
+            TxEnd::CommitRetaining => TrOp::CommitRetaining,
+            TxEnd::Rollback => TrOp::Rollback,
+            TxEnd::RollbackRetaining => TrOp::RollbackRetaining,
+        };
+        // A failed commit leaves the transaction alive: it can still roll back
+        self.cli.transaction_operation(tr, op)?;
+        if how.closes() {
+            self.transactions.remove(&tx);
+        }
+        Ok(())
+    }
+
+    fn execute(&mut self, tx: TxId, sql: &str, options: ExecuteOptions, explained: bool) -> Result<Executed> {
+        let tr = self.transactions.get_mut(&tx).ok_or_else(|| no_such("transaction"))?;
+
+        let started = Instant::now();
+        let (stmt_type, mut stmt) = self.cli.prepare_statement(&mut self.db, tr, self.dialect, sql)?;
+        let prepare_ms = ms(started);
+        let statement_type = StatementType::from(stmt_type);
+
+        let refuse = |message: &str| Error::Client { message: message.to_string() };
+        let early = match statement_type {
+            // Through the transaction's own handle, so its state stays known
+            StatementType::Commit | StatementType::Rollback => None,
+            StatementType::StartTransaction => Some(refuse(
+                "SET TRANSACTION is not run from the editor: pick the isolation in the transaction toolbar",
+            )),
+            _ if stmt.param_count() > 0 => Some(refuse("statements with parameters are not supported yet")),
+            _ => None,
+        };
+        if let Some(e) = early {
+            let _ = self.cli.free_statement(&mut stmt, FreeStmtOp::Drop);
+            return Err(e);
+        }
+        if let StatementType::Commit | StatementType::Rollback = statement_type {
+            let _ = self.cli.free_statement(&mut stmt, FreeStmtOp::Drop);
+            let retaining = sql
+                .to_ascii_uppercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|w| w == "RETAIN" || w == "RETAINING");
+            let how = match (statement_type, retaining) {
+                (StatementType::Commit, false) => TxEnd::Commit,
+                (StatementType::Commit, true) => TxEnd::CommitRetaining,
+                (_, false) => TxEnd::Rollback,
+                (_, true) => TxEnd::RollbackRetaining,
+            };
+            let started = Instant::now();
+            self.end(tx, how)?;
+            return Ok(Executed {
+                statement_type,
+                columns: vec![],
+                cursor: None,
+                rows: vec![],
+                records: Default::default(),
+                plan: None,
+                explained_plan: None,
+                prepare_ms,
+                execute_ms: ms(started),
+                ended: Some(how),
+                performance: None,
+            });
+        }
+
+        let dialect = self.dialect as u32;
+        let columns: Vec<ColumnInfo> = stmt.columns().iter().map(|c| ColumnInfo::describe(c, dialect)).collect();
+        let (plan, explained_plan) = if options.plan && statement_type.has_plan() {
+            // A plan that cannot be had does not stop the statement
+            self.cli.statement_plans(&mut stmt, explained).unwrap_or_default()
+        } else {
+            (None, None)
+        };
+
+        let result = self.run_prepared(tx, &mut stmt, statement_type, options);
+        let (rows, execute_ms, before) = match result {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = self.cli.free_statement(&mut stmt, FreeStmtOp::Drop);
+                return Err(e);
+            }
+        };
+        let records = stmt.records().into();
+
+        let mut executed = Executed {
+            statement_type,
+            columns,
+            cursor: None,
+            rows,
+            records,
+            plan,
+            explained_plan,
+            prepare_ms,
+            execute_ms,
+            ended: None,
+            performance: None,
+        };
+        if statement_type.has_cursor() {
+            let id = self.id();
+            self.cursors.insert(id, Cursor { tx, stmt, before });
+            executed.cursor = Some(id);
+        } else {
+            self.cli.free_statement(&mut stmt, FreeStmtOp::Drop)?;
+            if let Some(before) = before {
+                executed.performance = Some(self.performance_since(&before)?);
+            }
+        }
+        Ok(executed)
+    }
+
+    /// Executes, with the counter snapshot before it when asked for
+    fn run_prepared(
+        &mut self,
+        tx: TxId,
+        stmt: &mut rsfbclient_rust::StmtHandleData,
+        statement_type: StatementType,
+        options: ExecuteOptions,
+    ) -> Result<(Vec<Vec<Value>>, f64, Option<DatabaseCounters>)> {
+        let before = if options.performance { Some(self.cli.database_counters(&mut self.db)?) } else { None };
+        let tr = self.transactions.get_mut(&tx).ok_or_else(|| no_such("transaction"))?;
+        let started = Instant::now();
+        let mut rows = Vec::new();
+        // A procedure with outputs answers with its row, in the same round trip
+        if statement_type == StatementType::ExecProcedure && !stmt.columns().is_empty() {
+            let row = self.cli.execute2(&mut self.db, tr, stmt, vec![])?;
+            rows.push(row.into_iter().map(|c| c.value.into()).collect());
+        } else {
+            self.cli.execute(&mut self.db, tr, stmt, vec![])?;
+        }
+        Ok((rows, ms(started), before))
+    }
+
+    fn fetch(&mut self, cursor: CursorId, max: usize) -> Result<Fetched> {
+        let c = self.cursors.get_mut(&cursor).ok_or_else(|| no_such("cursor"))?;
+        let tr = self.transactions.get_mut(&c.tx).ok_or_else(|| no_such("transaction"))?;
+        let started = Instant::now();
+        let mut rows = Vec::with_capacity(max.min(4096));
+        let mut eof = false;
+        while rows.len() < max {
+            match self.cli.fetch(&mut self.db, tr, &mut c.stmt) {
+                Ok(Some(row)) => rows.push(row.into_iter().map(|c| c.value.into()).collect()),
+                Ok(None) => {
+                    eof = true;
+                    break;
+                }
+                Err(e) => {
+                    // A cursor that failed has nothing more to give
+                    let mut c = self.cursors.remove(&cursor).expect("looked up above");
+                    let _ = self.cli.free_statement(&mut c.stmt, FreeStmtOp::Drop);
+                    return Err(e.into());
+                }
+            }
+        }
+        let fetch_ms = ms(started);
+        let mut performance = None;
+        if eof {
+            let mut c = self.cursors.remove(&cursor).expect("looked up above");
+            if let Some(before) = &c.before {
+                performance = Some(self.performance_since(before)?);
+            }
+            self.cli.free_statement(&mut c.stmt, FreeStmtOp::Drop)?;
+        }
+        Ok(Fetched { rows, eof, fetch_ms, performance })
+    }
+
+    fn cursor_performance(&mut self, cursor: CursorId) -> Result<Option<Performance>> {
+        let c = self.cursors.get(&cursor).ok_or_else(|| no_such("cursor"))?;
+        match c.before.clone() {
+            Some(before) => Ok(Some(self.performance_since(&before)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn close_cursor(&mut self, cursor: CursorId) -> Result<()> {
+        if let Some(mut c) = self.cursors.remove(&cursor) {
+            self.cli.free_statement(&mut c.stmt, FreeStmtOp::Drop)?;
+        }
+        Ok(())
+    }
+
+    fn performance_since(&mut self, before: &DatabaseCounters) -> Result<Performance> {
+        let after = self.cli.database_counters(&mut self.db)?;
+        if after.tables.keys().any(|id| !self.relations.contains_key(id)) {
+            self.relations = self
+                .query("select rdb$relation_id, trim(rdb$relation_name) from rdb$relations", vec![])?
+                .rows
+                .into_iter()
+                .filter_map(|row| Some((row.first()?.as_i64()? as u16, row.get(1)?.as_str()?.to_string())))
+                .collect();
+        }
+        let relations = &self.relations;
+        Ok(Performance::between(before, &after, |id| {
+            relations.get(&id).cloned().unwrap_or_else(|| format!("relation {id}"))
+        }))
+    }
+
     fn detach(mut self) {
         // Best effort: the server reclaims everything when the socket closes.
+        // Open transactions roll back; detaching with them open would fail.
+        for (_, mut tr) in self.transactions.drain() {
+            let _ = self.cli.transaction_operation(&mut tr, TrOp::Rollback);
+        }
         let _ = self.cli.detach_database(&mut self.db);
     }
+}
+
+fn no_such(what: &str) -> Error {
+    Error::Client { message: format!("no such {what}: it has ended or was closed") }
+}
+
+fn ms(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
 }

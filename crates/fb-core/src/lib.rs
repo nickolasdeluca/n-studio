@@ -6,11 +6,16 @@
 //! until the connection's thread answers.
 
 mod connection;
+mod editor;
 mod error;
 mod params;
 mod value;
 
 pub use connection::{Connection, QueryResult, ServerInfo};
+pub use editor::{
+    ColumnInfo, ColumnKind, CursorId, ExecuteOptions, Executed, Fetched, Isolation, LockWait,
+    Performance, Records, StatementType, TablePerformance, TxEnd, TxId, TxOptions,
+};
 pub use error::{Error, Result};
 pub use params::{charset_names, AuthPlugin, ConnectParams, Dialect};
 pub use rsfbclient_core::Decimal;
