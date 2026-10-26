@@ -33,6 +33,7 @@ const MATRIX: &[Target] = &[
     Target { label: "fb3.0", port: 3053 },
     Target { label: "fb4.0", port: 3054 },
     Target { label: "fb5.0", port: 3055 },
+    Target { label: "fb3.0 (Srp)", port: 3056 },
 ];
 
 /// Text we wrote into the fixture; anything else coming back means the

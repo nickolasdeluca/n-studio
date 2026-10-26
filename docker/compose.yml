@@ -4,6 +4,7 @@
 #
 # Ports map version -> host port so the probe can hit all four at once:
 #   2.5 -> 3050   3.0 -> 3053   4.0 -> 3054   5.0 -> 3055
+#   3.0 with its default auth (Srp, wire encryption on) -> 3056
 #
 # 2.5 comes from jacobalberty/firebird; the official firebirdsql/firebird
 # images only go back to 3.0. Tags are major versions: latest patch of each.
@@ -25,6 +26,17 @@ services:
       FIREBIRD_ROOT_PASSWORD: masterkey
       FIREBIRD_DATABASE: fixture.fdb
       FIREBIRD_USE_LEGACY_AUTH: "true"
+    volumes:
+      - ./seed:/seed:ro
+
+  # fb30 above is set up the way 2.5-era applications need it (Legacy_Auth,
+  # no wire encryption); this one keeps 3.0's defaults.
+  fb30srp:
+    image: firebirdsql/firebird:3
+    ports: ["3056:3050"]
+    environment:
+      FIREBIRD_ROOT_PASSWORD: masterkey
+      FIREBIRD_DATABASE: fixture.fdb
     volumes:
       - ./seed:/seed:ro
 

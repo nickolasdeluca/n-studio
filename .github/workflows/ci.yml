@@ -39,6 +39,12 @@ jobs:
             isql: /opt/firebird/bin/isql
             db: /var/lib/firebird/data/fixture.fdb
             seeds: 00-fixture.sql 10-fb3.sql
+          - version: "3.0 (Srp)"
+            service: fb30srp
+            port: 3056
+            isql: /opt/firebird/bin/isql
+            db: /var/lib/firebird/data/fixture.fdb
+            seeds: 00-fixture.sql 10-fb3.sql
           - version: "4.0"
             service: fb40
             port: 3054
