@@ -319,6 +319,19 @@ fn build_dpb(
     dpb.freeze()
 }
 
+/// `fb_cancel_raise`: cancel the operation the attachment is running
+pub const FB_CANCEL_RAISE: u32 = 3;
+
+/// Cancel request (protocol 12, Firebird 2.5, and later). No reply.
+pub fn cancel(kind: u32) -> Bytes {
+    let mut req = BytesMut::with_capacity(8);
+
+    req.put_u32(WireOp::Cancel as u32);
+    req.put_u32(kind);
+
+    req.freeze()
+}
+
 /// Detach from the database request
 pub fn detach(db_handle: u32) -> Bytes {
     let mut tr = BytesMut::with_capacity(8);

@@ -4,8 +4,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use std::{
     collections::VecDeque,
     env,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::TcpStream,
+    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -420,6 +421,12 @@ impl RustFbClient {
             .unwrap_or_else(err_client_not_connected)
     }
 
+    /// A handle to cancel what this client runs, from another thread. `None`
+    /// when not connected, or before Firebird 2.5.
+    pub fn cancel_handle(&self) -> Option<CancelHandle> {
+        self.conn.as_ref().and_then(|conn| conn.cancel_handle())
+    }
+
     /// How many rows an executed statement selected, inserted, updated and
     /// deleted.
     pub fn statement_records(&mut self, stmt_handle: &mut StmtHandleData) -> Result<RecordCounts, FbError> {
@@ -455,7 +462,7 @@ impl FirebirdWireConnection {
             .map(|addr| addr.to_string())
             .unwrap_or_default();
 
-        let mut socket = FbStream::Plain(socket);
+        let mut socket = FbStream::new(socket)?;
 
         // Random key for the srp
         let srp_key: [u8; 32] = rand::random();
@@ -757,6 +764,15 @@ impl FirebirdWireConnection {
     }
 
     /// Disconnect from the database
+    /// A handle to cancel what this connection runs, from another thread.
+    /// `None` before protocol 12 (Firebird 2.5), which has no `op_cancel`.
+    pub fn cancel_handle(&self) -> Option<CancelHandle> {
+        match self.version {
+            ProtocolVersion::V10 | ProtocolVersion::V11 => None,
+            _ => Some(CancelHandle { write: self.socket.write.clone() }),
+        }
+    }
+
     pub fn detach_database(&mut self, db_handle: &mut DbHandle) -> Result<(), FbError> {
         self.socket.write_all(&detach(db_handle.0))?;
         self.socket.flush()?;
@@ -1506,14 +1522,7 @@ where
     socket.write_all(&crypt("Arc4", "Symmetric"))?;
     socket.flush()?;
 
-    socket = FbStream::Arc4(Arc4Stream::new(
-        match socket {
-            FbStream::Plain(s) => s,
-            _ => unreachable!("Stream was already encrypted!"),
-        },
-        &key,
-        buff.len(),
-    ));
+    socket.encrypt(&key);
 
     read_reply(&mut socket, buff, pending, &mut 0, op_response)??;
 
@@ -1546,37 +1555,91 @@ pub struct BlobHandle(u32);
 /// A blob Identificator
 pub struct BlobId(pub(crate) u64);
 
-/// Firebird tcp stream, may be encrypted
-enum FbStream {
-    /// Plaintext stream
-    Plain(TcpStream),
+/// The connection's socket. Reading belongs to the thread driving the
+/// connection; writing is shared with [`CancelHandle`], under a lock, so an
+/// `op_cancel` can go out while that thread waits on a reply. The write
+/// cipher lives under the same lock: every byte goes through it in the order
+/// it goes on the wire, and a message is written whole before another starts.
+struct FbStream {
+    read: TcpStream,
+    read_cipher: Option<Arc4>,
+    write: Arc<Mutex<WireWriter>>,
+}
 
-    /// Arc4 ecrypted stream
-    Arc4(Arc4Stream<TcpStream>),
+struct WireWriter {
+    stream: TcpStream,
+    cipher: Option<Arc4>,
+    /// Encrypted bytes on their way out
+    buf: Vec<u8>,
+}
+
+impl WireWriter {
+    fn send(&mut self, data: &[u8]) -> io::Result<()> {
+        match &mut self.cipher {
+            None => self.stream.write_all(data),
+            Some(cipher) => {
+                self.buf.clear();
+                self.buf.extend_from_slice(data);
+                cipher.apply(&mut self.buf);
+                self.stream.write_all(&self.buf)
+            }
+        }
+    }
+}
+
+impl FbStream {
+    fn new(stream: TcpStream) -> io::Result<Self> {
+        let write = stream.try_clone()?;
+        Ok(Self {
+            read: stream,
+            read_cipher: None,
+            write: Arc::new(Mutex::new(WireWriter { stream: write, cipher: None, buf: Vec::new() })),
+        })
+    }
+
+    /// Arc4 from here on, both ways (wire protocol 13)
+    fn encrypt(&mut self, key: &[u8]) {
+        self.read_cipher = Some(Arc4::new(key));
+        self.write.lock().unwrap_or_else(|e| e.into_inner()).cipher = Some(Arc4::new(key));
+    }
 }
 
 impl Read for FbStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            FbStream::Plain(s) => s.read(buf),
-            FbStream::Arc4(s) => s.read(buf),
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.read.read(buf)?;
+        if let Some(cipher) = &mut self.read_cipher {
+            cipher.apply(&mut buf[..n]);
         }
+        Ok(n)
     }
 }
 
+/// Every write is a whole message: written in full, under the lock
 impl Write for FbStream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self {
-            FbStream::Plain(s) => s.write(buf),
-            FbStream::Arc4(s) => s.write(buf),
-        }
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write.lock().unwrap_or_else(|e| e.into_inner()).send(buf)?;
+        Ok(buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            FbStream::Plain(s) => s.flush(),
-            FbStream::Arc4(s) => s.flush(),
-        }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Cancels what a connection is running, from another thread. The
+/// statement it was executing or fetching fails with "operation was
+/// cancelled"; the attachment and the transaction carry on.
+#[derive(Clone)]
+pub struct CancelHandle {
+    write: Arc<Mutex<WireWriter>>,
+}
+
+impl CancelHandle {
+    /// Sends `op_cancel` with `fb_cancel_raise`. The server sends no reply
+    /// of its own: the cancelled operation's reply says it.
+    pub fn cancel(&self) -> Result<(), FbError> {
+        self.write.lock().unwrap_or_else(|e| e.into_inner()).send(&cancel(FB_CANCEL_RAISE))?;
+        Ok(())
     }
 }
 

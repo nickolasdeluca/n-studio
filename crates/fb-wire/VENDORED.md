@@ -64,6 +64,12 @@ in the workspace manifest.
   statement, selects included. The two requests now go out together; the
   full counts stay on the statement (`StmtHandleData::records`).
   `RustFbClient::statement_plans` likewise asks for both plans at once.
+- **`op_cancel`, and a socket shared for writing.** Reads stay with the
+  thread driving the connection; writes, and the Arc4 write cipher, sit behind
+  a lock that `CancelHandle` shares, so a cancel can go out while that thread
+  waits on a reply. Each message is written whole, under the lock. This also
+  fixes upstream's `Arc4Stream`, which advanced the cipher over bytes a short
+  write had not sent. `RustFbClient::cancel_handle` (protocol 12 and later).
 - **A smaller buffer for `op_info_database`.** Firebird 2.5 overflows a
   65535-byte one while adding its own items, and answers with a data length
   of 0xFFFFFFFF; the reader then waited forever. 32767 for database info.
