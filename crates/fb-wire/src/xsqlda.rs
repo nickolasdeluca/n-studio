@@ -99,7 +99,6 @@ impl XSqlVar {
     pub fn coerce(&mut self) -> Result<(), FbError> {
         // Remove nullable type indicator
         let sqltype = self.sqltype & (!1);
-        let sqlsubtype = self.sqlsubtype;
 
         // var.null_ind = 1;
 
@@ -153,7 +152,8 @@ impl XSqlVar {
                 self.sqltype = ibase::SQL_TIMESTAMP as i16 + 1;
             }
 
-            ibase::SQL_BLOB if sqlsubtype <= 1 => {
+            // Any subtype: only TEXT (1) is read as text, the rest as bytes
+            ibase::SQL_BLOB => {
                 self.sqltype = ibase::SQL_BLOB as i16 + 1;
             }
 

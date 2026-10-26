@@ -55,7 +55,8 @@ in the workspace manifest.
 - **Column descriptions and row counts.** `StmtHandleData::columns()` keeps
   each output column as the server described it (`ColumnDesc`: declared type,
   subtype or charset, scale, length, nullability, source table and field),
-  since `coerce` rewrites the types the client reads.
+  since `coerce` rewrites the types the client reads; `param_count()` says
+  how many parameters it takes.
   `RustFbClient::statement_records` reads `isc_info_sql_records`: the rows a
   statement selected, inserted, updated and deleted.
 - **One round trip per execute.** Upstream asked for the affected-row count
@@ -63,4 +64,7 @@ in the workspace manifest.
   statement, selects included. The two requests now go out together; the
   full counts stay on the statement (`StmtHandleData::records`).
   `RustFbClient::statement_plans` likewise asks for both plans at once.
+- **Blobs of every subtype.** Upstream refused any column whose blob subtype
+  was not 0 or 1, so a `select *` over most system tables failed (BLR, ACL and
+  format blobs). Subtype 1 is read as text, every other subtype as bytes.
 - **`trace()`**, gated behind `FBW_TRACE=1`, dumping wire packets.

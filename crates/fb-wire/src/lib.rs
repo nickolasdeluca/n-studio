@@ -15,6 +15,7 @@ pub use client::{
     TrHandle,
 };
 pub use info::{DatabaseCounters, RecordCounts, TableCounters};
+pub use xsqlda::ColumnDesc;
 
 #[cfg(feature = "fuzz_testing")]
 pub use self::{blr::*, wire::*, xsqlda::*};

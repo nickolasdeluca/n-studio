@@ -160,6 +160,11 @@ impl StmtHandleData {
         &self.columns
     }
 
+    /// How many `?` parameters the statement takes
+    pub fn param_count(&self) -> usize {
+        self.param_count
+    }
+
     /// The row counts the last execute reported, read with it
     pub fn records(&self) -> RecordCounts {
         self.records

@@ -733,7 +733,7 @@ pub fn parse_sql_response(
                 }
             }
 
-            ibase::SQL_BLOB if var.sqlsubtype <= 1 => {
+            ibase::SQL_BLOB => {
                 let id = resp.get_u64()?;
 
                 let null = read_null(resp, col_index)?;
@@ -745,7 +745,7 @@ pub fn parse_sql_response(
                     )))
                 } else {
                     data.push(ParsedColumn::Blob {
-                        binary: var.sqlsubtype == 0,
+                        binary: var.sqlsubtype != 1,
                         id: BlobId(id),
                         col_name: var.alias_name.clone(),
                     })
