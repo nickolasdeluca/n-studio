@@ -4,6 +4,8 @@ members = [
     "crates/fb-core",
     "crates/fb-wire",
     "spikes/fb-probe",
+    "spikes/grid-shell/src-tauri",
+    "spikes/grid-slint",
 ]
 
 [workspace.package]

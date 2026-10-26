@@ -1,0 +1,23 @@
+[package]
+name = "grid-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rsfbclient-core = { workspace = true }
+# The vendored crates/fb-wire, via [patch.crates-io].
+rsfbclient-rust = { workspace = true }
+
+[features]
+# Serve the built frontend from the binary instead of a dev server. Always on:
+# the spike is only ever run as a built binary.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

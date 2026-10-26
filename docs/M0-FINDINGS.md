@@ -238,6 +238,94 @@ Notes for `fb-core`:
   widens a count past 2^31 to 8 bytes with nothing marking it; the parser
   reports that case as an error instead of misreading every entry after it.
 
+## 10. Grid spike — Tauri 2 + virtualized grid (2026-10-26)
+
+`spikes/grid-shell`: Tauri 2, React 19, TanStack Virtual on both axes. A Rust
+cursor fetches forward 200 rows at a time as the grid scrolls and keeps every
+fetched row for scroll-back; the JS side holds at most 100 pages. Runs
+unattended with `FBX_BENCH=synthetic:<rows>:<cols>` or `FBX_BENCH=sql:<select>`.
+
+| Result | Jump to random row, p50 / p95 | Scroll frame p50 / p95 | Blank frames | Shell RSS | WebKit Δ |
+|---|---|---|---|---|---|
+| 1k × 6 (baseline) | 19 / 29 ms | 17 / 18 ms | 0 | 62 MB | 163 MB |
+| 1M × 6 | 38–44 / 51–55 ms | 17 / 18–19 ms | 0 | 337 MB¹ | ~300 MB |
+| 1M × 30 | 48–55 / 59–68 ms | 17–20 / 21–24 ms | 0 | 1370 → **761 MB**² | ~400 MB |
+| PRODUTO, 174 cols, live | 28 / 57 ms | 17 / 19 ms | 0 | 81 MB | ~260 MB |
+
+"Jump" is from setting the scroll position to the first frame with every
+visible row filled in. ¹ per-cell store; ² per-cell → per-page store.
+
+**The WebView is not the risk the plan feared.** 60 fps with no blank frames
+at 1M rows, jumps resolved in two or three frames, and the JS heap bounded by
+the page cache however large the result. Wide results cost frame time
+gradually (30 columns: p95 ~22 ms), not abruptly. Kept: the plan's stack.
+
+**The scroll-back store is the real memory cost**, and it is on the Rust side.
+One heap allocation per cell cost ~45 bytes of overhead each, 1.3 GB at
+1M × 30. One text buffer plus a 4-byte end offset per cell, per 200-row page,
+brings it to ~23 bytes per cell — about the size of the text itself. `fb-core`
+starts from the paged layout. Beyond that the lever is policy, not layout:
+IBExpert also keeps every fetched row, and a result nobody scrolls through
+should not be fetched (fetch on scroll, explicit "fetch all").
+
+**IPC is not the bottleneck.** ~0.9 ms per 200-row request (~210k rows/s at
+6 columns, 22 KB of JSON per page); a live server delivers 1.5–4k rows/s on
+wide tables. JSON stays.
+
+**End to end** (the M0 exit criterion): `select * from PRODUTO` connects,
+prepares, streams into the grid, and the Performance panel shows the plan —
+including the subqueries behind PRODUTO's computed columns against `NCM` and
+`PRODUTO_CODIGO_BARRAS` — and per-table reads that account for them.
+
+Measurement caveats:
+
+- macOS stops delivering frames to an occluded window. The benchmark drops
+  samples that span a visibility change or a >1 s stall and counts them, but a
+  window covered from launch simply stalls. Two `sql:` runs stalled that way;
+  occlusion is the likeliest cause and is not proven. Run it with the window
+  in front.
+- The paged-store figures come from a debug build: the release build stopped
+  compiling mid-session, with `rustc-LLVM ERROR: out of memory` for *any*
+  optimized crate (`memchr` included) on a host with free memory and zero swap.
+  Memory layout does not depend on the optimization level; IPC speed does.
+
+## 11. Grid spike — Slint 1.18 (2026-10-26)
+
+`spikes/grid-slint`: the same grid in Slint, to compare against §10 before
+committing to Tauri. Rust virtualizes both axes and fills a fixed ring of row
+slots straight from the shared `spikes/rowstore` page store; nothing crosses a
+process or a serializer. `FBX_BENCH=synthetic:<rows>:<cols>`, same phases as
+grid-shell; scrolling is driven by a 60 Hz timer, the way input arrives.
+
+| Result (release) | Jump p50 / p95 | Scroll frame p50 / p95 | Frames > 20 ms (of 600) | Render p50 | RSS |
+|---|---|---|---|---|---|
+| FemtoVG 1M × 6 | 17 / 35 ms | 17 / 33 ms | 114 | 10.5 ms | 205 MB |
+| FemtoVG 1M × 30 | 29 / 36 ms | 17 / 32 ms | 142 | 11.7 ms | 688 MB |
+| Skia-OpenGL 1M × 6 | 17 / 29 ms | 17 / 32 ms | 183 | 7.9 ms | 205 MB |
+| Skia-OpenGL 1M × 30 | 17 / 33 ms | 17 / 31 ms | 173 | 8.4 ms | 689 MB |
+
+**Slint wins jumps and memory.** A jump lands in one frame (Tauri: two or
+three), and with no WebKit process the total is 1/3 to 2/3 of Tauri's.
+
+**Slint loses continuous scrolling.** 20–30% of frames miss vsync (p95 ~32 ms,
+a doubled frame) where Tauri holds 18–24 ms. Render alone is 8–12 ms; the rest
+is likely the whole-window redraw and per-slot model updates. Probably
+tunable, not proven.
+
+**The deciding factor is the SQL editor.** Nothing for Slint comes near
+CodeMirror 6. `slint-codeeditor` is an MVP (no selection, undo or clipboard),
+`slint-editor` stalled in 2023, Slint's `StyledText` is display-only (selection
+is an open PR, slint-ui/slint#13985; #9560 excludes editing). `cosmic-text`
+(`SyntaxEditor`, undo, Vi mode; powers COSMIC Edit) is the only viable base,
+but input, IME, scrolling, completion popups, multi-cursor, folding and search
+would all be ours. `parley`'s `PlainEditor` takes a single style, so no
+highlighting. **Kept: Tauri 2.**
+
+Caveat: the Skia-Metal renderer never calls the rendering notifier, so it
+cannot be measured this way; the benchmark has a 5 s no-frame watchdog that
+reports this instead of hanging. Measured with `SLINT_BACKEND=winit-femtovg`
+and `winit-skia-opengl` (`--features skia`).
+
 ## 5. Container matrix — still blocked
 
 Pending: the 2.5 / 3.0 / 4.0 / 5.0 matrix. (Reading the performance block from a real
@@ -273,6 +361,6 @@ The driver work is no longer a background task running parallel to the UI. Order
 
 ## 7. Not blocked, proceeding
 
-- Tauri shell + 1M-row virtualized grid — synthetic rows, needs no server.
+- ~~Tauri shell + 1M-row virtualized grid~~ — done, §10; Slint compared, §11.
 - `docker/compose.yml` for the version matrix, ready for whenever a runtime exists.
 - Workspace scaffold, MIT license.

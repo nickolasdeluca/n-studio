@@ -132,6 +132,14 @@ pub struct StmtHandleData {
     cursor_eof: bool,
 }
 
+impl StmtHandleData {
+    /// Output column names (aliases), in select-list order. Known from the
+    /// prepare, so a grid can draw its header before any row arrives.
+    pub fn column_names(&self) -> impl Iterator<Item = &str> {
+        self.xsqlda.iter().map(|v| v.alias_name.as_str())
+    }
+}
+
 impl RustFbClient {
     ///Construct a new instance of the pure rust client
     pub fn new(charset: Charset) -> Self {

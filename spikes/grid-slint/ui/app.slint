@@ -1,0 +1,134 @@
+// The same grid as spikes/grid-shell, in Slint. Rust decides which rows and
+// columns are visible and fills a fixed set of row slots; Slint only draws
+// them. Nothing crosses a process or a serializer: cells come straight out of
+// the Rust row store.
+
+import { ScrollView } from "std-widgets.slint";
+
+export struct CellData {
+    text: string,
+    is-null: bool,
+}
+
+export struct RowData {
+    // Row number in the result, 0-based. -1 for an unused slot.
+    index: int,
+    // Result column of `cells[0]`: only the visible columns are in `cells`.
+    first-col: int,
+    cells: [CellData],
+}
+
+export global Palette {
+    out property <brush> background: #ffffff;
+    out property <brush> foreground: #1d1f23;
+    out property <brush> muted: #7a7f88;
+    out property <brush> line: #e3e5e8;
+    out property <brush> head: #f4f5f7;
+    out property <brush> null: #a0a4ab;
+}
+
+export component AppWindow inherits Window {
+    title: "fbexpert — grid spike (Slint)";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    background: Palette.background;
+    default-font-size: 12px;
+
+    in property <[string]> columns;
+    in property <[RowData]> slots;
+    in property <int> row-count;
+    in property <string> status;
+
+    in property <length> row-height: 22px;
+    in property <length> col-width: 150px;
+    in property <length> gutter-width: 72px;
+
+    // Scroll position, readable and settable from Rust (the benchmark jumps).
+    in-out property <length> scroll-y <=> grid.content-y;
+    in-out property <length> scroll-x <=> grid.content-x;
+    out property <length> view-width: grid.visible-width;
+    out property <length> view-height: grid.visible-height;
+
+    // Fired when the visible window moves, so Rust can refill the slots.
+    callback viewport-changed();
+
+    VerticalLayout {
+        // Header: one label per column, shifted with the horizontal scroll.
+        Rectangle {
+            height: root.row-height;
+            background: Palette.head;
+            clip: true;
+
+            for name[i] in root.columns: Text {
+                x: root.gutter-width + i * root.col-width + root.scroll-x;
+                width: root.col-width;
+                height: parent.height;
+                text: name;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle {
+                x: 0;
+                width: root.gutter-width;
+                background: Palette.head;
+                Text { text: "#"; color: Palette.muted; }
+            }
+        }
+
+        grid := ScrollView {
+            content-width: root.gutter-width + root.columns.length * root.col-width;
+            content-height: root.row-count * root.row-height;
+
+            changed content-y => { root.viewport-changed(); }
+            changed content-x => { root.viewport-changed(); }
+            changed visible-height => { root.viewport-changed(); }
+            changed visible-width => { root.viewport-changed(); }
+
+            for row in root.slots: Rectangle {
+                visible: row.index >= 0;
+                y: row.index * root.row-height;
+                height: root.row-height;
+                width: grid.content-width;
+
+                for cell[k] in row.cells: Text {
+                    x: root.gutter-width + (row.first-col + k) * root.col-width + 6px;
+                    width: root.col-width - 12px;
+                    height: root.row-height;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    text: cell.is-null ? "<null>" : cell.text;
+                    color: cell.is-null ? Palette.null : Palette.foreground;
+                    font-italic: cell.is-null;
+                }
+
+                // Row number gutter, pinned to the left edge of the view.
+                Rectangle {
+                    x: -grid.content-x;
+                    width: root.gutter-width;
+                    background: Palette.head;
+                    Text {
+                        x: 0;
+                        width: parent.width - 6px;
+                        text: row.index + 1;
+                        color: Palette.muted;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    background: Palette.line;
+                }
+            }
+        }
+
+        Text {
+            height: 20px;
+            text: root.status;
+            color: Palette.muted;
+            vertical-alignment: center;
+        }
+    }
+}

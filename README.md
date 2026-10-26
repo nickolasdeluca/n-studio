@@ -16,6 +16,9 @@ have established so far.
 crates/fb-core     connection actor, transactions, cursors, type mapping
 crates/fb-wire     vendored pure-Rust Firebird wire protocol, extended
 spikes/fb-probe    M0 driver validation tool + raw handshake dumper
+spikes/grid-shell  M0 Tauri shell + virtualized grid, with an unattended benchmark
+spikes/grid-slint  M0 the same grid in Slint, for comparison
+spikes/rowstore    Paged scroll-back row store shared by both grid spikes
 docker/            Firebird 2.5/3.0/4.0/5.0 test matrix and fixture schema
 docs/              plan and spike findings
 ```
