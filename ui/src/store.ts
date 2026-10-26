@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { useEditors } from "./editors";
 import { t } from "./i18n";
+import type { ParamRequest } from "./params";
 import { activeTabs, type PendingAction } from "./pending";
 
 interface Loadable<T> {
@@ -36,7 +37,9 @@ export type Dialog =
   | { type: "password"; id: string; error?: string }
   | { type: "delete"; id: string }
   /** Editors whose transactions an action would end: commit or roll back? */
-  | { type: "pending"; tabs: string[]; action: PendingAction };
+  | { type: "pending"; tabs: string[]; action: PendingAction }
+  /** A statement's parameter values, which a run waits for */
+  | { type: "params"; request: ParamRequest };
 
 /** What the tree has selected: a registration, and maybe a kind and object */
 export interface Selection {
@@ -204,6 +207,9 @@ export const useStore = create<State>()((set, get) => ({
   },
 
   openDialog(dialog) {
+    // A run waiting for its parameters must not wait forever
+    const replaced = get().dialog;
+    if (replaced?.type === "params" && replaced !== dialog) replaced.request.done(null);
     set({ dialog });
   },
 

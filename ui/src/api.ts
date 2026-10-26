@@ -209,6 +209,13 @@ export interface StatementRange {
   unterminatedLiteral: boolean;
 }
 
+/** A statement with its `:name`s turned into `?`, and each `?`'s name */
+export interface Parameters {
+  sql: string;
+  /** `null` for a `?` */
+  names: (string | null)[];
+}
+
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
@@ -226,14 +233,22 @@ export const api = {
   editorBegin: (id: string, options: TxOptions) => invoke<number>("editor_begin", { id, options }),
   editorEnd: (id: string, tx: number, how: TxEnd) => invoke<void>("editor_end", { id, tx, how }),
   editorCancel: (id: string) => invoke<boolean>("editor_cancel", { id }),
-  editorExecute: (id: string, tx: number, sql: string, options: { plan: boolean; performance: boolean }, first: number) =>
-    invoke<Executed>("editor_execute", { id, tx, sql, options, first }),
+  editorDescribe: (id: string, tx: number, sql: string) => invoke<ColumnInfo[]>("editor_describe", { id, tx, sql }),
+  editorExecute: (
+    id: string,
+    tx: number,
+    sql: string,
+    params: (string | null)[],
+    options: { plan: boolean; performance: boolean },
+    first: number,
+  ) => invoke<Executed>("editor_execute", { id, tx, sql, params, options, first }),
   resultFetch: (result: number, max: number) => invoke<ResultView>("result_fetch", { result, max }),
   resultRows: (result: number, from: number, count: number) => invoke<Cell[][]>("result_rows", { result, from, count }),
   resultBlob: (result: number, row: number, col: number, max: number) =>
     invoke<BlobView | null>("result_blob", { result, row, col, max }),
   resultClose: (result: number) => invoke<void>("result_close", { result }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
+  statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };
 
 export function serverSummary(s: ServerInfo): string {

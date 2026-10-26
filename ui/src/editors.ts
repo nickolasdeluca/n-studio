@@ -15,6 +15,7 @@ import {
   type TxOptions,
 } from "./api";
 import { t } from "./i18n";
+import { askParams, forgetParams, paramFields } from "./params";
 
 /** Rows fetched with the execute, and per page as the grid scrolls */
 export const PAGE = 200;
@@ -129,6 +130,7 @@ export const useEditors = create<State>()((set, get) => {
       const tab = get().tabs[id];
       if (!tab) return;
       closeResult(tab);
+      forgetParams(id);
       set((s) => {
         const tabs = { ...s.tabs };
         delete tabs[id];
@@ -167,11 +169,9 @@ export const useEditors = create<State>()((set, get) => {
             log(id, "info", t("Skipped an isql command: {sql}", { sql: summary(statement.sql) }), range);
             continue;
           }
-          const ok = await runOne(id, statement.sql, single, range);
-          if (!ok) {
-            onError?.(range);
-            break;
-          }
+          const ran = await runOne(id, statement.sql, single, range);
+          if (ran === "failed") onError?.(range);
+          if (ran !== "ok") break;
         }
       } catch (e) {
         log(id, "error", errorText(e));
@@ -249,20 +249,40 @@ export const useEditors = create<State>()((set, get) => {
     },
   };
 
-  /** Runs one statement, starting a transaction first if there is none */
-  async function runOne(id: string, sql: string, detailed: boolean, range: { from: number; to: number }) {
+  /** Runs one statement, starting a transaction first if there is none,
+   *  and asking its parameters' values if it has any */
+  async function runOne(
+    id: string,
+    sql: string,
+    detailed: boolean,
+    range: { from: number; to: number },
+  ): Promise<"ok" | "failed" | "cancelled"> {
     let tab = get().tabs[id];
-    if (!tab) return false;
+    if (!tab) return "failed";
     try {
       if (tab.tx === null) {
         const tx = await api.editorBegin(tab.registration, tab.txOptions);
         patch(id, { tx });
         tab = get().tabs[id]!;
       }
+      // No ? and no : is no parameter, without asking the backend
+      let bound = { sql, names: [] as (string | null)[] };
+      if (/[?:]/.test(sql)) bound = await api.statementParameters(sql);
+      let params: (string | null)[] = [];
+      if (bound.names.length > 0) {
+        const types = await api.editorDescribe(tab.registration, tab.tx!, bound.sql);
+        const values = await askParams(id, paramFields(bound.names, types));
+        if (!values) {
+          log(id, "info", t("Not executed: no parameter values given."), range);
+          return "cancelled";
+        }
+        params = values;
+      }
       const executed = await api.editorExecute(
         tab.registration,
         tab.tx!,
-        sql,
+        bound.sql,
+        params,
         { plan: detailed, performance: detailed },
         PAGE,
       );
@@ -276,13 +296,13 @@ export const useEditors = create<State>()((set, get) => {
           bottom: tab.bottom === "messages" && executed.result ? "results" : tab.bottom,
         }));
       }
-      return true;
+      return "ok";
     } catch (e) {
       const where = summary(sql);
       log(id, "error", `${errorText(e)}\n${t("Statement: {sql}", { sql: where })}`, range);
       patch(id, { bottom: "messages" });
       if (isAppError(e) && e.kind === "not_connected") patch(id, { tx: null });
-      return false;
+      return "failed";
     }
   }
 });

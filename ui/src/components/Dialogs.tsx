@@ -2,6 +2,7 @@ import { useState } from "react";
 import { errorText } from "../api";
 import { panelTitle } from "../dock";
 import { t } from "../i18n";
+import type { ParamRequest, ParamValue } from "../params";
 import { activeTabs, resolve, type PendingAction } from "../pending";
 import { useStore } from "../store";
 import { Button, Field, inputClass, Modal } from "./Modal";
@@ -20,7 +21,79 @@ export function Dialogs() {
       return <DeleteDialog id={dialog.id} />;
     case "pending":
       return <PendingDialog tabs={dialog.tabs} action={dialog.action} />;
+    case "params":
+      return <ParamsDialog request={dialog.request} />;
   }
+}
+
+/** What a value of each kind looks like, as the server reads it from text */
+const hints: Partial<Record<string, string>> = {
+  date: "YYYY-MM-DD",
+  time: "HH:MM:SS",
+  timestamp: "YYYY-MM-DD HH:MM:SS",
+  boolean: "TRUE / FALSE",
+};
+
+function ParamsDialog({ request }: { request: ParamRequest }) {
+  const [values, setValues] = useState<Record<string, ParamValue>>(() =>
+    Object.fromEntries(request.fields.map((f) => [f.key, request.initial[f.key] ?? { value: "", isNull: false }])),
+  );
+  const set = (key: string, v: Partial<ParamValue>) => setValues((vs) => ({ ...vs, [key]: { ...vs[key], ...v } }));
+  const finish = (result: Record<string, ParamValue> | null) => {
+    // Closed first, so the store does not cancel the request it replaces
+    useStore.setState({ dialog: null });
+    request.done(result);
+  };
+
+  return (
+    <Modal
+      title={t("Parameters")}
+      width="w-[30rem]"
+      onCancel={() => finish(null)}
+      onSubmit={() => finish(values)}
+      footer={
+        <>
+          <span className="flex-1 text-muted">{t("Values are sent as text; the server converts them.")}</span>
+          <Button onClick={() => finish(null)}>{t("Cancel")}</Button>
+          <Button primary submit>
+            {t("Execute")}
+          </Button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-x-2.5 gap-y-2">
+        {request.fields.map((f, i) => {
+          const v = values[f.key];
+          return (
+            <div key={f.key} className="contents">
+              <label htmlFor={`param-${i}`} className="font-mono" title={f.type.typeName}>
+                {f.key.startsWith("?") ? f.key : `:${f.key}`}
+                <span className="ml-2 font-sans text-[11px] text-faint">{f.type.typeName}</span>
+              </label>
+              <input
+                id={`param-${i}`}
+                className={`${inputClass} font-mono`}
+                value={v.isNull ? "" : v.value}
+                placeholder={v.isNull ? "NULL" : hints[f.type.kind]}
+                disabled={v.isNull}
+                data-autofocus={i === 0 ? true : undefined}
+                onChange={(e) => set(f.key, { value: e.target.value })}
+              />
+              <label className="flex items-center gap-1.5 text-muted">
+                <input
+                  type="checkbox"
+                  checked={v.isNull}
+                  onChange={(e) => set(f.key, { isNull: e.target.checked })}
+                  className="accent-[var(--accent)]"
+                />
+                NULL
+              </label>
+            </div>
+          );
+        })}
+      </div>
+    </Modal>
+  );
 }
 
 function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction }) {

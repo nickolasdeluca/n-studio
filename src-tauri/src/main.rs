@@ -31,12 +31,14 @@ fn main() {
             editor::editor_begin,
             editor::editor_end,
             editor::editor_cancel,
+            editor::editor_describe,
             editor::editor_execute,
             editor::result_fetch,
             editor::result_rows,
             editor::result_blob,
             editor::result_close,
             editor::sql_statements,
+            editor::statement_parameters,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

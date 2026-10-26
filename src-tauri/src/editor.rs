@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_core::{
     ColumnInfo, Connection, CursorId, ExecuteOptions, Performance, Records, StatementType, TxEnd, TxId, TxOptions,
+    Value,
 };
 use serde::Serialize;
 use tauri::AppHandle;
@@ -165,20 +166,30 @@ pub async fn editor_cancel(app: AppHandle, id: String) -> AppResult<bool> {
     blocking(app, move |state| Ok(state.session(&id)?.cancel()?)).await
 }
 
-/// Runs one statement in `tx` and, for a select, fetches its first `first`
-/// rows in the same call
+/// The parameters of `sql` as the server declares them, for the editor to
+/// ask their values with
+#[tauri::command]
+pub async fn editor_describe(app: AppHandle, id: String, tx: TxId, sql: String) -> AppResult<Vec<ColumnInfo>> {
+    blocking(app, move |state| Ok(state.session(&id)?.describe_params(tx, &sql)?)).await
+}
+
+/// Runs one statement in `tx`, a value for each `?` in `params` (as text,
+/// which the server converts; `None` for NULL), and, for a select, fetches
+/// its first `first` rows in the same call
 #[tauri::command]
 pub async fn editor_execute(
     app: AppHandle,
     id: String,
     tx: TxId,
     sql: String,
+    params: Vec<Option<String>>,
     options: ExecuteOptions,
     first: usize,
 ) -> AppResult<ExecutedView> {
     blocking(app, move |state| {
         let conn = state.session(&id)?;
-        let executed = conn.execute(tx, &sql, options)?;
+        let params = params.into_iter().map(|p| p.map_or(Value::Null, Value::Text)).collect();
+        let executed = conn.execute(tx, &sql, params, options)?;
         if executed.ended.is_some_and(TxEnd::closes) {
             state.results.transaction_ended(&id, tx);
         }
@@ -343,6 +354,12 @@ pub async fn sql_statements(text: String) -> Vec<StatementRange> {
             unterminated_literal: s.unterminated_literal,
         })
         .collect()
+}
+
+/// A statement's parameters: its `:name`s turned into `?`, and each one's name
+#[tauri::command]
+pub async fn statement_parameters(sql: String) -> fb_sql::Parameters {
+    fb_sql::parameters(&sql)
 }
 
 /// Byte offsets to UTF-16 ones in a single pass, for offsets that only grow

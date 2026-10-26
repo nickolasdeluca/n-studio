@@ -134,8 +134,10 @@ execute-to-cursor, streamed results grid with the record navigator and `<null>`
 rendering, Messages / Query columns / Explain plan bottom tabs, Performance Analysis
 tab, transaction toolbar + TIL selector, status bar. This is screenshots 2 and 3.
 
-In place: all of the above. Still to come before M2 closes: sorting and export in
-the grid, and parameters (`?`, `:name`).
+In place: all of the above, plus parameters: `?` and `:name` are asked for in a
+dialog that shows each one's declared type, remembered per tab; `:name` is bound
+by position and is left alone in PSQL, where it is a variable. Still to come
+before M2 closes: sorting and export in the grid.
 
 ### M3 — Object viewers (read-only)
 Per-object-type editors with the IBExpert tab layout: Fields, Constraints, Indices,

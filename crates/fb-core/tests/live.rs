@@ -95,7 +95,7 @@ fn an_editor_select_fetches_in_pages() {
 
     let tx = conn.begin(read_only()).unwrap();
     let executed = conn
-        .execute(tx, "select rdb$relation_id, rdb$relation_name from rdb$relations", ExecuteOptions::default())
+        .execute(tx, "select rdb$relation_id, rdb$relation_name from rdb$relations", vec![], ExecuteOptions::default())
         .unwrap();
     assert_eq!(executed.statement_type, StatementType::Select);
     assert_eq!(executed.columns.len(), 2);
@@ -125,9 +125,9 @@ fn an_editor_select_fetches_in_pages() {
     assert!(conn.fetch(cursor, 1).is_err());
 
     // COMMIT typed in the editor ends the editor's transaction
-    let committed = conn.execute(tx, "commit", ExecuteOptions::default()).unwrap();
+    let committed = conn.execute(tx, "commit", vec![], ExecuteOptions::default()).unwrap();
     assert_eq!(committed.ended, Some(TxEnd::Commit));
-    assert!(conn.execute(tx, "select 1 from rdb$database", ExecuteOptions::default()).is_err());
+    assert!(conn.execute(tx, "select 1 from rdb$database", vec![], ExecuteOptions::default()).is_err());
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn ending_a_transaction_closes_its_cursors() {
     let Some(conn) = connect() else { return };
     let tx = conn.begin(read_only()).unwrap();
     let options = ExecuteOptions { plan: false, performance: false };
-    let cursor = conn.execute(tx, "select * from rdb$relations", options).unwrap().cursor.unwrap();
+    let cursor = conn.execute(tx, "select * from rdb$relations", vec![], options).unwrap().cursor.unwrap();
     assert_eq!(conn.fetch(cursor, 1).unwrap().rows.len(), 1);
 
     // Retaining keeps both
@@ -152,20 +152,46 @@ fn the_editor_refuses_what_it_cannot_run_and_carries_on() {
     let Some(conn) = connect() else { return };
     let tx = conn.begin(read_only()).unwrap();
     let options = ExecuteOptions::default();
-    let refused = |sql: &str| match conn.execute(tx, sql, options) {
+    let refused = |sql: &str| match conn.execute(tx, sql, vec![], options) {
         Err(Error::Client { message }) => message,
         other => panic!("{sql}: expected a refusal, got {other:?}"),
     };
     let m = refused("select * from rdb$relations where rdb$relation_id = ?");
-    assert!(m.contains("parameters"), "{m}");
+    assert!(m.contains("1 parameter(s), 0 given"), "{m}");
     assert!(refused("set transaction read committed").contains("SET TRANSACTION"));
-    assert!(matches!(conn.execute(tx, "select * from NO_SUCH_TABLE_HERE", options), Err(Error::Server { .. })));
+    assert!(matches!(conn.execute(tx, "select * from NO_SUCH_TABLE_HERE", vec![], options), Err(Error::Server { .. })));
 
     // Still usable after all that
-    let executed = conn.execute(tx, "execute block returns (x integer) as begin x = 7; suspend; end", options).unwrap();
+    let executed =
+        conn.execute(tx, "execute block returns (x integer) as begin x = 7; suspend; end", vec![], options).unwrap();
     let page = conn.fetch(executed.cursor.unwrap(), 10).unwrap();
     assert_eq!(page.rows, vec![vec![Value::Integer(7)]]);
     assert!(page.eof);
+    conn.end(tx, TxEnd::Rollback).unwrap();
+}
+
+#[test]
+fn editor_statements_take_parameters() {
+    let Some(conn) = connect() else { return };
+    let tx = conn.begin(read_only()).unwrap();
+    let options = ExecuteOptions::default();
+    let sql = "select rdb$relation_id from rdb$relations where rdb$relation_id = ? and rdb$relation_name <> ?";
+    let params = conn.describe_params(tx, sql).unwrap();
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0].kind, ColumnKind::Integer);
+    assert_eq!(params[1].kind, ColumnKind::Text);
+
+    // Text for an integer: the server converts it
+    let executed = conn.execute(tx, sql, vec!["0".into(), Value::Text("NO SUCH NAME".into())], options).unwrap();
+    let page = conn.fetch(executed.cursor.unwrap(), 10).unwrap();
+    assert_eq!(page.rows, vec![vec![Value::Integer(0)]]);
+
+    let executed = conn.execute(tx, sql, vec![Value::Null, Value::Null], options).unwrap();
+    assert!(conn.fetch(executed.cursor.unwrap(), 10).unwrap().rows.is_empty());
+
+    let block = "execute block (x integer = ?) returns (y integer) as begin y = :x + 1; suspend; end";
+    let executed = conn.execute(tx, block, vec![Value::Integer(41)], options).unwrap();
+    assert_eq!(conn.fetch(executed.cursor.unwrap(), 10).unwrap().rows, vec![vec![Value::Integer(42)]]);
     conn.end(tx, TxEnd::Rollback).unwrap();
 }
 
@@ -179,26 +205,26 @@ fn fixture_writes_report_records_and_table_counters() {
     let tx = conn.begin(TxOptions { lock_wait: LockWait::NoWait, ..Default::default() }).unwrap();
     let options = ExecuteOptions::default();
 
-    let inserted = conn.execute(tx, "insert into tipos (id, c_integer) values (999999, 1)", options).unwrap();
+    let inserted = conn.execute(tx, "insert into tipos (id, c_integer) values (999999, 1)", vec![], options).unwrap();
     assert_eq!(inserted.statement_type, StatementType::Insert);
     assert_eq!(inserted.records.inserted, 1);
     let performance = inserted.performance.expect("no cursor: final already");
     let tipos = performance.tables.iter().find(|t| t.table == "TIPOS").expect("{performance:?}");
     assert_eq!(tipos.inserts, 1);
 
-    let updated = conn.execute(tx, "update tipos set c_integer = 2 where id = 999999", options).unwrap();
+    let updated = conn.execute(tx, "update tipos set c_integer = 2 where id = 999999", vec![], options).unwrap();
     assert!(updated.records.updated >= 1);
 
-    let procedure = conn.execute(tx, "execute procedure p_fixture(3)", options).unwrap();
+    let procedure = conn.execute(tx, "execute procedure p_fixture(3)", vec![], options).unwrap();
     assert_eq!(procedure.statement_type, StatementType::ExecProcedure);
     assert_eq!(procedure.rows, vec![vec![Value::Integer(3), Value::Text("proc row 3".into())]]);
 
-    let column = |sql: &str| conn.execute(tx, sql, options).unwrap().columns.remove(0).type_name;
+    let column = |sql: &str| conn.execute(tx, sql, vec![], options).unwrap().columns.remove(0).type_name;
     assert_eq!(column("select c_numeric_18_4 from tipos"), "NUMERIC(18,4)");
     assert_eq!(column("select c_vc_utf8 from tipos"), "VARCHAR(100)");
     assert_eq!(column("select c_char from tipos"), "CHAR(10)");
 
-    let rolled_back = conn.execute(tx, "rollback", options).unwrap();
+    let rolled_back = conn.execute(tx, "rollback", vec![], options).unwrap();
     assert_eq!(rolled_back.ended, Some(TxEnd::Rollback));
 }
 
@@ -219,7 +245,7 @@ fn a_running_statement_can_be_cancelled() {
         let conn = conn.clone();
         std::thread::spawn(move || {
             // Seconds of CPU in a read-only transaction, unless cancelled
-            conn.execute(tx, "select count(*) from rdb$types a, rdb$types b, rdb$types c", options)
+            conn.execute(tx, "select count(*) from rdb$types a, rdb$types b, rdb$types c", vec![], options)
                 .and_then(|e| conn.fetch(e.cursor.unwrap(), 1))
         })
     };
@@ -236,7 +262,7 @@ fn a_running_statement_can_be_cancelled() {
     }
 
     // The transaction and the connection carry on
-    let executed = conn.execute(tx, "select 1 from rdb$database", options).unwrap();
+    let executed = conn.execute(tx, "select 1 from rdb$database", vec![], options).unwrap();
     assert_eq!(conn.fetch(executed.cursor.unwrap(), 10).unwrap().rows.len(), 1);
     conn.end(tx, TxEnd::Rollback).unwrap();
 }
@@ -251,6 +277,7 @@ fn editor_cursors_leave_blobs_to_be_read_on_demand() {
             tx,
             "select rdb$view_source, rdb$view_blr from rdb$relations \
              where rdb$view_blr is not null and rdb$view_source is not null",
+            vec![],
             options,
         )
         .unwrap();

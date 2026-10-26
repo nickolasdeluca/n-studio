@@ -56,14 +56,53 @@ pub struct QueryResult {
 type Reply<T> = Sender<Result<T>>;
 
 enum Request {
-    Query { sql: String, params: Vec<Value>, reply: Reply<QueryResult> },
-    Begin { options: TxOptions, reply: Reply<TxId> },
-    End { tx: TxId, how: TxEnd, reply: Reply<()> },
-    Execute { tx: TxId, sql: String, options: ExecuteOptions, explained: bool, reply: Reply<Executed> },
-    Fetch { cursor: CursorId, max: usize, reply: Reply<Fetched> },
-    CursorPerformance { cursor: CursorId, reply: Reply<Option<Performance>> },
-    CloseCursor { cursor: CursorId, reply: Reply<()> },
-    ReadBlob { tx: TxId, id: u64, text: bool, max: usize, reply: Reply<BlobContent> },
+    Query {
+        sql: String,
+        params: Vec<Value>,
+        reply: Reply<QueryResult>,
+    },
+    Begin {
+        options: TxOptions,
+        reply: Reply<TxId>,
+    },
+    End {
+        tx: TxId,
+        how: TxEnd,
+        reply: Reply<()>,
+    },
+    Execute {
+        tx: TxId,
+        sql: String,
+        params: Vec<Value>,
+        options: ExecuteOptions,
+        explained: bool,
+        reply: Reply<Executed>,
+    },
+    DescribeParams {
+        tx: TxId,
+        sql: String,
+        reply: Reply<Vec<ColumnInfo>>,
+    },
+    Fetch {
+        cursor: CursorId,
+        max: usize,
+        reply: Reply<Fetched>,
+    },
+    CursorPerformance {
+        cursor: CursorId,
+        reply: Reply<Option<Performance>>,
+    },
+    CloseCursor {
+        cursor: CursorId,
+        reply: Reply<()>,
+    },
+    ReadBlob {
+        tx: TxId,
+        id: u64,
+        text: bool,
+        max: usize,
+        reply: Reply<BlobContent>,
+    },
 }
 
 impl Connection {
@@ -113,8 +152,11 @@ impl Connection {
                         Request::End { tx, how, reply } => {
                             let _ = reply.send(actor.end(tx, how));
                         }
-                        Request::Execute { tx, sql, options, explained, reply } => {
-                            let _ = reply.send(actor.execute(tx, &sql, options, explained));
+                        Request::Execute { tx, sql, params, options, explained, reply } => {
+                            let _ = reply.send(actor.execute(tx, &sql, params, options, explained));
+                        }
+                        Request::DescribeParams { tx, sql, reply } => {
+                            let _ = reply.send(actor.describe_params(tx, &sql));
                         }
                         Request::Fetch { cursor, max, reply } => {
                             let _ = reply.send(actor.fetch(cursor, max));
@@ -181,11 +223,18 @@ impl Connection {
         self.call(|reply| Request::End { tx, how, reply })
     }
 
-    /// Prepares and runs one statement in `tx`. A select leaves a cursor open
-    /// to [`fetch`](Connection::fetch) from; a COMMIT or ROLLBACK ends `tx`.
-    pub fn execute(&self, tx: TxId, sql: &str, options: ExecuteOptions) -> Result<Executed> {
+    /// Prepares and runs one statement in `tx`, with a value for each `?`.
+    /// A select leaves a cursor open to [`fetch`](Connection::fetch) from; a
+    /// COMMIT or ROLLBACK ends `tx`.
+    pub fn execute(&self, tx: TxId, sql: &str, params: Vec<Value>, options: ExecuteOptions) -> Result<Executed> {
         let explained = self.info.major >= 3;
-        self.call(|reply| Request::Execute { tx, sql: sql.to_string(), options, explained, reply })
+        self.call(|reply| Request::Execute { tx, sql: sql.to_string(), params, options, explained, reply })
+    }
+
+    /// The parameters (`?`) of `sql` as the server declares them, so a
+    /// caller can ask for their values. Prepared in `tx`, and dropped.
+    pub fn describe_params(&self, tx: TxId, sql: &str) -> Result<Vec<ColumnInfo>> {
+        self.call(|reply| Request::DescribeParams { tx, sql: sql.to_string(), reply })
     }
 
     /// Up to `max` more rows. At the end of the rows the cursor closes.
@@ -366,7 +415,23 @@ impl Actor {
         Ok(())
     }
 
-    fn execute(&mut self, tx: TxId, sql: &str, options: ExecuteOptions, explained: bool) -> Result<Executed> {
+    fn describe_params(&mut self, tx: TxId, sql: &str) -> Result<Vec<ColumnInfo>> {
+        let tr = self.transactions.get_mut(&tx).ok_or_else(|| no_such("transaction"))?;
+        let (_, mut stmt) = self.cli.prepare_statement(&mut self.db, tr, self.dialect, sql)?;
+        let described = self.cli.describe_params(&mut stmt);
+        let _ = self.cli.free_statement(&mut stmt, FreeStmtOp::Drop);
+        let dialect = self.dialect as u32;
+        Ok(described?.iter().map(|c| ColumnInfo::describe(c, dialect)).collect())
+    }
+
+    fn execute(
+        &mut self,
+        tx: TxId,
+        sql: &str,
+        params: Vec<Value>,
+        options: ExecuteOptions,
+        explained: bool,
+    ) -> Result<Executed> {
         let tr = self.transactions.get_mut(&tx).ok_or_else(|| no_such("transaction"))?;
 
         let started = Instant::now();
@@ -381,7 +446,9 @@ impl Actor {
             StatementType::StartTransaction => Some(refuse(
                 "SET TRANSACTION is not run from the editor: pick the isolation in the transaction toolbar",
             )),
-            _ if stmt.param_count() > 0 => Some(refuse("statements with parameters are not supported yet")),
+            _ if stmt.param_count() != params.len() => Some(Error::Client {
+                message: format!("the statement takes {} parameter(s), {} given", stmt.param_count(), params.len()),
+            }),
             _ => None,
         };
         if let Some(e) = early {
@@ -426,7 +493,11 @@ impl Actor {
             (None, None)
         };
 
-        let result = self.run_prepared(tx, &mut stmt, statement_type, options);
+        let result = params
+            .into_iter()
+            .map(SqlType::try_from)
+            .collect::<Result<Vec<_>>>()
+            .and_then(|params| self.run_prepared(tx, &mut stmt, statement_type, params, options));
         let (rows, execute_ms, before) = match result {
             Ok(r) => r,
             Err(e) => {
@@ -468,6 +539,7 @@ impl Actor {
         tx: TxId,
         stmt: &mut rsfbclient_rust::StmtHandleData,
         statement_type: StatementType,
+        params: Vec<SqlType>,
         options: ExecuteOptions,
     ) -> Result<(Vec<Vec<Value>>, f64, Option<DatabaseCounters>)> {
         let before = if options.performance { Some(self.cli.database_counters(&mut self.db)?) } else { None };
@@ -476,10 +548,10 @@ impl Actor {
         let mut rows = Vec::new();
         // A procedure with outputs answers with its row, in the same round trip
         if statement_type == StatementType::ExecProcedure && !stmt.columns().is_empty() {
-            let row = self.cli.execute2(&mut self.db, tr, stmt, vec![])?;
+            let row = self.cli.execute2(&mut self.db, tr, stmt, params)?;
             rows.push(row.into_iter().map(|c| c.value.into()).collect());
         } else {
-            self.cli.execute(&mut self.db, tr, stmt, vec![])?;
+            self.cli.execute(&mut self.db, tr, stmt, params)?;
         }
         Ok((rows, ms(started), before))
     }
