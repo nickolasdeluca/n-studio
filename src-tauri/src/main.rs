@@ -30,6 +30,7 @@ fn main() {
             commands::object_list,
             editor::editor_begin,
             editor::editor_end,
+            editor::editor_cancel,
             editor::editor_execute,
             editor::result_fetch,
             editor::result_rows,

@@ -2,10 +2,11 @@ use rsfbclient_core::{
     FirebirdClientDbOps, FirebirdClientSqlOps, FreeStmtOp, SqlType, StmtType, TrDataAccessMode, TrIsolationLevel, TrOp,
     TrRecordVersion, TransactionConfiguration,
 };
-use rsfbclient_rust::{DatabaseCounters, RustFbClient, RustFbClientAttachmentConfig};
+use rsfbclient_rust::{CancelHandle, DatabaseCounters, RustFbClient, RustFbClientAttachmentConfig};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -20,6 +21,10 @@ use crate::value::Value;
 pub struct Connection {
     tx: Sender<Request>,
     info: ServerInfo,
+    cancel: Option<CancelHandle>,
+    /// Whether the connection's thread is running a request: a cancel sent
+    /// when nothing runs would be held by the server for the next one
+    busy: Arc<Mutex<bool>>,
 }
 
 /// What the server and the database say about themselves on connect
@@ -76,12 +81,14 @@ impl Connection {
 
         let (tx, rx) = channel();
         let (ready_tx, ready_rx) = channel();
+        let busy = Arc::new(Mutex::new(false));
+        let running = busy.clone();
         thread::Builder::new()
             .name(format!("fb {}:{}", params.host, params.database))
             .spawn(move || {
                 let mut actor = match Actor::attach(charset, &config, dialect) {
                     Ok(actor) => {
-                        let _ = ready_tx.send(Ok(()));
+                        let _ = ready_tx.send(Ok(actor.cli.cancel_handle()));
                         actor
                     }
                     Err(e) => {
@@ -91,6 +98,7 @@ impl Connection {
                 };
                 // Runs until the Connection is dropped and the channel closes.
                 for request in rx {
+                    *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     match request {
                         Request::Query { sql, params, reply } => {
                             let _ = reply.send(actor.query(&sql, params));
@@ -114,13 +122,14 @@ impl Connection {
                             let _ = reply.send(actor.close_cursor(cursor));
                         }
                     }
+                    *running.lock().unwrap_or_else(|e| e.into_inner()) = false;
                 }
                 actor.detach();
             })
             .map_err(|e| Error::Client { message: format!("cannot start a connection thread: {e}") })?;
-        ready_rx.recv().map_err(|_| Error::Closed)??;
+        let cancel = ready_rx.recv().map_err(|_| Error::Closed)??;
 
-        let mut conn = Connection { tx, info: ServerInfo::default() };
+        let mut conn = Connection { tx, info: ServerInfo::default(), cancel, busy };
         conn.info = conn.read_server_info()?;
         Ok(conn)
     }
@@ -134,6 +143,24 @@ impl Connection {
     /// query, which needs a cursor and a transaction it controls.
     pub fn query(&self, sql: &str, params: Vec<Value>) -> Result<QueryResult> {
         self.call(|reply| Request::Query { sql: sql.to_string(), params, reply })
+    }
+
+    /// Cancels the request the connection is running, from any thread: it
+    /// fails with "operation was cancelled", and the transaction carries
+    /// on. `false` when nothing was running. Firebird 2.5 and later.
+    pub fn cancel(&self) -> Result<bool> {
+        let cancel = self.cancel.as_ref().ok_or_else(|| Error::Client {
+            message: "this server cannot cancel a running statement (Firebird 2.5 and later can)".into(),
+        })?;
+        // Held while sending, so the request is not marked done in between.
+        // Its reply may still beat the cancel over the network; the server
+        // then holds the cancel for the next request, which fails at once.
+        let busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        if !*busy {
+            return Ok(false);
+        }
+        cancel.cancel()?;
+        Ok(true)
     }
 
     /// Starts a transaction the caller ends with [`Connection::end`]. One

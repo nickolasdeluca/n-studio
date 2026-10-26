@@ -123,6 +123,7 @@ const glyphs: Record<string, ReactNode> = {
       <path d="M12 3.4v9.2" />
     </>
   ),
+  stop: <rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" />,
   commit: <path d="m3 8.4 3.2 3.2L13 4.8" />,
   rollback: (
     <>

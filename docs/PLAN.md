@@ -135,8 +135,8 @@ rendering, Messages / Query columns / Explain plan bottom tabs, Performance Anal
 tab, transaction toolbar + TIL selector, status bar. This is screenshots 2 and 3.
 
 In place: all of the above. Still to come before M2 closes: sorting and export in
-the grid, cancelling a running statement (`op_cancel`), parameters (`?`, `:name`),
-and blobs fetched on demand instead of with the row.
+the grid, parameters (`?`, `:name`), and blobs fetched on demand instead of with
+the row.
 
 ### M3 — Object viewers (read-only)
 Per-object-type editors with the IBExpert tab layout: Fields, Constraints, Indices,

@@ -153,6 +153,13 @@ pub async fn editor_end(app: AppHandle, id: String, tx: TxId, how: TxEnd) -> App
     .await
 }
 
+/// Cancels what the registration's connection is running: an execute or a
+/// fetch fails with "operation was cancelled". `false` when nothing ran.
+#[tauri::command]
+pub async fn editor_cancel(app: AppHandle, id: String) -> AppResult<bool> {
+    blocking(app, move |state| Ok(state.session(&id)?.cancel()?)).await
+}
+
 /// Runs one statement in `tx` and, for a select, fetches its first `first`
 /// rows in the same call
 #[tauri::command]

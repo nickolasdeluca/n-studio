@@ -31,6 +31,17 @@ const saved = new Map<string, EditorState>();
  *  of the saved state, which outlives a mount. */
 const runners = new Map<string, { run(mode: RunMode): boolean; end(how: TxEnd): boolean }>();
 
+/** Esc stops what the tab runs; otherwise it is the editor's (closing a
+ *  completion, the search panel) */
+function cancelKey(id: string) {
+  return () => {
+    const tab = useEditors.getState().tabs[id];
+    if (!tab?.running && !tab?.fetching) return false;
+    void useEditors.getState().cancel(id);
+    return true;
+  };
+}
+
 /** A closed editor's text goes with it */
 export function forgetEditor(id: string) {
   saved.delete(id);
@@ -50,6 +61,7 @@ function runKeys(id: string) {
       { key: "Mod-Alt-Enter", run: run("to_cursor") },
       { key: "Mod-Alt-c", run: end("commit") },
       { key: "Mod-Alt-r", run: end("rollback") },
+      { key: "Escape", run: cancelKey(id) },
     ]),
   );
 }
@@ -248,10 +260,18 @@ function EditorToolbar({ tab, run, end }: { tab: EditorTab; run(mode: RunMode): 
         {t("Wait on locks")}
       </label>
       <span className="flex-1" />
-      {tab.running && (
+      {(tab.running || tab.fetching) && (
         <span className="flex items-center gap-1.5 pr-1 text-muted" role="status">
           <span className="size-2 animate-pulse rounded-full bg-accent" />
-          {t("Running…")}
+          {tab.running ? t("Running…") : t("Fetching…")}
+          <button
+            onClick={() => void s.cancel(tab.id)}
+            title={t("Stop (Esc)")}
+            className="ml-1 flex h-6 items-center gap-1 rounded border border-line bg-panel px-2 text-fg hover:bg-hover"
+          >
+            <Icon name="stop" size={12} />
+            {t("Stop")}
+          </button>
         </span>
       )}
     </div>
@@ -362,10 +382,10 @@ function Results({ tab, cursor, setCursor }: { tab: EditorTab; cursor: GridCurso
         <Nav
           icon="last"
           label={t("Last Record (fetches all)")}
-          disabled={tab.running || (result.eof && cursor.row >= result.rows - 1)}
+          disabled={tab.running || tab.fetching || (result.eof && cursor.row >= result.rows - 1)}
           onClick={() => (result.eof ? go(result.rows - 1) : fetchAll())}
         />
-        <Nav icon="fetch-all" label={t("Fetch All")} disabled={tab.running || result.eof} onClick={fetchAll} />
+        <Nav icon="fetch-all" label={t("Fetch All")} disabled={tab.running || tab.fetching || result.eof} onClick={fetchAll} />
         <span className="ml-2 tabular-nums">
           {result.rows === 0
             ? t("No records")

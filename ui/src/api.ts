@@ -216,6 +216,7 @@ export const api = {
 
   editorBegin: (id: string, options: TxOptions) => invoke<number>("editor_begin", { id, options }),
   editorEnd: (id: string, tx: number, how: TxEnd) => invoke<void>("editor_end", { id, tx, how }),
+  editorCancel: (id: string) => invoke<boolean>("editor_cancel", { id }),
   editorExecute: (id: string, tx: number, sql: string, options: { plan: boolean; performance: boolean }, first: number) =>
     invoke<Executed>("editor_execute", { id, tx, sql, options, first }),
   resultFetch: (result: number, max: number) => invoke<ResultView>("result_fetch", { result, max }),

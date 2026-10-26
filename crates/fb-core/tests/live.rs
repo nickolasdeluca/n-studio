@@ -201,3 +201,38 @@ fn fixture_writes_report_records_and_table_counters() {
     let rolled_back = conn.execute(tx, "rollback", options).unwrap();
     assert_eq!(rolled_back.ended, Some(TxEnd::Rollback));
 }
+
+#[test]
+fn a_running_statement_can_be_cancelled() {
+    let Some(conn) = connect() else { return };
+    let conn = std::sync::Arc::new(conn);
+    // Nothing runs: nothing to cancel
+    assert!(!conn.cancel().unwrap());
+
+    let tx = conn.begin(read_only()).unwrap();
+    let options = ExecuteOptions { plan: false, performance: false };
+    let running = {
+        let conn = conn.clone();
+        std::thread::spawn(move || {
+            // Seconds of CPU in a read-only transaction, unless cancelled
+            conn.execute(tx, "select count(*) from rdb$types a, rdb$types b, rdb$types c", options)
+                .and_then(|e| conn.fetch(e.cursor.unwrap(), 1))
+        })
+    };
+    let started = std::time::Instant::now();
+    let mut sent = false;
+    while !sent && started.elapsed().as_secs() < 5 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sent = conn.cancel().unwrap();
+    }
+    assert!(sent, "the statement ended before it could be cancelled");
+    match running.join().unwrap() {
+        Err(Error::Server { message, .. }) => assert!(message.to_lowercase().contains("cancel"), "{message}"),
+        other => panic!("expected the statement to be cancelled, got {other:?}"),
+    }
+
+    // The transaction and the connection carry on
+    let executed = conn.execute(tx, "select 1 from rdb$database", options).unwrap();
+    assert_eq!(conn.fetch(executed.cursor.unwrap(), 10).unwrap().rows.len(), 1);
+    conn.end(tx, TxEnd::Rollback).unwrap();
+}

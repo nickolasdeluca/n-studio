@@ -43,6 +43,8 @@ export interface EditorTab {
   tx: number | null;
   txOptions: TxOptions;
   running: boolean;
+  /** Fetching more rows of the last select */
+  fetching: boolean;
   outcome: Outcome | null;
   messages: Message[];
   bottom: BottomTab;
@@ -67,6 +69,8 @@ interface State {
   run(id: string, mode: RunMode, input: RunInput, onError?: (range: { from: number; to: number }) => void): Promise<void>;
   end(id: string, how: TxEnd): Promise<void>;
   fetchMore(id: string, max: number): Promise<void>;
+  /** Stops the statement or fetch the tab is running */
+  cancel(id: string): Promise<void>;
   /** The registration disconnected: its transactions and results are gone */
   sessionClosed(registration: string): void;
 }
@@ -111,6 +115,7 @@ export const useEditors = create<State>()((set, get) => {
             tx: null,
             txOptions: { isolation: "read_committed", readOnly: false, lockWait: { mode: "wait" } },
             running: false,
+            fetching: false,
             outcome: null,
             messages: [],
             bottom: "results",
@@ -200,7 +205,8 @@ export const useEditors = create<State>()((set, get) => {
 
     async fetchMore(id, max) {
       const result = get().tabs[id]?.outcome?.result;
-      if (!result || result.eof) return;
+      if (!result || result.eof || get().tabs[id]?.fetching) return;
+      patch(id, { fetching: true });
       try {
         const view = await api.resultFetch(result.id, max);
         patch(id, (tab) =>
@@ -208,11 +214,24 @@ export const useEditors = create<State>()((set, get) => {
         );
       } catch (e) {
         log(id, "error", errorText(e));
+        // The rows fetched before the failure (or the cancel) stay, and the
+        // cursor is gone: ask for nothing more, to learn how many there are
+        const view = await api.resultFetch(result.id, 0).catch(() => ({ ...result, eof: true }));
         patch(id, (tab) =>
-          tab.outcome?.result?.id === result.id
-            ? { outcome: { ...tab.outcome, result: { ...result, eof: true } } }
-            : {},
+          tab.outcome?.result?.id === result.id ? { outcome: { ...tab.outcome, result: view } } : {},
         );
+      } finally {
+        patch(id, { fetching: false });
+      }
+    },
+
+    async cancel(id) {
+      const tab = get().tabs[id];
+      if (!tab || !(tab.running || tab.fetching)) return;
+      try {
+        if (await api.editorCancel(tab.registration)) log(id, "info", t("Cancelling…"));
+      } catch (e) {
+        log(id, "error", errorText(e));
       }
     },
 
