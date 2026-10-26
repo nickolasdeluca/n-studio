@@ -12,6 +12,7 @@ use crate::{
     arc4::*,
     blr,
     consts::{AuthPluginType, ProtocolVersion, WireOp},
+    info::{parse_plan, DatabaseCounters, COUNTER_ITEMS},
     srp::*,
     util::*,
     wire::*,
@@ -334,6 +335,34 @@ impl FirebirdClientSqlOps for RustFbClient {
         self.conn
             .as_mut()
             .map(|conn| conn.fetch(tr_handle, stmt_handle))
+            .unwrap_or_else(err_client_not_connected)
+    }
+}
+
+/// Operations beyond the `rsfbclient-core` traits. Candidates for upstreaming
+/// as a trait of their own; inherent methods until then.
+impl RustFbClient {
+    /// The statement's access plan: the classic one-line `PLAN (...)`, or with
+    /// `explained` the FB3+ tree form. `None` for statements without a plan.
+    pub fn statement_plan(
+        &mut self,
+        stmt_handle: &mut StmtHandleData,
+        explained: bool,
+    ) -> Result<Option<String>, FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.statement_plan(stmt_handle, explained))
+            .unwrap_or_else(err_client_not_connected)
+    }
+
+    /// A snapshot of the attachment's performance counters.
+    pub fn database_counters(
+        &mut self,
+        db_handle: &mut RustDbHandle,
+    ) -> Result<DatabaseCounters, FbError> {
+        self.conn
+            .as_mut()
+            .map(|conn| conn.database_counters(db_handle))
             .unwrap_or_else(err_client_not_connected)
     }
 }
@@ -794,6 +823,41 @@ impl FirebirdWireConnection {
                 cursor_eof: false,
             },
         ))
+    }
+
+    /// Statement plan. See `RustFbClient::statement_plan`.
+    pub fn statement_plan(
+        &mut self,
+        stmt_handle: &mut StmtHandleData,
+        explained: bool,
+    ) -> Result<Option<String>, FbError> {
+        let item = if explained {
+            ibase::isc_info_sql_explain_plan
+        } else {
+            ibase::isc_info_sql_get_plan
+        };
+
+        self.socket
+            .write_all(&info_sql(stmt_handle.handle.0, &[item as u8]))?;
+        self.socket.flush()?;
+
+        let data = self.read_response()?.data;
+
+        match parse_plan(data)? {
+            Some(text) => Ok(Some(self.charset.decode(&text[..])?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Performance counters. See `RustFbClient::database_counters`.
+    pub fn database_counters(&mut self, db_handle: &mut DbHandle) -> Result<DatabaseCounters, FbError> {
+        self.socket
+            .write_all(&info_database(db_handle.0, COUNTER_ITEMS))?;
+        self.socket.flush()?;
+
+        let data = self.read_response()?.data;
+
+        DatabaseCounters::parse(data)
     }
 
     /// Closes or drops a statement

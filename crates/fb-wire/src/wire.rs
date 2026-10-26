@@ -417,6 +417,19 @@ pub fn prepare_statement(
 }
 
 /// Statement information request
+/// Database info request (`isc_database_info`)
+pub fn info_database(db_handle: u32, requested_items: &[u8]) -> Bytes {
+    let mut req = BytesMut::with_capacity(24 + requested_items.len());
+
+    req.put_u32(WireOp::InfoDatabase as u32);
+    req.put_u32(db_handle);
+    req.put_u32(0); // Incarnation of object
+    req.put_wire_bytes(requested_items);
+    req.put_u32(BUFFER_LENGTH);
+
+    req.freeze()
+}
+
 pub fn info_sql(stmt_handle: u32, requested_items: &[u8]) -> Bytes {
     let mut req = BytesMut::with_capacity(24 + requested_items.len());
 

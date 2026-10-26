@@ -8,6 +8,8 @@ publish = false
 [dependencies]
 rsfbclient = { workspace = true, features = ["pure_rust"] }
 rsfbclient-core = { workspace = true }
+# The vendored crates/fb-wire, via [patch.crates-io]: --perf drives it directly.
+rsfbclient-rust = { workspace = true }
 anyhow = { workspace = true }
 
 [features]

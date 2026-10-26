@@ -30,4 +30,9 @@ in the workspace manifest.
 - **`BUFFER_LENGTH` = 65535** (upstream: 1 KiB), the cap advertised to the server
   for prepare, info and segment replies. It must fit in a USHORT; 65536 arrived
   as 0 and made blob reads loop forever on empty segments.
+- **Statement plan and performance counters** (`info.rs`).
+  `RustFbClient::statement_plan` (classic and FB3+ explained) over `op_info_sql`;
+  `RustFbClient::database_counters` over `op_info_database`: page reads, writes,
+  fetches and marks, memory, buffers, and per-table record counters. Inherent
+  methods for now; upstream would want them as a trait in `rsfbclient-core`.
 - **`trace()`**, gated behind `FBW_TRACE=1`, dumping wire packets.

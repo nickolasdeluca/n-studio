@@ -26,6 +26,7 @@ docs/              plan and spike findings
 FB_HOST=host FB_PORT=3050 FB_DB=/path/to.fdb FB_USER=SYSDBA FB_PASS=pw \
   cargo run -p fb-probe -- --survey        # read-only recon of an existing database
 
+cargo run -p fb-probe -- --perf "select …" # plan + IBExpert-style performance block
 cargo run -p fb-probe -- --matrix          # every server in docker/compose.yml
 cargo run -p fb-probe --bin handshake      # raw op_connect dump, for auth debugging
 ```

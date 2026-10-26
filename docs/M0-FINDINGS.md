@@ -38,8 +38,8 @@ Nothing else. In particular:
 
 | Gap | Evidence | Blocks |
 |---|---|---|
-| **No `isc_database_info` / `op_info_database`** | `InfoDatabase = 40` exists as a wire opcode constant in `rsfbclient-rust/consts.rs:61`, unused. Native FFI decl is commented out. | Reads / writes / fetches / marks counters, current & max memory, memory buffers — **the entire Performance Analysis panel**. |
-| **No `isc_dsql_sql_info` / `op_info_sql` exposed** | Native backend calls it privately for statement type and affected rows; no public surface, no plan request anywhere. `isc_info_sql_get_plan` never referenced. | `PLAN` text and the FB3+ explained plan — **the Plan Analyzer and Explain plan tabs**. |
+| **No `isc_database_info` / `op_info_database`** — *added, §9* | `InfoDatabase = 40` exists as a wire opcode constant in `rsfbclient-rust/consts.rs:61`, unused. Native FFI decl is commented out. | Reads / writes / fetches / marks counters, current & max memory, memory buffers — **the entire Performance Analysis panel**. |
+| **No `isc_dsql_sql_info` / `op_info_sql` exposed** — *added, §9* | Native backend calls it privately for statement type and affected rows; no public surface, no plan request anywhere. `isc_info_sql_get_plan` never referenced. | `PLAN` text and the FB3+ explained plan — **the Plan Analyzer and Explain plan tabs**. |
 | **No Services API** | Only error strings and the opcodes `ServiceAttach/Detach/Info/Start = 82..85` in `consts.rs:109-112`. Native FFI decls commented out. | M5 entirely: backup, restore, validate, sweep, statistics, user manager. |
 | **No cancel operation** | `Cancel = 91` opcode constant only; `fb_cancel_*` constants in core, unused. | Stopping a runaway query. Non-negotiable for an IDE. |
 | **Events are native-only** | `FirebirdClientDbEvents` implemented solely in `rsfbclient-native/connection.rs:601`. | `POST_EVENT` listeners on the pure-Rust backend. |
@@ -207,10 +207,41 @@ fixes the prepare and info buffer lengths.
 Blob reads cost three round trips each (open, get, close). Lazy blob loading in
 the grid is a `fb-core` concern for M2, not a driver one.
 
+## 9. Plan and performance counters (2026-10-26)
+
+`op_info_sql` (plan) and `op_info_database` (counters) are in `fb-wire`
+(`info.rs`). `fb-probe --perf "<sql>"` runs one statement in a read-only
+transaction and prints the Performance Analysis block, which meets M0 item 3:
+
+```
+PLAN (PRODUTO NATURAL)
+  prepare 59.7 ms · execute 0.9 ms · fetch (1 row) 2.0 ms
+  memory  current 26562592 · max 27115328 · buffers 1311
+  reads 45 · writes 0 · fetches 1700 · marks 0
+  PRODUTO (317)   indexed 0   non-indexed 1517
+```
+
+Checked on the ERP database: an indexed range over 501 ids reports 501 indexed reads;
+an unindexable filter reports `NATURAL` and non-indexed reads equal to the
+table's row count. The FB3+ explained plan comes back as the tree form.
+
+Notes for `fb-core`:
+
+- **The high-level `rsfbclient::Connection` is out.** It keeps the client and
+  statement handles private, so nothing can ask for a statement's plan. The
+  connection actor drives `RustFbClient` through the `rsfbclient-core` traits
+  plus these inherent methods; `rsfbclient-core` still supplies the types.
+- Counters are cumulative per attachment; a statement's cost is the difference
+  of snapshots taken around execute + fetch. The snapshot itself is one round
+  trip, so the editor should take them only while the Performance tab is on.
+- Per-table counts are 6-byte entries (relation id, 32-bit count). The server
+  widens a count past 2^31 to 8 bytes with nothing marking it; the parser
+  reports that case as an error instead of misreading every entry after it.
+
 ## 5. Container matrix — still blocked
 
-Pending: the 2.5 / 3.0 / 4.0 / 5.0 matrix, and reading the performance block from a
-real query (which needs the `op_info_*` ops that do not exist yet — §1).
+Pending: the 2.5 / 3.0 / 4.0 / 5.0 matrix. (Reading the performance block from a real
+query is done — §9 — but only against FB 4.0.4.)
 
 `docker/compose.yml` and the fixture SQL in `docker/seed/` are written and ready.
 
@@ -224,7 +255,10 @@ and Homebrew has no `firebird` formula. Options, cheapest first:
    (read-only `SELECT`s, but still).
 3. **Native Firebird install** from firebirdsql.org — one version per machine, no matrix.
 
-Recommendation: option 1.
+~~Recommendation: option 1.~~ Ruled out: this host does not handle virtualization
+well, so no container runtime here. The matrix moves to CI (GitHub Actions runners
+have Docker), and local development uses existing servers on the network (option 2),
+read-only.
 
 ---
 
@@ -234,7 +268,7 @@ The driver work is no longer a background task running parallel to the UI. Order
 
 1. ~~Wire reader framing rewrite~~ — done, §8.
 2. **Auth plugin as a connection setting** (SRP fixed in §8; Legacy_Auth still an env var).
-3. `op_info_sql` (plan) and `op_info_database` (performance counters) — M2's panels.
+3. ~~`op_info_sql` (plan) and `op_info_database` (performance counters)~~ — done, §9.
 4. `op_cancel`, then events, then services.
 
 ## 7. Not blocked, proceeding

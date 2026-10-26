@@ -12,11 +12,14 @@
 //!
 //!   cargo run -p fb-probe -- --matrix        # every port in docker/compose.yml
 //!   cargo run -p fb-probe -- --bulk 1000000  # streaming throughput
+//!   cargo run -p fb-probe -- --perf "select ..."  # plan + performance block
 
 use anyhow::{Context, Result};
 use rsfbclient::{prelude::*, Charset, Dialect, Row, SqlType};
 use std::env;
 use std::time::Instant;
+
+mod perf;
 
 /// One server in the test matrix.
 struct Target {
@@ -38,6 +41,10 @@ const EXPECTED_ACCENTED: &str = "ação preço ãõçéêà";
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     let bulk_rows: usize = arg_value(&args, "--bulk").unwrap_or(0);
+
+    if let Some(sql) = arg_value::<String>(&args, "--perf") {
+        return perf::perf(&sql);
+    }
 
     if args.iter().any(|a| a == "--survey") {
         let port = env_or("FB_PORT", "3050").parse().context("FB_PORT")?;
@@ -361,10 +368,8 @@ fn report_streaming(conn: &mut impl Queryable, limit: usize) -> Result<()> {
 /// Capabilities the driver does not have. Confirmed by source audit; printed
 /// here so the spike output is a complete picture rather than half of one.
 fn report_capability_gaps() {
-    println!("\n── known driver gaps (rsfbclient 0.27) ──");
+    println!("\n── known driver gaps (fb-wire) ──");
     for (what, blocks) in [
-        ("isc_database_info / op_info_database", "performance counters, memory, buffers"),
-        ("isc_dsql_sql_info plan request", "PLAN text, explained plan"),
         ("op_cancel", "stopping a running query"),
         ("Services API (op_service_*)", "backup, restore, validate, stats, users"),
         ("events on the pure-Rust backend", "POST_EVENT listeners"),
