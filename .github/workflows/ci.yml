@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The grid spikes need WebKitGTK / windowing libraries; the driver does not.
+      - run: cargo test -p rsfbclient-core -p rsfbclient-rust -p fb-core -p fb-probe
+
+  firebird:
+    name: Firebird ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "2.5"
+            service: fb25
+            port: 3050
+            isql: /usr/local/firebird/bin/isql
+            db: /firebird/data/fixture.fdb
+            seeds: 00-fixture.sql
+          - version: "3.0"
+            service: fb30
+            port: 3053
+            isql: /opt/firebird/bin/isql
+            db: /var/lib/firebird/data/fixture.fdb
+            seeds: 00-fixture.sql 10-fb3.sql
+          - version: "4.0"
+            service: fb40
+            port: 3054
+            isql: /opt/firebird/bin/isql
+            db: /var/lib/firebird/data/fixture.fdb
+            seeds: 00-fixture.sql 10-fb3.sql 20-fb4.sql
+          - version: "5.0"
+            service: fb50
+            port: 3055
+            isql: /opt/firebird/bin/isql
+            db: /var/lib/firebird/data/fixture.fdb
+            seeds: 00-fixture.sql 10-fb3.sql 20-fb4.sql
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start Firebird
+        run: docker compose -f docker/compose.yml up -d ${{ matrix.service }}
+
+      # Build while the server starts.
+      - run: cargo build -p fb-probe --bin fb-probe
+
+      - name: Wait for the fixture database
+        run: |
+          for _ in $(seq 60); do
+            if echo "select 1 from rdb\$database;" | docker compose -f docker/compose.yml exec -T ${{ matrix.service }} \
+                 ${{ matrix.isql }} -q -user SYSDBA -password masterkey localhost:${{ matrix.db }} >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker/compose.yml logs ${{ matrix.service }}
+          exit 1
+
+      - name: Seed the fixture
+        run: |
+          for f in ${{ matrix.seeds }}; do
+            echo "── $f"
+            docker compose -f docker/compose.yml exec -T ${{ matrix.service }} \
+              ${{ matrix.isql }} -q -bail -ch UTF8 -user SYSDBA -password masterkey \
+              -i /seed/$f localhost:${{ matrix.db }}
+          done
+          echo "execute procedure P_SEED_BULK 100000; commit;" | docker compose -f docker/compose.yml exec -T ${{ matrix.service }} \
+            ${{ matrix.isql }} -q -bail -user SYSDBA -password masterkey localhost:${{ matrix.db }}
+
+      - name: Probe
+        env:
+          FB_HOST: localhost
+          FB_PORT: ${{ matrix.port }}
+          FB_DB: ${{ matrix.db }}
+          FB_USER: SYSDBA
+          FB_PASS: masterkey
+        run: target/debug/fb-probe --bulk 100000
+
+      - name: Server log
+        if: failure()
+        run: docker compose -f docker/compose.yml logs ${{ matrix.service }}

@@ -300,13 +300,7 @@ fn report_server(conn: &mut impl Queryable) -> Result<()> {
 /// Firebird 4 types must read at all. Needs no tables, so it runs anywhere.
 fn report_numerics(conn: &mut impl Queryable) -> Result<()> {
     println!("\n── exact numerics ──");
-    let version: Option<(Option<String>,)> = conn
-        .query_first("select rdb$get_context('SYSTEM', 'ENGINE_VERSION') from rdb$database", ())
-        .unwrap_or(None);
-    let major: u32 = version
-        .and_then(|v| v.0)
-        .and_then(|v| v.split('.').next()?.parse().ok())
-        .unwrap_or(0);
+    let major = engine_major(conn);
 
     // (expression, what it must read back as, first Firebird major with the type)
     let cases = [
@@ -324,11 +318,7 @@ fn report_numerics(conn: &mut impl Queryable) -> Result<()> {
         if major < since {
             continue;
         }
-        let got = conn
-            .query_first::<_, Row>(&format!("select {expr} from rdb$database"), ())
-            .map_err(anyhow::Error::from)
-            .and_then(|row| row.context("no row")?.cols.into_iter().next().context("no column"))
-            .map(|col| shown(&col.value));
+        let got = first_value(conn, &format!("select {expr} from rdb$database"), ());
         report_case(expr, want, got, &mut failed);
     }
 
@@ -342,11 +332,7 @@ fn report_numerics(conn: &mut impl Queryable) -> Result<()> {
             continue;
         }
         let sent: Decimal = value.parse()?;
-        let got = conn
-            .query_first::<_, Row>(&format!("select cast(? as {ty}) from rdb$database"), (sent,))
-            .map_err(anyhow::Error::from)
-            .and_then(|row| row.context("no row")?.cols.into_iter().next().context("no column"))
-            .map(|col| shown(&col.value));
+        let got = first_value(conn, &format!("select cast(? as {ty}) from rdb$database"), (sent,));
         report_case(&format!("? as {ty}"), value, got, &mut failed);
     }
 
@@ -354,6 +340,24 @@ fn report_numerics(conn: &mut impl Queryable) -> Result<()> {
         anyhow::bail!("{failed} exact-numeric checks failed");
     }
     Ok(())
+}
+
+/// Major version of the server, 0 if it will not say
+fn engine_major(conn: &mut impl Queryable) -> u32 {
+    let version: Option<(Option<String>,)> = conn
+        .query_first("select rdb$get_context('SYSTEM', 'ENGINE_VERSION') from rdb$database", ())
+        .unwrap_or(None);
+    version
+        .and_then(|v| v.0)
+        .and_then(|v| v.split('.').next()?.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The first column of the first row, as the grid would print it
+fn first_value(conn: &mut impl Queryable, sql: &str, params: impl rsfbclient_core::IntoParams) -> Result<String> {
+    let row: Option<Row> = conn.query_first(sql, params)?;
+    let col = row.context("no row")?.cols.into_iter().next().context("no column")?;
+    Ok(shown(&col.value))
 }
 
 fn report_case(what: &str, want: &str, got: Result<String>, failed: &mut usize) {
@@ -385,8 +389,7 @@ fn report_types(conn: &mut impl Queryable) -> Result<()> {
     println!("\n── type mapping (TIPOS) ──");
     let rows: Vec<Row> = conn.query("select * from TIPOS order by ID", ())?;
     let Some(first) = rows.first() else {
-        println!("  no rows — is the fixture seeded?");
-        return Ok(());
+        anyhow::bail!("TIPOS has no rows — is the fixture seeded?");
     };
 
     for col in &first.cols {
@@ -398,6 +401,39 @@ fn report_types(conn: &mut impl Queryable) -> Result<()> {
         );
     }
     println!("  ({} rows total)", rows.len());
+    report_fixture_values(conn)
+}
+
+/// Fixture values that must read back exactly, extremes included. The seed
+/// scripts in docker/seed/ are the other half of this table.
+fn report_fixture_values(conn: &mut impl Queryable) -> Result<()> {
+    println!("\n── fixture values ──");
+    let major = engine_major(conn);
+    // (query, what it must read back as, first Firebird major with the table)
+    let cases = [
+        ("select C_BIGINT from TIPOS where ID = 1", "Integer(-9223372036854775808)", 2),
+        ("select C_NUMERIC_18_4 from TIPOS where ID = 1", "-99999999999999.9999", 2),
+        ("select C_NUMERIC_18_4 from TIPOS where ID = 2", "99999999999999.9999", 2),
+        ("select C_NUMERIC_9_2 from TIPOS where ID = 1", "-9999999.99", 2),
+        ("select C_NUMERIC_4_2 from TIPOS where ID = 2", "99.99", 2),
+        ("select C_DOUBLE from TIPOS where ID = 1", "Floating(3.141592653589793)", 2),
+        ("select C_TIMESTAMP from TIPOS where ID = 2", "Timestamp(9999-12-31T23:59:59.999900)", 2),
+        ("select C_BOOLEAN from TIPOS_FB3 where ID = 1", "Boolean(true)", 3),
+        ("select C_INT128 from TIPOS_FB4 where ID = 1", "-9999999999999999999999999.9999999999", 4),
+        ("select C_DECFLOAT34 from TIPOS_FB4 where ID = 1", "1.234567890123456789012345678901234", 4),
+        ("select C_TS_TZ from TIPOS_FB4 where ID = 1", "2026-08-21 15:03:52.1234 America/Sao_Paulo", 4),
+        ("select C_TIME_TZ from TIPOS_FB4 where ID = 1", "15:03:52.1234 -03:00", 4),
+        ("select C_INT128 from TIPOS_FB4 where ID = 2", "Null", 4),
+    ];
+    let mut failed = 0;
+    for (sql, want, since) in cases {
+        if major >= since {
+            report_case(sql, want, first_value(conn, sql, ()), &mut failed);
+        }
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} fixture values read back wrong");
+    }
     Ok(())
 }
 
@@ -412,19 +448,28 @@ fn report_charsets(conn: &mut impl Queryable) -> Result<()> {
 
     match row {
         Some((win, utf)) => {
-            check("WIN1252 column", win.as_deref());
-            check("UTF8 column", utf.as_deref());
+            let ok = check("WIN1252 column", win.as_deref()) & check("UTF8 column", utf.as_deref());
+            anyhow::ensure!(ok, "accented text did not round-trip");
         }
-        None => println!("  fixture row ID=1 missing"),
+        None => anyhow::bail!("fixture row TIPOS ID=1 missing"),
     }
     Ok(())
 }
 
-fn check(label: &str, got: Option<&str>) {
+fn check(label: &str, got: Option<&str>) -> bool {
     match got {
-        Some(s) if s == EXPECTED_ACCENTED => println!("  {label:<16} ok  {s:?}"),
-        Some(s) => println!("  {label:<16} MANGLED got {s:?} want {EXPECTED_ACCENTED:?}"),
-        None => println!("  {label:<16} null"),
+        Some(s) if s == EXPECTED_ACCENTED => {
+            println!("  {label:<16} ok  {s:?}");
+            true
+        }
+        Some(s) => {
+            println!("  {label:<16} MANGLED got {s:?} want {EXPECTED_ACCENTED:?}");
+            false
+        }
+        None => {
+            println!("  {label:<16} null");
+            false
+        }
     }
 }
 
