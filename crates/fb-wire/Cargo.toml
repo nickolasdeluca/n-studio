@@ -79,3 +79,7 @@ version = "0.10.0"
 
 [dependencies.sha2]
 version = "0.10.2"
+
+[lints.rust]
+# Upstream marks code for its coverage tool
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tarpaulin_include)"] }

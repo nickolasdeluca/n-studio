@@ -47,7 +47,7 @@ pub fn decode_date(date: ibase::ISC_DATE) -> NaiveDate {
         year += 1;
     };
 
-    chrono::NaiveDate::from_ymd(year, month as u32, day as u32)
+    chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32).expect("a Firebird date is a valid date")
 }
 
 /// Convert a [day, month, year] to numeric day (Ported from the firebird source)
@@ -84,7 +84,8 @@ pub fn decode_time(time: ibase::ISC_TIME) -> NaiveTime {
 
     let fraction = ntime % ibase::ISC_TIME_SECONDS_PRECISION;
 
-    chrono::NaiveTime::from_hms_nano(hours, minutes, seconds, fraction * FRACTION_TO_NANOS)
+    chrono::NaiveTime::from_hms_nano_opt(hours, minutes, seconds, fraction * FRACTION_TO_NANOS)
+        .expect("a Firebird time is a valid time")
 }
 
 /// Convert a [hours, minutes, seconds] to a numeric time (Ported from the firebird source)
@@ -119,14 +120,14 @@ impl IntoParam for NaiveDateTime {
 impl IntoParam for NaiveDate {
     fn into_param(self) -> SqlType {
         // Mimics firebird conversion
-        self.and_time(NaiveTime::from_hms(0, 0, 0)).into_param()
+        self.and_time(NaiveTime::MIN).into_param()
     }
 }
 
 impl IntoParam for NaiveTime {
     fn into_param(self) -> SqlType {
         // Mimics firebird conversion
-        chrono::Utc::today().naive_utc().and_time(self).into_param()
+        chrono::Utc::now().date_naive().and_time(self).into_param()
     }
 }
 

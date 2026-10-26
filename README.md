@@ -35,8 +35,8 @@ cargo run -p fb-probe -- --matrix          # every server in docker/compose.yml
 cargo run -p fb-probe --bin handshake      # raw op_connect dump, for auth debugging
 ```
 
-`FB_AUTH=legacy` selects Legacy_Auth, needed for servers whose SRP user store is
-empty. `FBW_TRACE=1` dumps wire packets.
+`FB_AUTH=legacy` makes the tools lead with Legacy_Auth, for servers whose SRP
+user store is empty; in the app it is a per-registration setting. `FBW_TRACE=1` dumps wire packets.
 
 ## License
 

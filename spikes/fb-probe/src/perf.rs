@@ -27,6 +27,7 @@ pub fn perf(sql: &str) -> Result<()> {
         user: env_or("FB_USER", "SYSDBA"),
         pass: env_or("FB_PASS", "masterkey"),
         role_name: None,
+        ..Default::default()
     };
     let dialect = Dialect::D3;
 

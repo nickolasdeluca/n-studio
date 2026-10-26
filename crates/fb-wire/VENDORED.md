@@ -17,6 +17,17 @@ in the workspace manifest.
   specific data; `parse_accept` tolerates the empty plugin name a server sends when
   it has already authenticated the connection. Required by Firebird 3/4/5 servers
   kept compatible with 2.5-era applications.
+- **Auth plugin as a connection setting.** `RustFbClientAttachmentConfig::auth`
+  (`AuthPlugin::Srp`, the default, or `Legacy`) picks what the handshake leads
+  with; `FB_AUTH=legacy` still overrides it, for tools built on the high-level
+  builder, which has no field for it.
+- **Falling through the server's plugin list.** A server that turns down a
+  plugin's proof does not refuse the login yet: it answers `op_cont_auth`
+  naming the next plugin on its `AuthServer` list, on the `op_attach` reply
+  (proof in the DPB) as well as during `op_cont_auth` (encrypted). Both now
+  answer it, round after round, so a wrong password surfaces as the server's
+  login error rather than "connection rejected (ContAuth)", and a user known
+  only to a later plugin can still log in.
 - **SRP on servers with wire encryption off.** Such servers answer `op_accept_data`,
   not `op_cond_accept`, and expect the SRP proof in the attach DPB
   (`isc_dpb_specific_auth_data`); upstream always sent `op_cont_auth`, which the

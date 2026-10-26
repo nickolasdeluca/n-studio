@@ -399,7 +399,7 @@ major's latest patch.
 The driver work is no longer a background task running parallel to the UI. Order:
 
 1. ~~Wire reader framing rewrite~~ — done, §8.
-2. **Auth plugin as a connection setting** (SRP fixed in §8; Legacy_Auth still an env var).
+2. ~~Auth plugin as a connection setting~~ — done: `AuthPlugin` on the attachment config, and the handshake now falls through the server's plugin list instead of failing on its first `op_cont_auth`.
 3. ~~`op_info_sql` (plan) and `op_info_database` (performance counters)~~ — done, §9.
 4. `op_cancel`, then events, then services.
 

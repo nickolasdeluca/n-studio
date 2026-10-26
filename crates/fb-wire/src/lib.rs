@@ -11,7 +11,8 @@ mod wire;
 mod xsqlda;
 
 pub use client::{
-    DbHandle, RustFbClient, RustFbClientAttachmentConfig, StmtHandle, StmtHandleData, TrHandle,
+    AuthPlugin, DbHandle, RustFbClient, RustFbClientAttachmentConfig, StmtHandle, StmtHandleData,
+    TrHandle,
 };
 pub use info::{DatabaseCounters, TableCounters};
 

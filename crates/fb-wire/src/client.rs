@@ -62,7 +62,6 @@ pub(crate) fn trace(label: &str, bytes: &[u8]) {
     }
 }
 
-
 /// Firebird's Legacy_Auth password hash: DES crypt with the fixed salt "9z",
 /// minus the two salt characters. Identical to what the protocol 11/12 DPB
 /// path sends as `isc_dpb_password_enc`.
@@ -87,6 +86,18 @@ pub struct RustFbClientAttachmentConfig {
     pub user: String,
     pub pass: String,
     pub role_name: Option<String>,
+    pub auth: AuthPlugin,
+}
+
+/// The auth plugin the client leads with
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AuthPlugin {
+    /// Srp256, then Srp, then Legacy_Auth: what fbclient offers
+    #[default]
+    Srp,
+    /// Legacy_Auth first: the only way in to servers whose Srp user store is
+    /// empty, typically kept compatible with 2.5-era applications
+    Legacy,
 }
 
 /// A Connection to a firebird server
@@ -180,6 +191,7 @@ impl FirebirdClientDbOps for RustFbClient {
                 user,
                 pass,
                 self.charset.clone(),
+                config.auth,
             )?,
         };
 
@@ -232,6 +244,7 @@ impl FirebirdClientDbOps for RustFbClient {
                 user,
                 pass,
                 self.charset.clone(),
+                config.auth,
             )?,
         };
 
@@ -388,6 +401,7 @@ impl FirebirdWireConnection {
         user: &str,
         pass: &str,
         charset: Charset,
+        auth: AuthPlugin,
     ) -> Result<Self, FbError> {
         let socket = TcpStream::connect((host, port))?;
 
@@ -404,12 +418,10 @@ impl FirebirdWireConnection {
         // Random key for the srp
         let srp_key: [u8; 32] = rand::random();
 
-        // Auth plugin preference. `legacy` leads with Legacy_Auth, which is the
-        // only path that works against servers whose Srp user store is empty.
-        let legacy_hashed = match env::var("FB_AUTH").as_deref() {
-            Ok("legacy") => Some(legacy_hash(pass)),
-            _ => None,
-        };
+        // FB_AUTH=legacy is a development override for tools built on the
+        // high-level rsfbclient builder, which cannot set `auth`.
+        let legacy = auth == AuthPlugin::Legacy || env::var("FB_AUTH").as_deref() == Ok("legacy");
+        let legacy_hashed = legacy.then(|| legacy_hash(pass));
         let req = connect(
             db_name,
             user,
@@ -472,7 +484,8 @@ impl FirebirdWireConnection {
                         let srp = SrpClient::<sha1::Sha1>::new(&srp_key, &SRP_GROUP);
 
                         if let Some(data) = auth_plugin.data {
-                            socket = srp_auth(
+                            let next;
+                            (socket, next) = srp_auth(
                                 socket,
                                 &mut buff,
                                 &mut pending,
@@ -482,9 +495,10 @@ impl FirebirdWireConnection {
                                 pass,
                                 data,
                             )?;
-
-                            // Authentication Ok
-                            break;
+                            match next {
+                                Some(next) => auth_plugin = next,
+                                None => break,
+                            }
                         } else {
                             // Server requested a different authentication method than the client specified
                             // in the initial connection
@@ -551,7 +565,8 @@ impl FirebirdWireConnection {
                         let srp = SrpClient::<sha2::Sha256>::new(&srp_key, &SRP_GROUP);
 
                         if let Some(data) = auth_plugin.data {
-                            socket = srp_auth(
+                            let next;
+                            (socket, next) = srp_auth(
                                 socket,
                                 &mut buff,
                                 &mut pending,
@@ -561,9 +576,10 @@ impl FirebirdWireConnection {
                                 pass,
                                 data,
                             )?;
-
-                            // Authentication Ok
-                            break;
+                            match next {
+                                Some(next) => auth_plugin = next,
+                                None => break,
+                            }
                         } else {
                             // Server requested a different authentication method than the client specified
                             // in the initial connection
@@ -656,9 +672,46 @@ impl FirebirdWireConnection {
         self.socket.write_all(&req)?;
         self.socket.flush()?;
 
-        let resp = self.read_response()?;
-
-        Ok(DbHandle(resp.handle))
+        // With the auth data in the DPB (op_accept_data), a server that turns
+        // it down does not refuse yet: it answers op_cont_auth with the next
+        // plugin on its list, and the login fails only once none is left.
+        // Each round starts with the server asking for the client's first
+        // data (an SRP public key) and ends with it sending its own.
+        let mut srp_key: [u8; 32] = rand::random();
+        loop {
+            let next = self.read_reply(|r, lazy| {
+                let mut peek = r.clone();
+                if peek.get_u32()? == WireOp::ContAuth as u32 {
+                    return Ok(Ok(AttachReply::ContAuth(parse_cont_auth(r)?)));
+                }
+                Ok(op_response(r, lazy)?.map(AttachReply::Attached))
+            })??;
+            let plugin = match next {
+                AttachReply::Attached(resp) => return Ok(DbHandle(resp.handle)),
+                AttachReply::ContAuth(plugin) => plugin,
+            };
+            let data = match (&plugin.kind, &plugin.data) {
+                (AuthPluginType::Srp, Some(data)) => {
+                    let srp = SrpClient::<sha1::Sha1>::new(&srp_key, &SRP_GROUP);
+                    srp_proof(srp, user, pass, data)?.0
+                }
+                (AuthPluginType::Srp256, Some(data)) => {
+                    let srp = SrpClient::<sha2::Sha256>::new(&srp_key, &SRP_GROUP);
+                    srp_proof(srp, user, pass, data)?.0
+                }
+                (AuthPluginType::Srp | AuthPluginType::Srp256, None) => {
+                    srp_key = rand::random();
+                    // The public key does not depend on the digest
+                    let srp = SrpClient::<sha1::Sha1>::new(&srp_key, &SRP_GROUP);
+                    hex::encode(srp.get_a_pub()).into_bytes()
+                }
+                (AuthPluginType::Legacy, _) => legacy_hash(pass).into_bytes(),
+            };
+            let req = cont_auth(&data, plugin.kind, AuthPluginType::plugin_list(), &plugin.keys);
+            trace("op_cont_auth(attach) ->", &req);
+            self.socket.write_all(&req)?;
+            self.socket.flush()?;
+        }
     }
 
     /// Disconnect from the database
@@ -1330,7 +1383,10 @@ where
     Ok((proof, verifier.get_key().to_vec()))
 }
 
-/// Performs the srp authentication with the server, returning the encrypted stream
+/// Performs the srp authentication with the server, returning the encrypted
+/// stream. A proof the server turns down is not an error yet: it answers
+/// op_cont_auth naming the next plugin on its list, returned here for another
+/// round, and refuses the login only once it has run out of them.
 fn srp_auth<D>(
     mut socket: FbStream,
     buff: &mut [u8],
@@ -1340,7 +1396,7 @@ fn srp_auth<D>(
     user: &str,
     pass: &str,
     data: SrpAuthData,
-) -> Result<FbStream, FbError>
+) -> Result<(FbStream, Option<crate::wire::AuthPlugin>), FbError>
 where
     D: digest::Digest,
 {
@@ -1352,7 +1408,16 @@ where
     socket.write_all(&req)?;
     socket.flush()?;
 
-    read_reply(&mut socket, buff, pending, &mut 0, op_response)??;
+    let next = read_reply(&mut socket, buff, pending, &mut 0, |r, _| {
+        let mut peek = r.clone();
+        if peek.get_u32()? == WireOp::ContAuth as u32 {
+            return Ok(Ok(Some(parse_cont_auth(r)?)));
+        }
+        Ok(op_response(r, &mut 0)?.map(|_| None))
+    })??;
+    if next.is_some() {
+        return Ok((socket, next));
+    }
 
     // Enable wire encryption
     socket.write_all(&crypt("Arc4", "Symmetric"))?;
@@ -1369,7 +1434,13 @@ where
 
     read_reply(&mut socket, buff, pending, &mut 0, op_response)??;
 
-    Ok(socket)
+    Ok((socket, None))
+}
+
+/// What the server answers an op_attach with
+enum AttachReply {
+    Attached(Response),
+    ContAuth(crate::wire::AuthPlugin),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1435,8 +1506,16 @@ fn connection_test() {
     let user = "SYSDBA";
     let pass = "masterkey";
 
-    let mut conn =
-        FirebirdWireConnection::connect("127.0.0.1", 3050, db_name, user, pass, UTF_8).unwrap();
+    let mut conn = FirebirdWireConnection::connect(
+        "127.0.0.1",
+        3050,
+        db_name,
+        user,
+        pass,
+        UTF_8,
+        AuthPlugin::Srp,
+    )
+    .unwrap();
 
     let mut db_handle = conn
         .attach_database(db_name, user, pass, None, Dialect::D3, false)

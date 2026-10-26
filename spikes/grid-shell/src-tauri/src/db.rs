@@ -132,6 +132,7 @@ impl Actor {
             user: var("FB_USER", "SYSDBA"),
             pass: var("FB_PASS", "masterkey"),
             role_name: None,
+            ..Default::default()
         };
         let dialect = Dialect::D3;
 
