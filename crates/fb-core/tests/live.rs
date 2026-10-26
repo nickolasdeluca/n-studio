@@ -206,8 +206,12 @@ fn fixture_writes_report_records_and_table_counters() {
 fn a_running_statement_can_be_cancelled() {
     let Some(conn) = connect() else { return };
     let conn = std::sync::Arc::new(conn);
-    // Nothing runs: nothing to cancel
-    assert!(!conn.cancel().unwrap());
+    // Nothing runs: nothing to cancel. A protocol without op_cancel says so.
+    match conn.cancel() {
+        Ok(sent) => assert!(!sent),
+        Err(Error::Client { message }) => return eprintln!("skipped: {message}"),
+        Err(e) => panic!("{e:?}"),
+    }
 
     let tx = conn.begin(read_only()).unwrap();
     let options = ExecuteOptions { plan: false, performance: false };
