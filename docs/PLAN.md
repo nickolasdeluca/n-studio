@@ -51,11 +51,11 @@ with a real 1M-row table before we commit.
 ```
 n-studio/
 ├─ crates/
-│  ├─ fb-core/       connection actor, transactions, statement exec, type mapping, cursors
-│  ├─ fb-meta/       version-aware RDB$ introspection, DDL generation, dependency graph
-│  ├─ fb-sql/        lexer, statement splitter (SET TERM aware), completion context
-│  ├─ fb-services/   backup/restore/validate/sweep/stats via Services API
-│  └─ fb-monitor/    MON$ tables: attachments, transactions, statements, I/O stats
+│  ├─ fb-core/       connection actor, transactions, statement exec, type mapping, cursors,
+│  │                 the services manager (backup/restore/validate/sweep/stats)
+│  ├─ fb-meta/       version-aware RDB$ introspection, DDL generation, dependency graph,
+│  │                 MON$ activity (attachments, transactions, statements), users
+│  └─ fb-sql/        lexer, statement splitter (SET TERM aware), completion context
 ├─ src-tauri/        commands, app state, cursor registry, config, keychain
 └─ ui/               React + TS: explorer, editor, grid, object editors
 ```
@@ -184,9 +184,33 @@ found by a primary key, or a unique one without nulls; a table without either st
 read-only. Blobs are not edited in the grid. Result grids of the SQL editor stay
 read-only: a query does not say which table a row belongs to.
 
-### M5 — Services + monitoring
+### M5 — Services + monitoring — done
 Backup / restore / validate / sweep / statistics, user manager, `MON$`-based
 activity monitor, kill-attachment.
+
+Done. The pure-Rust driver had no Services API, so the wire client learned it
+(`op_service_attach` / `start` / `info` / `detach`, sharing the database attach's
+authentication). Backup, restore, validation, sweep, statistics and the server log
+run from a registration's menu and write into a tab as they go; every path is a
+path on the server. Validation never mends, and is online on Firebird 3 and later.
+A restore refuses the path of the database it was started from. Stopping a service
+stops listening to it: the Services API has no cancel, so the server may finish
+what it began.
+
+The activity monitor reads `MON$` (attachments with their I/O and record counters,
+statements, transactions, the database's header counters), by hand or every few
+seconds. Disconnecting an attachment and cancelling a statement are scripts, shown
+before they run like every other change, as are creating, changing and dropping
+users. Users are listed from `SEC$USERS` on Firebird 3 and later and through the
+services manager on 2.5.
+
+The two planned crates did not happen: services are a connection, and live with
+the connection in `fb-core`; the monitor and the users are catalog readers, and
+live in `fb-meta`.
+
+Left out: `nbackup`, shutting a database down and bringing it online, changing
+its header settings (sweep interval, forced writes), mending a corrupt database,
+trace sessions, and non-ASCII paths in service arguments.
 
 ### M6 — Stretch
 PSQL debugger (IBExpert's is an *emulator*: it parses the procedure body and executes
