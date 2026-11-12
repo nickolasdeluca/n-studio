@@ -82,19 +82,19 @@ pub struct GridColumn {
     kind: CellKind,
 }
 
-const fn text(label: &'static str) -> GridColumn {
+pub(crate) const fn text(label: &'static str) -> GridColumn {
     GridColumn { label, kind: CellKind::Text }
 }
 
-const fn number(label: &'static str) -> GridColumn {
+pub(crate) const fn number(label: &'static str) -> GridColumn {
     GridColumn { label, kind: CellKind::Number }
 }
 
-const fn flag(label: &'static str) -> GridColumn {
+pub(crate) const fn flag(label: &'static str) -> GridColumn {
     GridColumn { label, kind: CellKind::Flag }
 }
 
-const fn code(label: &'static str) -> GridColumn {
+pub(crate) const fn code(label: &'static str) -> GridColumn {
     GridColumn { label, kind: CellKind::Code }
 }
 
@@ -107,8 +107,8 @@ pub struct ObjectRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GridRow {
-    cells: Vec<Option<String>>,
-    open: Option<ObjectRef>,
+    pub(crate) cells: Vec<Option<String>>,
+    pub(crate) open: Option<ObjectRef>,
     /// What the section's row actions act on: a column's name, a
     /// constraint's
     pub(crate) key: Option<String>,
@@ -127,7 +127,7 @@ pub struct GridSection {
 }
 
 impl GridSection {
-    fn new(title: Option<&'static str>, columns: Vec<GridColumn>, rows: Vec<GridRow>) -> Self {
+    pub(crate) fn new(title: Option<&'static str>, columns: Vec<GridColumn>, rows: Vec<GridRow>) -> Self {
         Self { title, columns, rows, actions: Vec::new(), row_actions: Vec::new() }
     }
 

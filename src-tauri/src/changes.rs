@@ -28,15 +28,15 @@ pub struct Action {
     danger: bool,
 }
 
-const fn asks(id: &'static str, label: &'static str) -> Action {
+pub(crate) const fn asks(id: &'static str, label: &'static str) -> Action {
     Action { id, label, form: true, danger: false }
 }
 
-const fn does(id: &'static str, label: &'static str) -> Action {
+pub(crate) const fn does(id: &'static str, label: &'static str) -> Action {
     Action { id, label, form: false, danger: false }
 }
 
-const fn destroys(id: &'static str, label: &'static str) -> Action {
+pub(crate) const fn destroys(id: &'static str, label: &'static str) -> Action {
     Action { id, label, form: false, danger: true }
 }
 
@@ -155,6 +155,8 @@ fn role_names(conn: &Connection) -> AppResult<Vec<String>> {
 #[serde(rename_all = "snake_case")]
 pub enum FieldKind {
     Text,
+    /// Text that is not shown as it is typed
+    Password,
     /// SQL, in the editor's font
     Code,
     Number,
@@ -177,27 +179,27 @@ pub struct FormField {
     hint: Option<&'static str>,
 }
 
-fn field(id: &'static str, label: &'static str, kind: FieldKind) -> FormField {
+pub(crate) fn field(id: &'static str, label: &'static str, kind: FieldKind) -> FormField {
     FormField { id, label, kind, value: String::new(), options: Vec::new(), required: false, hint: None }
 }
 
 impl FormField {
-    fn value(mut self, value: impl Into<String>) -> Self {
+    pub(crate) fn value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
         self
     }
 
-    fn options(mut self, options: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub(crate) fn options(mut self, options: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.options = options.into_iter().map(Into::into).collect();
         self
     }
 
-    fn required(mut self) -> Self {
+    pub(crate) fn required(mut self) -> Self {
         self.required = true;
         self
     }
 
-    fn hint(mut self, hint: &'static str) -> Self {
+    pub(crate) fn hint(mut self, hint: &'static str) -> Self {
         self.hint = Some(hint);
         self
     }
@@ -206,8 +208,8 @@ impl FormField {
 /// What an action asks before it can be a script
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Form {
-    title: String,
-    fields: Vec<FormField>,
+    pub(crate) title: String,
+    pub(crate) fields: Vec<FormField>,
 }
 
 const COLUMNS_HINT: &str = "Separated by commas.";
@@ -419,11 +421,11 @@ fn form(conn: &Connection, kind: ObjectKind, name: &str, action: &str, key: &Opt
 /// An action as the script that carries it out
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActionScript {
-    script: String,
+    pub(crate) script: String,
     /// What the script is about, for whoever reads it before it runs
-    title: String,
+    pub(crate) title: String,
     /// The name the object goes by once the script ran, when it renames it
-    renamed: Option<String>,
+    pub(crate) renamed: Option<String>,
 }
 
 /// What an action is about: the object, and the part of it when it has one

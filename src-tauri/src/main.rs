@@ -1,6 +1,7 @@
 // No console window behind the app on Windows release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod admin;
 mod changes;
 mod commands;
 mod editor;
@@ -57,6 +58,11 @@ fn main() {
             editor::statement_parameters,
             script::script_run,
             script::script_cancel,
+            admin::admin_view,
+            admin::admin_form,
+            admin::admin_script,
+            admin::service_run,
+            admin::service_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

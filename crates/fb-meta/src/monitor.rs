@@ -10,6 +10,7 @@
 use fb_core::{Connection, ExecuteOptions, Result, TxEnd, TxOptions, Value};
 use serde::Serialize;
 
+use crate::ddl::{Context, Statement as DdlStatement};
 use crate::row::{inline, rows, Row};
 use crate::Generation;
 
@@ -271,11 +272,28 @@ pub fn statement_text(conn: &Connection, id: i64) -> Result<Option<String>> {
     Ok(found.first().and_then(|r| r.text(0)))
 }
 
-/// Runs one delete on a monitoring table, which is how the server is asked
-/// to end what the row stands for
-fn remove(conn: &Connection, sql: &str, id: i64) -> Result<()> {
+/// Disconnects an attachment, as the statement that asks it of the server:
+/// its transactions are rolled back. Never the connection that runs it, nor
+/// one of the server's own.
+pub fn kill(id: i64, ctx: &Context) -> DdlStatement {
+    let system = if ctx.major >= 3 { "\n  AND COALESCE(MON$SYSTEM_FLAG, 0) = 0" } else { "" };
+    DdlStatement::plain(format!(
+        "DELETE FROM MON$ATTACHMENTS\nWHERE MON$ATTACHMENT_ID = {id}\n  AND MON$ATTACHMENT_ID <> CURRENT_CONNECTION{system}"
+    ))
+}
+
+/// Cancels a statement another attachment is running; that attachment and
+/// its transaction carry on
+pub fn cancel(id: i64) -> DdlStatement {
+    DdlStatement::plain(format!(
+        "DELETE FROM MON$STATEMENTS\nWHERE MON$STATEMENT_ID = {id}\n  AND MON$ATTACHMENT_ID <> CURRENT_CONNECTION"
+    ))
+}
+
+/// Runs one of the statements above, in a transaction of its own
+fn run(conn: &Connection, statement: &DdlStatement) -> Result<()> {
     let tx = conn.begin(TxOptions::default())?;
-    let done = conn.execute(tx, sql, vec![Value::Integer(id)], ExecuteOptions { plan: false, performance: false });
+    let done = conn.execute(tx, &statement.sql, vec![], ExecuteOptions { plan: false, performance: false });
     match done {
         Ok(_) => conn.end(tx, TxEnd::Commit),
         Err(e) => {
@@ -285,25 +303,10 @@ fn remove(conn: &Connection, sql: &str, id: i64) -> Result<()> {
     }
 }
 
-/// Disconnects an attachment: its transactions are rolled back. Never this
-/// connection's own, nor one of the server's.
 pub fn kill_attachment(conn: &Connection, id: i64) -> Result<()> {
-    let system = match Generation::of(conn.info()) {
-        Generation::Fb3 => " and coalesce(mon$system_flag, 0) = 0",
-        Generation::Fb2 => "",
-    };
-    let sql = format!(
-        "delete from mon$attachments where mon$attachment_id = ? and mon$attachment_id <> current_connection{system}"
-    );
-    remove(conn, &sql, id)
+    run(conn, &kill(id, &Context::of(conn.info())))
 }
 
-/// Cancels a statement another attachment is running; that attachment and
-/// its transaction carry on
 pub fn cancel_statement(conn: &Connection, id: i64) -> Result<()> {
-    remove(
-        conn,
-        "delete from mon$statements where mon$statement_id = ? and mon$attachment_id <> current_connection",
-        id,
-    )
+    run(conn, &cancel(id))
 }

@@ -8,11 +8,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use fb_core::{Connection, ServerInfo};
+use fb_core::{ConnectParams, Connection, ServerInfo};
 use fb_meta::{DbObject, ObjectKind};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::admin::Services;
 use crate::editor::Results;
 use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
@@ -25,6 +26,11 @@ pub struct AppState {
     sessions: Mutex<HashMap<String, Arc<Connection>>>,
     pub(crate) results: Results,
     pub(crate) scripts: Scripts,
+    pub(crate) services: Services,
+    /// What each open connection was made with, for the services manager:
+    /// a connection of its own, to the same server as the same user. Kept
+    /// only while connected, and only in memory.
+    params: Mutex<HashMap<String, ConnectParams>>,
 }
 
 impl AppState {
@@ -34,6 +40,8 @@ impl AppState {
             sessions: Mutex::default(),
             results: Results::default(),
             scripts: Scripts::default(),
+            services: Services::default(),
+            params: Mutex::default(),
         }
     }
 
@@ -44,6 +52,22 @@ impl AppState {
             .get(id)
             .cloned()
             .ok_or_else(|| AppError::NotConnected { message: "The database is not connected.".into() })
+    }
+
+    /// How a connected registration reaches its server
+    pub(crate) fn params(&self, id: &str) -> AppResult<ConnectParams> {
+        self.params
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| AppError::NotConnected { message: "The database is not connected.".into() })
+    }
+
+    fn forget(&self, id: &str) {
+        self.sessions.lock().unwrap().remove(id);
+        self.params.lock().unwrap().remove(id);
+        self.results.close_session(id);
     }
 }
 
@@ -120,8 +144,7 @@ pub async fn save_registration(
 #[tauri::command]
 pub async fn delete_registration(app: AppHandle, id: String) -> AppResult<()> {
     blocking(app, move |state| {
-        state.sessions.lock().unwrap().remove(&id);
-        state.results.close_session(&id);
+        state.forget(&id);
         state.registry.lock().unwrap().remove(&id)?;
         secrets::delete(&id)
     })
@@ -169,7 +192,9 @@ pub async fn connect(
             None => return Err(AppError::PasswordRequired { registration: registration.name }),
         };
 
-        let conn = open(&registration, password.clone())?;
+        let Engine::Firebird(settings) = &registration.engine;
+        let params = settings.connect_params(password.clone());
+        let conn = Connection::open(&params)?;
         if given && remember {
             secrets::set(&id, &password)?;
             if !registration.save_password {
@@ -180,6 +205,7 @@ pub async fn connect(
         let info = conn.info().clone();
         // Replacing a session drops the old connection, which detaches.
         state.results.close_session(&id);
+        state.params.lock().unwrap().insert(id.clone(), params);
         state.sessions.lock().unwrap().insert(id, Arc::new(conn));
         Ok(info)
     })
@@ -189,8 +215,7 @@ pub async fn connect(
 #[tauri::command]
 pub fn disconnect(state: State<'_, AppState>, id: String) {
     // The connection's thread detaches once the last request using it ends.
-    state.sessions.lock().unwrap().remove(&id);
-    state.results.close_session(&id);
+    state.forget(&id);
 }
 
 /// The explorer's kinds for a connected database, with their counts
