@@ -404,7 +404,7 @@ fn routines_that_call_each_other_are_declared_first() {
     assert_eq!((even.len(), odd.len(), view.len()), (2, 2, 1), "{script}");
     assert!(even[0] < odd[1] && odd[0] < even[1], "{script}");
     assert!(even[0] < view[0], "{script}");
-    assert!(script.contains("CREATE OR ALTER PROCEDURE P_EVEN (\n    N INTEGER\n)\nRETURNS (\n    R SMALLINT\n)\nAS\nBEGIN\n    SUSPEND;\nEND^"), "{script}");
+    assert!(script.contains("CREATE OR ALTER PROCEDURE P_EVEN (\n    N INTEGER)\nRETURNS (\n    R SMALLINT)\nAS\nBEGIN\n    SUSPEND;\nEND^"), "{script}");
     // One that calls nobody back is there once
     assert_eq!(creations(&script, "PROCEDURE", "P_FIXTURE").len(), 1, "{script}");
 }
