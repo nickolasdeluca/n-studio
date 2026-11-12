@@ -44,15 +44,18 @@ pub struct Statement {
     pub sql: String,
     /// It has a PSQL body, whose semicolons a script must not split at
     pub psql: bool,
+    /// It adds a foreign key, which needs the table it references: in a
+    /// script of several tables it goes after them all
+    pub foreign_key: bool,
 }
 
 impl Statement {
     fn plain(sql: impl Into<String>) -> Self {
-        Self { sql: sql.into(), psql: false }
+        Self { sql: sql.into(), psql: false, foreign_key: false }
     }
 
     fn psql(sql: impl Into<String>) -> Self {
-        Self { sql: sql.into(), psql: true }
+        Self { sql: sql.into(), psql: true, foreign_key: false }
     }
 }
 
@@ -232,7 +235,7 @@ fn constraint(table: &str, c: &Constraint, ctx: &Context) -> Statement {
             sql.push_str(&format!(" USING {order}INDEX {}", ctx.name(index)));
         }
     }
-    Statement::plain(sql)
+    Statement { foreign_key: c.kind == ConstraintKind::ForeignKey, ..Statement::plain(sql) }
 }
 
 pub fn index(i: &Index, ctx: &Context) -> Vec<Statement> {

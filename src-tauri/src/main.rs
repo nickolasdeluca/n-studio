@@ -33,6 +33,7 @@ fn main() {
             commands::object_list,
             objects::object_tabs,
             objects::object_tab,
+            objects::extract_metadata,
             editor::editor_begin,
             editor::editor_end,
             editor::editor_cancel,

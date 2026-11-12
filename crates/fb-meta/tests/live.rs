@@ -300,3 +300,36 @@ fn the_fixture_knows_what_uses_what() {
     assert!(has(&view.used_by, ObjectKind::Procedure, "Procedure", "P_PEDIDO_TOTAL"), "{view:?}");
 }
 
+#[test]
+fn a_selection_scripts_in_an_order_that_runs() {
+    let Some(conn) = fixture() else { return };
+    let pick = |kind, name: &str| (kind, name.to_string());
+    let script = fb_meta::ddl::script(
+        &extract::selection(
+            &conn,
+            &[
+                pick(ObjectKind::Trigger, "TIPOS_BI"),
+                pick(ObjectKind::View, "V_PEDIDO_TOTAL"),
+                pick(ObjectKind::Table, "PEDIDO_ITEM"),
+                pick(ObjectKind::Table, "PEDIDO"),
+                pick(ObjectKind::Table, "TIPOS"),
+                pick(ObjectKind::Index, "IDX_ITEM_PRECO"),
+                pick(ObjectKind::Domain, "D_ID"),
+            ],
+        )
+        .unwrap(),
+    );
+    let at = |text: &str| script.find(text).unwrap_or_else(|| panic!("{text} in {script}"));
+    assert!(at("CREATE DOMAIN D_ID") < at("CREATE TABLE PEDIDO_ITEM ("), "{script}");
+    // The referenced table was picked after the one referencing it
+    assert!(at("CREATE TABLE PEDIDO_ITEM (") < at("CREATE TABLE PEDIDO ("), "{script}");
+    assert!(at("CREATE TABLE PEDIDO (") < at("ADD CONSTRAINT FK_ITEM_PEDIDO FOREIGN KEY"), "{script}");
+    assert!(at("CREATE TABLE TIPOS (") < at("ADD CONSTRAINT FK_ITEM_PEDIDO FOREIGN KEY"), "{script}");
+    assert!(at("ADD CONSTRAINT FK_ITEM_PEDIDO FOREIGN KEY") < at("CREATE OR ALTER VIEW V_PEDIDO_TOTAL"), "{script}");
+    assert!(at("CREATE OR ALTER VIEW V_PEDIDO_TOTAL") < at("CREATE OR ALTER TRIGGER TIPOS_BI"), "{script}");
+    // What came with its table is there once
+    for once in ["CREATE OR ALTER TRIGGER TIPOS_BI", "CREATE DESCENDING INDEX IDX_ITEM_PRECO"] {
+        assert_eq!(script.matches(once).count(), 1, "{once} in {script}");
+    }
+    assert!(script.ends_with("SET TERM ; ^\n"), "{script}");
+}

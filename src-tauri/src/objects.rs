@@ -7,7 +7,7 @@ use fb_core::Connection;
 use fb_meta::{
     extract, Column, Constraint, ConstraintKind, Dependency, Index, ObjectKind, Param, Routine, Trigger, TriggerScope,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::commands::blocking;
@@ -96,7 +96,7 @@ const fn code(label: &'static str) -> GridColumn {
 }
 
 /// An object a grid row stands for, which opening the row opens
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectRef {
     kind: ObjectKind,
     name: String,
@@ -171,6 +171,18 @@ pub async fn object_tab(
     blocking(app, move |state| {
         let conn = state.session(&id)?;
         content(&conn, kind, &name, &tab)
+    })
+    .await
+}
+
+/// The script that would create the picked objects again, in an order it
+/// can run in
+#[tauri::command]
+pub async fn extract_metadata(app: AppHandle, id: String, objects: Vec<ObjectRef>) -> AppResult<String> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        let picked: Vec<(ObjectKind, String)> = objects.into_iter().map(|o| (o.kind, o.name)).collect();
+        Ok(fb_meta::ddl::script(&extract::selection(&conn, &picked)?))
     })
     .await
 }
