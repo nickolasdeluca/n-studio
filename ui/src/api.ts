@@ -249,6 +249,38 @@ export interface ScriptProblem {
   sqlcode: number | null;
 }
 
+export interface DiagramColumn {
+  name: string;
+  typeName: string;
+  domain: string | null;
+  primaryKey: boolean;
+  foreignKey: boolean;
+  required: boolean;
+}
+
+export interface DiagramTable {
+  name: string;
+  columns: DiagramColumn[];
+  /** Related tables the diagram does not show */
+  hidden: string[];
+}
+
+/** A foreign key: `from` holds it, `to` has the key it points at */
+export interface DiagramReference {
+  name: string;
+  from: string;
+  fromColumns: string[];
+  to: string;
+  toColumns: string[];
+}
+
+export interface Diagram {
+  tables: DiagramTable[];
+  references: DiagramReference[];
+  /** Every table of the database */
+  all: string[];
+}
+
 export type AdminView = "monitor" | "users";
 
 /** The `service-output` event */
@@ -478,6 +510,10 @@ export const api = {
   serviceRun: (id: string, run: number, tool: string, values: Record<string, string>) =>
     invoke<ServiceResult>("service_run", { id, run, tool, values }),
   serviceCancel: (run: number) => invoke<boolean>("service_cancel", { run }),
+  /** The tables named and what is within `depth` references of them; the
+   *  whole database's when none is named */
+  diagram: (id: string, tables: string[], depth: number) => invoke<Diagram>("diagram", { id, tables, depth }),
+  writeTextFile: (path: string, text: string) => invoke<null>("write_text_file", { path, text }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

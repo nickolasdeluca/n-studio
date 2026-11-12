@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { api, errorText, type Action, type AdminView, type GridSection, type ServiceOutput } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
+import { openDiagram } from "./diagram";
 import { openAdminPanel } from "./dock";
 import { t } from "./i18n";
 import { useStore, type Dialog } from "./store";
@@ -268,6 +269,7 @@ export function adminActions(id: string): (MenuItem | "separator")[] {
   return [
     { label: t("Activity Monitor"), icon: "search", disabled: !connected, onSelect: () => openAdminView(id, "monitor") },
     { label: t("Users"), icon: "role", disabled: !connected, onSelect: () => openAdminView(id, "users") },
+    { label: t("Diagram"), icon: "table", disabled: !connected, onSelect: () => openDiagram(id) },
     "separator",
     ...tools.map((tool) => ({
       label: t(tool.label),

@@ -4,6 +4,7 @@
 import { adminActions } from "./admin";
 import { api, errorText, type Action, type ObjectKind, type ObjectRef } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
+import { openDiagram } from "./diagram";
 import { closePanel, openEditor, openObject } from "./dock";
 import { t } from "./i18n";
 import { useStore, type Dialog } from "./store";
@@ -34,6 +35,7 @@ export function registrationActions(id: string): (MenuItem | "separator")[] {
 /** What can be done to the objects picked in the explorer or the object list */
 export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "separator")[] {
   const one = objects.length === 1 ? objects[0] : null;
+  const tables = objects.filter((o) => o.kind === "table").map((o) => o.name);
   return [
     {
       label: one ? t("Open") : t("Open {n} Objects", { n: objects.length }),
@@ -47,6 +49,13 @@ export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "se
       icon: "sql",
       disabled: objects.length === 0,
       onSelect: () => void extractMetadata(id, objects),
+    },
+    {
+      label: t("Diagram"),
+      icon: "table",
+      // Of tables and what they are related to
+      disabled: tables.length === 0 || tables.length !== objects.length,
+      onSelect: () => openDiagram(id, tables),
     },
     "separator",
     {

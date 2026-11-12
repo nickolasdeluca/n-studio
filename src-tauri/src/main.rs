@@ -12,6 +12,7 @@ mod registry;
 mod results;
 mod script;
 mod secrets;
+mod tools;
 
 use tauri::Manager;
 
@@ -63,6 +64,8 @@ fn main() {
             admin::admin_script,
             admin::service_run,
             admin::service_cancel,
+            tools::diagram,
+            tools::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

@@ -16,6 +16,7 @@ pub mod change;
 pub mod data;
 pub mod ddl;
 mod deps;
+pub mod diagram;
 pub mod extract;
 pub mod grant;
 mod ident;

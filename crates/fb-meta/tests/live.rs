@@ -627,3 +627,46 @@ fn users_are_created_changed_and_dropped() {
     run(&[users::drop(name, None, &ctx)]);
     assert_eq!(listed(), None);
 }
+
+/// Reads only: a diagram is asked of any database
+#[test]
+fn a_diagram_shows_tables_and_what_joins_them() {
+    use fb_meta::diagram::{diagram, MOST};
+    let Some(conn) = connect() else { return };
+    let whole = diagram(&conn, &[], 0).unwrap();
+    assert_eq!(whole.tables.len(), whole.all.len().min(MOST));
+    let shown: std::collections::HashSet<&str> = whole.tables.iter().map(|t| t.name.as_str()).collect();
+    for r in &whole.references {
+        assert!(shown.contains(r.from.as_str()) && shown.contains(r.to.as_str()), "{}", r.name);
+        assert_eq!(r.from_columns.len(), r.to_columns.len(), "{}", r.name);
+        let from = whole.tables.iter().find(|t| t.name == r.from).unwrap();
+        for column in &r.from_columns {
+            assert!(from.columns.iter().any(|c| &c.name == column && c.foreign_key), "{}.{column}", r.name);
+        }
+    }
+    assert!(whole.tables.iter().all(|t| !t.columns.is_empty() && t.columns.iter().all(|c| !c.type_name.is_empty())));
+
+    // From one table that references another: itself alone, then with its neighbours
+    let Some(r) = whole.references.iter().find(|r| r.from != r.to) else { return };
+    let alone = diagram(&conn, std::slice::from_ref(&r.from), 0).unwrap();
+    assert_eq!(alone.tables.len(), 1);
+    assert!(alone.tables[0].hidden.contains(&r.to), "{:?}", alone.tables[0].hidden.len());
+    assert!(alone.references.iter().all(|x| x.from == x.to));
+    let near = diagram(&conn, std::slice::from_ref(&r.from), 1).unwrap();
+    assert!(near.tables.iter().any(|t| t.name == r.to));
+    assert!(near.references.iter().any(|x| x.name == r.name));
+}
+
+#[test]
+fn the_fixture_diagram_has_its_keys() {
+    use fb_meta::diagram::diagram;
+    let Some(conn) = fixture() else { return };
+    let d = diagram(&conn, &["PEDIDO_ITEM".to_string()], 1).unwrap();
+    let names: Vec<&str> = d.tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["PEDIDO_ITEM", "PEDIDO"]);
+    let item = &d.tables[0];
+    let pedido = item.columns.iter().find(|c| c.name == "PEDIDO").unwrap();
+    assert!(pedido.primary_key && pedido.foreign_key && pedido.required, "{pedido:?}");
+    let fk = d.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").unwrap();
+    assert_eq!((fk.from.as_str(), fk.to.as_str(), fk.to_columns.as_slice()), ("PEDIDO_ITEM", "PEDIDO", &["ID".to_string()][..]));
+}
