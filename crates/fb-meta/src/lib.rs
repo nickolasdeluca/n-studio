@@ -12,6 +12,28 @@
 use fb_core::{Connection, Error, Result, ServerInfo, Value};
 use serde::{Deserialize, Serialize};
 
+pub mod ddl;
+mod deps;
+pub mod extract;
+mod ident;
+mod object;
+mod routine;
+mod row;
+mod table;
+mod types;
+
+pub use deps::{dependencies, Dependencies, Dependency};
+pub use ident::{literal, quote};
+pub use object::{
+    domain, domains, exception, exceptions, generator, generators, role, Domain, Exception, Generator, Role,
+};
+pub use routine::{function, package, procedure, udf, Package, Param, Routine, RoutineKind, Udf, UdfArgument};
+pub use table::{
+    columns, constraints, index, indices, table, tables, trigger, triggers, view, views, Column, Constraint,
+    ConstraintKind, Identity, Index, Reference, Storage, Table, Trigger, TriggerScope, View,
+};
+pub use types::DataType;
+
 /// The kinds of object the explorer shows, in its order
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
