@@ -2,6 +2,12 @@
 //! `ConnectParams::from_env`). Skipped without them. Read-only: these also
 //! run against real databases.
 
+use std::sync::atomic::AtomicBool;
+
+use fb_core::{
+    run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask,
+    StatisticsOptions,
+};
 use fb_core::{
     run_script, ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait,
     ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
@@ -377,4 +383,143 @@ fn an_atomic_script_that_fails_leaves_nothing() {
     let cancelled = std::sync::atomic::AtomicBool::new(true);
     let summary = run_script(&conn, None, TxOptions::default(), script, options, &cancelled, |_, _| {}).unwrap();
     assert_eq!((summary.done, summary.failed, summary.cancelled, summary.ended), (0, 0, true, None));
+}
+
+/// Asks only who the server is: fine against any server
+#[test]
+fn the_services_manager_names_the_server() {
+    let Some(params) = ConnectParams::from_env() else { return };
+    let conn = Connection::open(&params).expect("connect");
+    let version = server_version(&params).unwrap();
+    assert!(version.contains("Firebird"), "{version}");
+    assert!(version.contains(&format!("{}.{}", conn.info().major, conn.info().minor)), "{version}");
+}
+
+#[test]
+fn a_service_refuses_a_wrong_password() {
+    let Some(mut params) = ConnectParams::from_env() else { return };
+    params.password = "not-the-password".into();
+    assert!(matches!(server_version(&params), Err(Error::Server { .. })));
+}
+
+/// What a service wrote, run to its end
+fn service_output(params: &ConnectParams, task: &ServiceTask) -> Vec<String> {
+    let mut lines = Vec::new();
+    let end = run_service(params, task, &AtomicBool::new(false), |line| lines.push(line.to_string()));
+    assert_eq!(end.unwrap_or_else(|e| panic!("{task:?}: {e}\n{}", lines.join("\n"))), ServiceEnd::Finished);
+    lines
+}
+
+/// Services read and write files on the server, so only against the
+/// fixture: its database is backed up, restored beside itself, and the
+/// copy is what gets validated and swept.
+#[test]
+fn fixture_services_back_up_restore_and_look_after_a_database() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let conn = Connection::open(&params).expect("connect");
+    let major = conn.info().major;
+    let database = params.database.clone();
+    let dir = database.rsplit_once('/').map(|(dir, _)| dir).expect("the fixture's path");
+    let file = format!("{dir}/services_test.fbk");
+    let copy = format!("{dir}/services_test.fdb");
+
+    let header = service_output(
+        &params,
+        &ServiceTask::Statistics {
+            database: database.clone(),
+            options: StatisticsOptions { header_only: true, ..Default::default() },
+        },
+    );
+    assert!(header.iter().any(|l| l.contains("Page size")), "{header:?}");
+    assert!(!header.iter().any(|l| l.contains("Data pages")), "{header:?}");
+
+    let pages = service_output(
+        &params,
+        &ServiceTask::Statistics {
+            database: database.clone(),
+            options: StatisticsOptions { data_pages: true, index_pages: true, ..Default::default() },
+        },
+    );
+    assert!(pages.iter().any(|l| l.starts_with("TIPOS")), "{pages:?}");
+
+    let backup = service_output(
+        &params,
+        &ServiceTask::Backup {
+            database: database.clone(),
+            file: file.clone(),
+            options: BackupOptions { no_garbage_collect: true, ..Default::default() },
+        },
+    );
+    assert!(backup.iter().any(|l| l.contains("TIPOS")), "{backup:?}");
+
+    let restore = |replace| ServiceTask::Restore {
+        file: file.clone(),
+        database: copy.clone(),
+        options: RestoreOptions { replace, page_size: Some(8192), ..Default::default() },
+    };
+    let restored = service_output(&params, &restore(true));
+    assert!(restored.iter().any(|l| l.contains("TIPOS")), "{restored:?}");
+
+    // The copy is a database like the one it came from
+    let mut of_copy = params.clone();
+    of_copy.database = copy.clone();
+    {
+        let copied = Connection::open(&of_copy).expect("the restored database");
+        assert_eq!(copied.info().page_size, 8192);
+        let rows = copied.query("select count(*) from rdb$relations where rdb$relation_name = 'TIPOS'", vec![]).unwrap();
+        assert_eq!(rows.rows[0][0], Value::Integer(1));
+    }
+
+    // Without `replace`, a database that is there is not written over
+    let mut lines = Vec::new();
+    let refused = run_service(&params, &restore(false), &AtomicBool::new(false), |l| lines.push(l.to_string()));
+    assert!(refused.is_err() || lines.iter().any(|l| l.contains("already exists")), "{refused:?} {lines:?}");
+
+    service_output(&params, &ServiceTask::Sweep { database: copy.clone() });
+    service_output(&params, &ServiceTask::Validate { database: copy.clone(), online: false });
+    if major >= 3 {
+        let online = service_output(&params, &ServiceTask::Validate { database: copy.clone(), online: true });
+        assert!(online.iter().any(|l| l.contains("Validation finished")), "{online:?}");
+    }
+
+    let log = service_output(&params, &ServiceTask::ServerLog);
+    let _ = log;
+
+    // A backup that cannot be written says so
+    let mut lines = Vec::new();
+    let failed = run_service(
+        &params,
+        &ServiceTask::Backup {
+            database: database.clone(),
+            file: format!("{dir}/no-such-directory/x.fbk"),
+            options: BackupOptions::default(),
+        },
+        &AtomicBool::new(false),
+        |l| lines.push(l.to_string()),
+    );
+    assert!(failed.is_err() || lines.iter().any(|l| l.to_lowercase().contains("error")), "{failed:?} {lines:?}");
+
+    if major < 3 {
+        let users = service_users(&params).unwrap();
+        assert!(users.iter().any(|u| u.name == "SYSDBA"), "{users:?}");
+    }
+}
+
+/// Stopping to listen ends the run as cancelled
+#[test]
+fn fixture_a_service_can_be_left_before_it_ends() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let cancel = AtomicBool::new(false);
+    let task = ServiceTask::Statistics {
+        database: params.database.clone(),
+        options: StatisticsOptions { data_pages: true, index_pages: true, system_relations: true, ..Default::default() },
+    };
+    let end = run_service(&params, &task, &cancel, |_| cancel.store(true, std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(end.unwrap(), ServiceEnd::Cancelled);
 }

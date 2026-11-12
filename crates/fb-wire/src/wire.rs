@@ -435,6 +435,77 @@ pub fn prepare_statement(
     Ok(req.freeze())
 }
 
+/// The name the services manager is attached by, in place of a database's
+pub const SERVICE_MANAGER: &str = "service_mgr";
+
+/// Attach to the services manager (`isc_service_attach`). The parameter
+/// block carries the login as a DPB does, by protocol.
+pub fn service_attach(user: &str, pass: &str, protocol: ProtocolVersion, auth_data: Option<&[u8]>) -> Bytes {
+    let mut spb = BytesMut::with_capacity(64);
+    spb.put_slice(&[ibase::isc_spb_version as u8, ibase::isc_spb_current_version as u8]);
+    spb.put_slice(&[ibase::isc_spb_user_name as u8, user.len() as u8]);
+    spb.put_slice(user.as_bytes());
+    match protocol {
+        ProtocolVersion::V10 => {
+            spb.put_slice(&[ibase::isc_spb_password as u8, pass.len() as u8]);
+            spb.put_slice(pass.as_bytes());
+        }
+        ProtocolVersion::V11 | ProtocolVersion::V12 => {
+            #[allow(deprecated)]
+            let enc_pass = pwhash::unix_crypt::hash_with("9z", pass).unwrap();
+            let enc_pass = &enc_pass[2..];
+            spb.put_slice(&[ibase::isc_spb_password_enc as u8, enc_pass.len() as u8]);
+            spb.put_slice(enc_pass.as_bytes());
+        }
+        // As in a DPB: verified already, or by the data carried here
+        ProtocolVersion::V13 => {
+            if let Some(data) = auth_data {
+                // isc_spb_specific_auth_data, which ibase.h aliases to this
+                spb.put_slice(&[ibase::isc_spb_trusted_auth as u8, data.len() as u8]);
+                spb.put_slice(data);
+            }
+        }
+    }
+
+    let mut req = BytesMut::with_capacity(32 + spb.len());
+    req.put_u32(WireOp::ServiceAttach as u32);
+    req.put_u32(0); // Object ID
+    req.put_wire_bytes(SERVICE_MANAGER.as_bytes());
+    req.put_wire_bytes(&spb);
+    req.freeze()
+}
+
+pub fn service_detach(handle: u32) -> Bytes {
+    let mut req = BytesMut::with_capacity(8);
+    req.put_u32(WireOp::ServiceDetach as u32);
+    req.put_u32(handle);
+    req.freeze()
+}
+
+/// Start a service (`isc_service_start`): `spb` names the action and its
+/// arguments
+pub fn service_start(handle: u32, spb: &[u8]) -> Bytes {
+    let mut req = BytesMut::with_capacity(16 + spb.len());
+    req.put_u32(WireOp::ServiceStart as u32);
+    req.put_u32(handle);
+    req.put_u32(0); // Incarnation of object
+    req.put_wire_bytes(spb);
+    req.freeze()
+}
+
+/// Ask a service for what it has to say (`isc_service_query`): `send` are
+/// the items given to it (a timeout), `recv` the ones asked of it
+pub fn service_info(handle: u32, send: &[u8], recv: &[u8], buffer_length: u32) -> Bytes {
+    let mut req = BytesMut::with_capacity(24 + send.len() + recv.len());
+    req.put_u32(WireOp::ServiceInfo as u32);
+    req.put_u32(handle);
+    req.put_u32(0); // Incarnation of object
+    req.put_wire_bytes(send);
+    req.put_wire_bytes(recv);
+    req.put_u32(buffer_length);
+    req.freeze()
+}
+
 /// Statement information request
 /// Database info request (`isc_database_info`)
 pub fn info_database(db_handle: u32, requested_items: &[u8]) -> Bytes {

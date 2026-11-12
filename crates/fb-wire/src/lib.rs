@@ -11,8 +11,8 @@ mod wire;
 mod xsqlda;
 
 pub use client::{
-    AuthPlugin, BlobId, CancelHandle, DbHandle, FetchedColumn, RustFbClient, RustFbClientAttachmentConfig, StmtHandle, StmtHandleData,
-    TrHandle,
+    AuthPlugin, BlobId, CancelHandle, DbHandle, FetchedColumn, RustFbClient, RustFbClientAttachmentConfig, ServiceClient, StmtHandle,
+    StmtHandleData, TrHandle,
 };
 pub use info::{DatabaseCounters, RecordCounts, TableCounters};
 pub use xsqlda::ColumnDesc;

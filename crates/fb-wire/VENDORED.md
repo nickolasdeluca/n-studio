@@ -84,4 +84,11 @@ in the workspace manifest.
   prepared statement's input parameters over `op_info_sql`
   (`isc_info_sql_bind`) as `ColumnDesc`s, for an editor to ask their values
   by type.
+- **The services manager.** `ServiceClient` connects to `service_mgr` and
+  speaks `op_service_attach`, `op_service_start`, `op_service_info` and
+  `op_service_detach`: backup, restore, validation, statistics and the
+  server's log are services, which upstream does not reach. The attach
+  shares the database attach's reply loop (`finish_attach`), so every
+  authentication the client knows works for services too. The caller builds
+  the start blocks and reads the info buffers; this crate only carries them.
 - **`trace()`**, gated behind `FBW_TRACE=1`, dumping wire packets.

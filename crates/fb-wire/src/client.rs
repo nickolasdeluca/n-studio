@@ -753,6 +753,12 @@ impl FirebirdWireConnection {
         self.socket.write_all(&req)?;
         self.socket.flush()?;
 
+        self.finish_attach(user, pass).map(DbHandle)
+    }
+
+    /// Reads the answer to an attach, of a database or of the services
+    /// manager, answering the server's plugins on the way: the handle.
+    fn finish_attach(&mut self, user: &str, pass: &str) -> Result<u32, FbError> {
         // With the auth data in the DPB (op_accept_data), a server that turns
         // it down does not refuse yet: it answers op_cont_auth with the next
         // plugin on its list, and the login fails only once none is left.
@@ -768,7 +774,7 @@ impl FirebirdWireConnection {
                 Ok(op_response(r, lazy)?.map(AttachReply::Attached))
             })??;
             let plugin = match next {
-                AttachReply::Attached(resp) => return Ok(DbHandle(resp.handle)),
+                AttachReply::Attached(resp) => return Ok(resp.handle),
                 AttachReply::ContAuth(plugin) => plugin,
             };
             let data = match (&plugin.kind, &plugin.data) {
@@ -793,6 +799,37 @@ impl FirebirdWireConnection {
             self.socket.write_all(&req)?;
             self.socket.flush()?;
         }
+    }
+
+    /// Attach to the services manager, on a connection made to
+    /// [`SERVICE_MANAGER`]
+    pub fn attach_service(&mut self, user: &str, pass: &str) -> Result<u32, FbError> {
+        let req = service_attach(user, pass, self.version, self.dpb_auth_data.take().as_deref());
+        trace("op_service_attach ->", &req);
+        self.socket.write_all(&req)?;
+        self.socket.flush()?;
+        self.finish_attach(user, pass)
+    }
+
+    pub fn detach_service(&mut self, handle: u32) -> Result<(), FbError> {
+        self.socket.write_all(&service_detach(handle))?;
+        self.socket.flush()?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    pub fn start_service(&mut self, handle: u32, spb: &[u8]) -> Result<(), FbError> {
+        self.socket.write_all(&service_start(handle, spb))?;
+        self.socket.flush()?;
+        self.read_response()?;
+        Ok(())
+    }
+
+    /// What a service answers to `recv`, as the info buffer it sends
+    pub fn query_service(&mut self, handle: u32, send: &[u8], recv: &[u8]) -> Result<Bytes, FbError> {
+        self.socket.write_all(&service_info(handle, send, recv, DB_INFO_BUFFER_LENGTH))?;
+        self.socket.flush()?;
+        Ok(self.read_response()?.data)
     }
 
     /// Disconnect from the database
@@ -1763,6 +1800,41 @@ impl Write for FbStream {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// An attachment to a server's services manager: backup, restore,
+/// validation, statistics, the server's log. A service is started with a
+/// parameter block naming the action, then asked for what it wrote until it
+/// has no more. Detached when dropped.
+pub struct ServiceClient {
+    conn: FirebirdWireConnection,
+    handle: u32,
+}
+
+impl ServiceClient {
+    pub fn connect(host: &str, port: u16, user: &str, pass: &str, auth: AuthPlugin) -> Result<Self, FbError> {
+        let mut conn =
+            FirebirdWireConnection::connect(host, port, SERVICE_MANAGER, user, pass, rsfbclient_core::charset::UTF_8, auth)?;
+        let handle = conn.attach_service(user, pass)?;
+        Ok(Self { conn, handle })
+    }
+
+    /// Starts the action `spb` names, with its arguments
+    pub fn start(&mut self, spb: &[u8]) -> Result<(), FbError> {
+        self.conn.start_service(self.handle, spb)
+    }
+
+    /// The info buffer answering the items in `recv`; `send` gives the
+    /// server items of its own, a timeout among them
+    pub fn query(&mut self, send: &[u8], recv: &[u8]) -> Result<Bytes, FbError> {
+        self.conn.query_service(self.handle, send, recv)
+    }
+}
+
+impl Drop for ServiceClient {
+    fn drop(&mut self) {
+        self.conn.detach_service(self.handle).ok();
     }
 }
 

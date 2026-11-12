@@ -10,6 +10,7 @@ mod editor;
 mod error;
 mod params;
 mod script;
+mod service;
 mod value;
 
 pub use connection::{Connection, QueryResult, ServerInfo};
@@ -19,6 +20,10 @@ pub use editor::{
 };
 pub use error::{Error, Result};
 pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
+pub use service::{
+    run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask, ServiceUser,
+    StatisticsOptions,
+};
 pub use params::{charset_names, AuthPlugin, ConnectParams, Dialect};
 pub use rsfbclient_core::Decimal;
 pub use value::Value;
