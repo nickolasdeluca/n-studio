@@ -104,7 +104,9 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
 
 /** Viewers closing over what was typed and not compiled or applied */
 export function DiscardDialog({ viewers, action }: { viewers: string[]; action?: PendingAction }) {
-  const names = useViewers((s) => viewers.map((id) => s.viewers[id]?.name ?? ""));
+  // The map itself: a list made in the selector would be a new one each time
+  const open = useViewers((s) => s.viewers);
+  const names = viewers.map((id) => open[id]?.name ?? "");
   const close = () => useStore.getState().openDialog(null);
   const discard = () => {
     close();
