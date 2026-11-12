@@ -9,16 +9,18 @@ import {
 } from "dockview-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { serverSummary } from "../api";
-import { openEditor, setDock } from "../dock";
+import { isDocument, openEditor, setDock } from "../dock";
 import { useEditors } from "../editors";
 import { t } from "../i18n";
 import { guardQuit, request } from "../pending";
 import { Icon } from "../icons";
 import { useStore } from "../store";
+import { useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { Dialogs } from "./Dialogs";
 import { Explorer } from "./Explorer";
 import { ObjectList } from "./ObjectList";
+import { ObjectViewer } from "./ObjectViewer";
 import { forgetEditor, SqlEditor } from "./SqlEditor";
 
 const theme: DockviewTheme = { name: "n", className: "dockview-theme-n" };
@@ -29,6 +31,7 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   objects: () => <ObjectList />,
   start: () => <Start />,
   sql: (props) => <SqlEditor {...(props as IDockviewPanelProps<{ tab: string }>)} />,
+  object: (props) => <ObjectViewer {...(props as IDockviewPanelProps<{ viewer: string }>)} />,
 };
 
 const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = {
@@ -70,6 +73,7 @@ export function Shell() {
     if (!restore(e.api)) defaultLayout(e.api);
     // An editor's tab closing ends its transaction
     e.api.onDidRemovePanel((panel) => {
+      if (panel.id.startsWith("obj-")) useViewers.getState().close(panel.id);
       if (!panel.id.startsWith("sql-")) return;
       forgetEditor(panel.id);
       void useEditors.getState().close(panel.id);
@@ -120,8 +124,9 @@ function restore(api: DockviewApi): boolean {
     const saved = localStorage.getItem(LAYOUT);
     if (!saved) return false;
     api.fromJSON(JSON.parse(saved));
-    // Editors do not outlive the app: their transactions are gone
-    for (const panel of api.panels.filter((p) => p.id.startsWith("sql-"))) panel.api.close();
+    // Editors and viewers do not outlive the app: their transactions and
+    // connections are gone
+    for (const panel of api.panels.filter((p) => isDocument(p.id))) panel.api.close();
     if (!api.getPanel("start")) api.addPanel({ id: "start", component: "start", title: t("Start") });
     return api.panels.length > 0;
   } catch {
@@ -223,6 +228,7 @@ function StatusBar() {
   const registration = useStore((s) => s.registrations.find((r) => r.id === selection?.id));
   const server = useStore((s) => (selection ? s.servers[selection.id] : undefined));
   const notice = useStore((s) => s.notice);
+  const busy = useStore((s) => s.busy);
 
   let left: ReactNode = t("No database selected");
   if (registration) {
@@ -238,6 +244,12 @@ function StatusBar() {
   return (
     <div className="flex h-6 shrink-0 items-center gap-2 border-t border-line bg-panel-2 px-2 text-[11.5px] text-muted">
       {left}
+      {busy && (
+        <span className="flex min-w-0 items-center gap-1.5" role="status">
+          <span className="size-1.5 animate-pulse rounded-full bg-accent" />
+          <span className="truncate">{busy}</span>
+        </span>
+      )}
       {notice && (
         <span className="ml-auto flex min-w-0 items-center gap-1.5 text-danger" role="alert">
           <span className="truncate" title={notice}>
@@ -268,7 +280,7 @@ function Start() {
         <p className="text-muted">
           {count === 0
             ? t("Register a database to get started.")
-            : t("Double-click a database in the explorer to connect, then press F12 for an SQL editor.")}
+            : t("Double-click a database in the explorer to connect, then an object to open it, or press F12 for an SQL editor.")}
         </p>
         {count === 0 && (
           <button

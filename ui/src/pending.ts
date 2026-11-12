@@ -11,7 +11,8 @@ export type PendingAction = { kind: "close"; tab: string } | { kind: "disconnect
 /** Editors with an active transaction, optionally only some */
 export function activeTabs(filter: (registration: string, tab: string) => boolean = () => true): string[] {
   return Object.values(useEditors.getState().tabs)
-    .filter((tab) => tab.tx !== null && filter(tab.registration, tab.id))
+    // A viewer's transaction only reads: nothing of the user's ends with it
+    .filter((tab) => tab.tx !== null && !tab.viewer && filter(tab.registration, tab.id))
     .map((tab) => tab.id);
 }
 

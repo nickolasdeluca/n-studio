@@ -50,6 +50,9 @@ export interface EditorTab {
   outcome: Outcome | null;
   messages: Message[];
   bottom: BottomTab;
+  /** Behind an object viewer's Data tab rather than an editor of the
+   *  user's: read only, and ended without asking */
+  viewer: boolean;
 }
 
 export type RunMode = "current" | "all" | "to_cursor";
@@ -64,7 +67,8 @@ export interface RunInput {
 
 interface State {
   tabs: Record<string, EditorTab>;
-  open(registration: string): string;
+  /** `viewer`: for an object viewer's Data tab */
+  open(registration: string, viewer?: boolean): string;
   close(id: string): Promise<void>;
   setTxOptions(id: string, options: Partial<TxOptions>): void;
   setBottom(id: string, bottom: BottomTab): void;
@@ -91,6 +95,9 @@ export const isolations: { value: Isolation; label: string }[] = [
 
 let opened = 0;
 
+/** The text a new editor opens with, by tab, until its panel takes it */
+export const drafts = new Map<string, string>();
+
 export const useEditors = create<State>()((set, get) => {
   const patch = (id: string, p: Partial<EditorTab> | ((tab: EditorTab) => Partial<EditorTab>)) =>
     set((s) => {
@@ -110,9 +117,9 @@ export const useEditors = create<State>()((set, get) => {
   return {
     tabs: {},
 
-    open(registration) {
+    open(registration, viewer = false) {
       opened += 1;
-      const id = `sql-${Date.now().toString(36)}-${opened}`;
+      const id = `${viewer ? "data" : "sql"}-${Date.now().toString(36)}-${opened}`;
       set((s) => ({
         tabs: {
           ...s.tabs,
@@ -120,12 +127,13 @@ export const useEditors = create<State>()((set, get) => {
             id,
             registration,
             tx: null,
-            txOptions: { isolation: "read_committed", readOnly: false, lockWait: { mode: "wait" } },
+            txOptions: { isolation: "read_committed", readOnly: viewer, lockWait: { mode: "wait" } },
             running: false,
             fetching: false,
             outcome: null,
             messages: [],
             bottom: "results",
+            viewer,
           },
         },
       }));
@@ -137,6 +145,7 @@ export const useEditors = create<State>()((set, get) => {
       if (!tab) return;
       closeResult(tab);
       forgetParams(id);
+      drafts.delete(id);
       set((s) => {
         const tabs = { ...s.tabs };
         delete tabs[id];

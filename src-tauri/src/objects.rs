@@ -516,6 +516,45 @@ mod tests {
         }
     }
 
+    /// Against the server the `FB_*` variables name; skipped without them
+    #[test]
+    fn every_tab_of_every_kind_reads_from_a_live_database() {
+        let Some(params) = fb_core::ConnectParams::from_env() else {
+            eprintln!("FB_DB not set: skipping live test");
+            return;
+        };
+        let conn = Connection::open(&params).expect("connect");
+        for kind in fb_meta::Generation::of(conn.info()).kinds() {
+            let objects = fb_meta::objects(&conn, kind).unwrap();
+            // The first, the middle and the last of each kind
+            let mut picks = vec![0, objects.len() / 2, objects.len().saturating_sub(1)];
+            picks.dedup();
+            for object in picks.into_iter().filter_map(|i| objects.get(i)) {
+                for tab in tabs(kind) {
+                    let content = content(&conn, kind, &object.name, tab.id)
+                        .unwrap_or_else(|e| panic!("{kind:?}, {} tab: {e:?}", tab.id));
+                    let shape = match &content {
+                        TabContent::Grid { sections } => {
+                            for section in sections {
+                                for row in &section.rows {
+                                    assert_eq!(row.cells.len(), section.columns.len(), "{kind:?}, {} tab", tab.id);
+                                }
+                            }
+                            Shape::Grid
+                        }
+                        TabContent::Sql { text } => {
+                            assert!(!text.trim().is_empty(), "{kind:?}: an empty script");
+                            Shape::Sql
+                        }
+                        TabContent::Text { .. } => Shape::Text,
+                        TabContent::Data { .. } => Shape::Data,
+                    };
+                    assert_eq!(shape, tab.shape, "{kind:?}, {} tab", tab.id);
+                }
+            }
+        }
+    }
+
     #[test]
     fn a_tab_serializes_by_its_shape() {
         let grid = one(vec![flag("PK")], vec![opens(vec![mark(true)], ObjectKind::Domain, "D_ID")]);

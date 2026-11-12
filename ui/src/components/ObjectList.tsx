@@ -1,9 +1,12 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useDeferredValue, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { objectActions } from "../actions";
 import type { DbObject, TreeKind } from "../api";
+import { openObject } from "../dock";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { keys, useObjects, useStore } from "../store";
+import { useContextMenu } from "./ContextMenu";
 
 const ROW = 22;
 
@@ -68,12 +71,63 @@ function Objects(props: {
     overscan: 20,
   });
 
-  const choose = (o: DbObject) => {
+  // Several can be picked, for what applies to a selection; the explorer
+  // follows the one picked last
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set(selected ? [selected] : []));
+  const anchor = useRef<string | null>(selected ?? null);
+  const showMenu = useContextMenu((m) => m.show);
+  useEffect(() => {
+    // Selected elsewhere (the explorer): that one alone
+    setPicked((now) => (selected && now.has(selected) ? now : new Set(selected ? [selected] : [])));
+  }, [selected]);
+
+  const reveal = (name: string) => {
     const s = useStore.getState();
-    s.select({ id, kind, object: o.name });
+    s.select({ id, kind, object: name });
     // Reveal it in the tree, too
     s.toggle(keys.registration(id), true);
     s.toggle(keys.kind(id, kind), true);
+  };
+
+  const choose = (o: DbObject, e: React.MouseEvent) => {
+    const from = rows.findIndex((r) => r.name === anchor.current);
+    const to = rows.indexOf(o);
+    if (e.shiftKey && from >= 0) {
+      setPicked(new Set(rows.slice(Math.min(from, to), Math.max(from, to) + 1).map((r) => r.name)));
+    } else if (e.metaKey || e.ctrlKey) {
+      const next = new Set(picked);
+      if (!next.delete(o.name)) next.add(o.name);
+      setPicked(next);
+      anchor.current = o.name;
+    } else {
+      setPicked(new Set([o.name]));
+      anchor.current = o.name;
+    }
+    reveal(o.name);
+  };
+
+  const menu = (o: DbObject, e: React.MouseEvent) => {
+    e.preventDefault();
+    let names = picked;
+    if (!picked.has(o.name)) {
+      names = new Set([o.name]);
+      setPicked(names);
+      anchor.current = o.name;
+      reveal(o.name);
+    }
+    // In the list's order, which is the order a script lists them in
+    const objects = rows.filter((r) => names.has(r.name)).map((r) => ({ kind, name: r.name }));
+    showMenu(e.clientX, e.clientY, objectActions(id, objects));
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      setPicked(new Set(rows.map((r) => r.name)));
+    } else if (e.key === "Enter" && selected) {
+      e.preventDefault();
+      openObject(id, kind, selected);
+    }
   };
 
   const grid = hasParent ? "grid-cols-[minmax(10rem,2fr)_minmax(8rem,1.4fr)_3fr]" : "grid-cols-[minmax(10rem,2fr)_3fr]";
@@ -81,7 +135,7 @@ function Objects(props: {
   return (
     <div className="flex h-full flex-col bg-panel">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
-        <Icon name={kind} className={kindColor[kind]} />
+        <Icon name={kind} className={`shrink-0 ${kindColor[kind] ?? ""}`} />
         <span className="font-medium whitespace-nowrap">{label}</span>
         <span className="whitespace-nowrap text-faint tabular-nums">
           {objects
@@ -90,6 +144,7 @@ function Objects(props: {
               : objects.length.toLocaleString()
             : t("Loading…")}
         </span>
+        {picked.size > 1 && <span className="whitespace-nowrap text-muted">{t("{n} selected", { n: picked.size.toLocaleString() })}</span>}
         <label className="ml-auto flex h-6 w-48 min-w-16 shrink items-center gap-1.5 rounded border border-line bg-bg px-1.5 focus-within:border-accent">
           <Icon name="search" size={12} className="text-faint" />
           <input
@@ -108,18 +163,30 @@ function Objects(props: {
         {hasParent && <span>{t("Table")}</span>}
         <span>{t("Description")}</span>
       </div>
-      <div ref={scroller} className="scroll-thin min-h-0 flex-1 overflow-auto">
+      <div
+        ref={scroller}
+        tabIndex={0}
+        onKeyDown={onKeyDown}
+        aria-multiselectable
+        role="listbox"
+        aria-label={label}
+        className="scroll-thin min-h-0 flex-1 overflow-auto outline-none"
+      >
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((v) => {
             const o = rows[v.index];
             return (
               <div
                 key={o.name}
+                role="option"
+                aria-selected={picked.has(o.name)}
                 className={`absolute left-0 grid w-full ${grid} items-center gap-3 px-2 whitespace-nowrap ${
-                  o.name === selected ? "bg-selected" : "hover:bg-hover"
+                  picked.has(o.name) ? "bg-selected" : "hover:bg-hover"
                 }`}
                 style={{ top: v.start, height: ROW }}
-                onMouseDown={() => choose(o)}
+                onMouseDown={(e) => e.button === 0 && choose(o, e)}
+                onDoubleClick={() => openObject(id, kind, o.name)}
+                onContextMenu={(e) => menu(o, e)}
                 title={o.description ?? undefined}
               >
                 <span className="truncate">{o.name}</span>

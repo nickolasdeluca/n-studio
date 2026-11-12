@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { registrationActions } from "../actions";
+import { objectActions, registrationActions } from "../actions";
+import { openObject } from "../dock";
 import { serverSummary, type ObjectKind } from "../api";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
@@ -121,6 +122,7 @@ export function Explorer() {
     const sel = row.selection;
     if (!sel) return;
     if (!sel.kind && !servers[sel.id]) void connect(sel.id);
+    else if (sel.kind && sel.object) openObject(sel.id, sel.kind, sel.object);
     else if (row.expandable) open(row);
   };
 
@@ -212,10 +214,14 @@ export function Explorer() {
                 e.preventDefault();
                 if (!row.selection) return;
                 select(row.selection);
-                const id = row.selection.id;
-                const items = row.selection.kind
-                  ? [{ label: t("Refresh"), icon: "refresh", onSelect: () => void useStore.getState().refresh(id) }]
-                  : registrationActions(id);
+                const { id, kind, object } = row.selection;
+                const refresh = { label: t("Refresh"), icon: "refresh", onSelect: () => void useStore.getState().refresh(id) };
+                const items =
+                  kind && object
+                    ? [...objectActions(id, [{ kind, name: object }]), "separator" as const, refresh]
+                    : kind
+                      ? [refresh]
+                      : registrationActions(id);
                 showMenu(e.clientX, e.clientY, items);
               }}
             >

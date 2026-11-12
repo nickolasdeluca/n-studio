@@ -64,6 +64,8 @@ interface State {
   dialog: Dialog | null;
   /** The last thing that went wrong outside a dialog */
   notice: string | null;
+  /** What is being waited for outside a panel of its own */
+  busy: string | null;
 
   load(): Promise<void>;
   select(selection: Selection | null): void;
@@ -77,6 +79,7 @@ interface State {
   deleteRegistration(id: string): Promise<void>;
   openDialog(dialog: Dialog | null): void;
   setNotice(notice: string | null): void;
+  setBusy(busy: string | null): void;
 }
 
 const objectsKey = (id: string, kind: ObjectKind) => `${id}:${kind}`;
@@ -97,6 +100,7 @@ export const useStore = create<State>()((set, get) => ({
   selection: null,
   dialog: null,
   notice: null,
+  busy: null,
 
   async load() {
     try {
@@ -217,6 +221,10 @@ export const useStore = create<State>()((set, get) => ({
 
   setNotice(notice) {
     set({ notice });
+  },
+
+  setBusy(busy) {
+    set({ busy });
   },
 }));
 

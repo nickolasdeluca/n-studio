@@ -235,6 +235,49 @@ export interface Parameters {
   names: (string | null)[];
 }
 
+// The object viewers
+
+export type TabShape = "grid" | "sql" | "text" | "data";
+
+/** One tab of a viewer, before its content is asked for */
+export interface TabInfo {
+  id: string;
+  label: string;
+  shape: TabShape;
+}
+
+export type CellKind = "text" | "number" | "flag" | "code";
+
+export interface GridColumn {
+  label: string;
+  kind: CellKind;
+}
+
+export interface ObjectRef {
+  kind: ObjectKind;
+  name: string;
+}
+
+export interface GridRow {
+  cells: Cell[];
+  /** The object the row stands for, which opening the row opens */
+  open: ObjectRef | null;
+}
+
+export interface GridSection {
+  /** `null` for a tab's only grid */
+  title: string | null;
+  columns: GridColumn[];
+  rows: GridRow[];
+}
+
+export type TabContent =
+  | { shape: "grid"; sections: GridSection[] }
+  | { shape: "sql"; text: string }
+  | { shape: "text"; text: string }
+  /** A query for the viewer to run and page through */
+  | { shape: "data"; sql: string };
+
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
@@ -248,6 +291,10 @@ export const api = {
   disconnect: (id: string) => invoke<void>("disconnect", { id }),
   explorerTree: (id: string) => invoke<TreeKind[]>("explorer_tree", { id }),
   objectList: (id: string, kind: ObjectKind) => invoke<DbObject[]>("object_list", { id, kind }),
+  objectTabs: (kind: ObjectKind) => invoke<TabInfo[]>("object_tabs", { kind }),
+  objectTab: (id: string, kind: ObjectKind, name: string, tab: string) =>
+    invoke<TabContent>("object_tab", { id, kind, name, tab }),
+  extractMetadata: (id: string, objects: ObjectRef[]) => invoke<string>("extract_metadata", { id, objects }),
 
   editorBegin: (id: string, options: TxOptions) => invoke<number>("editor_begin", { id, options }),
   editorEnd: (id: string, tx: number, how: TxEnd) => invoke<void>("editor_end", { id, tx, how }),
