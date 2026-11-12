@@ -24,6 +24,8 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
   const [running, setRunning] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   const close = () => useStore.getState().openDialog(null);
+  // Back to the form it came from, with what was typed in it
+  const cancel = () => useStore.getState().openDialog(dialog.back ?? null);
 
   const compile = async () => {
     if (running) return;
@@ -60,15 +62,15 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
     <Modal
       title={dialog.title}
       width="w-[46rem]"
-      onCancel={close}
+      onCancel={cancel}
       onSubmit={() => void compile()}
       footer={
         <>
           <Button onClick={toEditor}>{t("Open in SQL Editor")}</Button>
           <span className="flex-1" />
           {running && <span className="text-muted" role="status">{t("Running…")}</span>}
-          <Button onClick={close} autoFocus={dialog.danger}>
-            {t("Cancel")}
+          <Button onClick={cancel} autoFocus={dialog.danger}>
+            {dialog.back ? t("Back") : t("Cancel")}
           </Button>
           <Button primary={!dialog.danger} danger={dialog.danger} submit disabled={running} autoFocus={!dialog.danger}>
             {dialog.danger ? t("Run and Commit") : failure ? t("Compile Again") : t("Compile and Commit")}

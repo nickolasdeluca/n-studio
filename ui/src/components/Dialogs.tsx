@@ -8,6 +8,7 @@ import type { ParamRequest, ParamValue } from "../params";
 import { activeTabs, resolve, type PendingAction } from "../pending";
 import { useStore } from "../store";
 import { CompileDialog, DiscardDialog } from "./CompileDialog";
+import { FormDialog } from "./FormDialog";
 import { Button, Field, inputClass, Modal } from "./Modal";
 import { RegistrationDialog } from "./RegistrationDialog";
 
@@ -31,6 +32,8 @@ export function Dialogs() {
     case "compile":
       // Another change is another dialog: its outcome is not the last one's
       return <CompileDialog key={dialog.script} dialog={dialog} />;
+    case "form":
+      return <FormDialog dialog={dialog} />;
     case "discard":
       return <DiscardDialog viewer={dialog.viewer} />;
   }

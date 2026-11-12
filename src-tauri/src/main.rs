@@ -1,6 +1,7 @@
 // No console window behind the app on Windows release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod changes;
 mod commands;
 mod editor;
 mod error;
@@ -38,6 +39,8 @@ fn main() {
             objects::object_tab_script,
             objects::object_drop_script,
             objects::object_template,
+            changes::object_action_form,
+            changes::object_action_script,
             editor::editor_begin,
             editor::editor_end,
             editor::editor_cancel,

@@ -36,6 +36,9 @@ interface State {
   show(id: string, tab: string): void;
   /** Reads the tab showing again; what was typed in it stays */
   reload(id: string): void;
+  /** The object changed: the tab showing is read again, the others when
+   *  they are next shown */
+  refresh(id: string): void;
   /** What a tab's text was changed to; `null` when it is the object's again */
   setDraft(id: string, tab: string, text: string | null): void;
 }
@@ -125,6 +128,15 @@ export const useViewers = create<State>()((set, get) => {
     reload(id) {
       const viewer = get().viewers[id];
       if (viewer?.active) void load(id, viewer.active);
+    },
+
+    refresh(id) {
+      const viewer = get().viewers[id];
+      if (!viewer) return;
+      const active = viewer.active;
+      // What the tab showing has stays on screen while it is read again
+      patch(id, { contents: active && viewer.contents[active] ? { [active]: viewer.contents[active] } : {} });
+      if (active) void load(id, active);
     },
 
     setDraft(id, tab, text) {

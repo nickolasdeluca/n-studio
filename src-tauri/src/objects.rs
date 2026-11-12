@@ -10,6 +10,7 @@ use fb_meta::{
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+use crate::changes::{self, Action};
 use crate::commands::blocking;
 use crate::error::{AppError, AppResult};
 
@@ -106,6 +107,9 @@ pub struct ObjectRef {
 pub struct GridRow {
     cells: Vec<Option<String>>,
     open: Option<ObjectRef>,
+    /// What the section's row actions act on: a column's name, a
+    /// constraint's
+    pub(crate) key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -113,7 +117,22 @@ pub struct GridSection {
     /// `None` for a tab's only grid
     title: Option<&'static str>,
     columns: Vec<GridColumn>,
-    rows: Vec<GridRow>,
+    pub(crate) rows: Vec<GridRow>,
+    /// What can be done here: add a field, edit the domain
+    pub(crate) actions: Vec<Action>,
+    /// What can be done to a row with a key
+    pub(crate) row_actions: Vec<Action>,
+}
+
+impl GridSection {
+    fn new(title: Option<&'static str>, columns: Vec<GridColumn>, rows: Vec<GridRow>) -> Self {
+        Self { title, columns, rows, actions: Vec::new(), row_actions: Vec::new() }
+    }
+
+    /// A row's cell, to key the row by
+    pub(crate) fn cell(row: &GridRow, column: usize) -> Option<String> {
+        row.cells.get(column).cloned().flatten()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -139,11 +158,11 @@ pub enum TabContent {
 }
 
 fn row(cells: Vec<Option<String>>) -> GridRow {
-    GridRow { cells, open: None }
+    GridRow { cells, open: None, key: None }
 }
 
 fn opens(cells: Vec<Option<String>>, kind: ObjectKind, name: &str) -> GridRow {
-    GridRow { cells, open: Some(ObjectRef { kind, name: name.to_string() }) }
+    GridRow { cells, open: Some(ObjectRef { kind, name: name.to_string() }), key: None }
 }
 
 fn some(text: impl Into<String>) -> Option<String> {
@@ -156,7 +175,7 @@ fn mark(on: bool) -> Option<String> {
 }
 
 fn one(columns: Vec<GridColumn>, rows: Vec<GridRow>) -> TabContent {
-    TabContent::Grid { sections: vec![GridSection { title: None, columns, rows }] }
+    TabContent::Grid { sections: vec![GridSection::new(None, columns, rows)] }
 }
 
 #[tauri::command]
@@ -247,6 +266,14 @@ pub async fn object_template(app: AppHandle, id: String, kind: ObjectKind) -> Ap
 }
 
 fn content(conn: &Connection, kind: ObjectKind, name: &str, tab: &str) -> AppResult<TabContent> {
+    let mut content = read(conn, kind, name, tab)?;
+    if let TabContent::Grid { sections } = &mut content {
+        changes::attach(sections, kind, tab);
+    }
+    Ok(content)
+}
+
+fn read(conn: &Connection, kind: ObjectKind, name: &str, tab: &str) -> AppResult<TabContent> {
     let dialect = conn.info().dialect;
     Ok(match (tab, kind) {
         ("ddl", _) => TabContent::Sql { text: extract::script(conn, kind, name)?, editable: recompiles(kind) },
@@ -531,8 +558,8 @@ fn parameters(routine: &Routine, dialect: u32) -> TabContent {
     let returns = if routine.kind == fb_meta::RoutineKind::Function { "Returns" } else { "Output" };
     TabContent::Grid {
         sections: vec![
-            GridSection { title: Some("Input"), columns: columns(), rows: rows(&routine.inputs) },
-            GridSection { title: Some(returns), columns: columns(), rows: rows(&routine.outputs) },
+            GridSection::new(Some("Input"), columns(), rows(&routine.inputs)),
+            GridSection::new(Some(returns), columns(), rows(&routine.outputs)),
         ],
     }
 }
@@ -547,10 +574,10 @@ fn dependencies(title: &'static str, list: &[Dependency]) -> GridSection {
                 d.detail.clone(),
                 (!d.fields.is_empty()).then(|| d.fields.join(", ")),
             ];
-            GridRow { cells, open: d.kind.map(|kind| ObjectRef { kind, name: d.name.clone() }) }
+            GridRow { cells, open: d.kind.map(|kind| ObjectRef { kind, name: d.name.clone() }), key: None }
         })
         .collect();
-    GridSection { title: Some(title), columns: vec![text("Type"), text("Name"), text("Part"), text("Columns")], rows }
+    GridSection::new(Some(title), vec![text("Type"), text("Name"), text("Part"), text("Columns")], rows)
 }
 
 fn properties(list: Vec<(&'static str, Option<String>)>) -> TabContent {
@@ -619,7 +646,7 @@ mod tests {
         let grid = one(vec![flag("PK")], vec![opens(vec![mark(true)], ObjectKind::Domain, "D_ID")]);
         assert_eq!(
             serde_json::to_string(&grid).unwrap(),
-            r#"{"shape":"grid","sections":[{"title":null,"columns":[{"label":"PK","kind":"flag"}],"rows":[{"cells":["✓"],"open":{"kind":"domain","name":"D_ID"}}]}]}"#
+            r#"{"shape":"grid","sections":[{"title":null,"columns":[{"label":"PK","kind":"flag"}],"rows":[{"cells":["✓"],"open":{"kind":"domain","name":"D_ID"},"key":null}],"actions":[],"row_actions":[]}]}"#
         );
         assert_eq!(
             serde_json::to_string(&TabContent::Data { sql: "select 1".into() }).unwrap(),

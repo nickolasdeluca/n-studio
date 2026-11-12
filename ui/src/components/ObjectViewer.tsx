@@ -9,8 +9,8 @@ import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText, type CellKind, type GridRow, type GridSection, type ObjectRef, type TabContent } from "../api";
-import { extractMetadata } from "../actions";
+import { api, errorText, type Action, type CellKind, type GridRow, type GridSection, type ObjectRef, type TabContent } from "../api";
+import { extractMetadata, startAction } from "../actions";
 import { openEditor, openObject } from "../dock";
 import { useEditors } from "../editors";
 import { editorLook, firebirdSql } from "../firebird";
@@ -107,7 +107,7 @@ function HeaderButton(props: { icon: string; label: string; disabled?: boolean; 
 function Pane({ viewer, content, open }: { viewer: Viewer; content: TabContent; open(ref: ObjectRef): void }) {
   switch (content.shape) {
     case "grid":
-      return <Grids sections={content.sections} open={open} />;
+      return <Grids viewer={viewer} sections={content.sections} open={open} />;
     case "sql":
       return <SqlText viewer={viewer} text={content.text} editable={content.editable} />;
     case "text":
@@ -130,7 +130,7 @@ async function compileTab(viewer: Viewer, tab: string, text: string) {
       done: () => {
         const viewers = useViewers.getState();
         viewers.setDraft(viewer.id, tab, null);
-        viewers.reload(viewer.id);
+        viewers.refresh(viewer.id);
       },
     });
   } catch (e) {
@@ -146,7 +146,7 @@ const cellClass: Record<CellKind, string> = {
 };
 
 /** A tab's grids, one under the other; a lone grid fills the tab */
-function Grids({ sections, open }: { sections: GridSection[]; open(ref: ObjectRef): void }) {
+function Grids({ viewer, sections, open }: { viewer: Viewer; sections: GridSection[]; open(ref: ObjectRef): void }) {
   // The row the cursor is on: [section, row]
   const [cursor, setCursor] = useState<[number, number]>([0, 0]);
   return (
@@ -158,7 +158,8 @@ function Grids({ sections, open }: { sections: GridSection[]; open(ref: ObjectRe
           current={cursor[0] === s ? cursor[1] : -1}
           onCurrent={(row) => setCursor([s, row])}
           open={open}
-          sticky={sections.length === 1}
+          act={(action, key) => void startAction(viewer, action, key)}
+          sticky={sections.length === 1 && section.actions.length === 0}
         />
       ))}
     </div>
@@ -170,10 +171,12 @@ function Section(props: {
   current: number;
   onCurrent(row: number): void;
   open(ref: ObjectRef): void;
+  /** Starts an action, on the row with the key when it is a row's */
+  act(action: Action, key: string | null): void;
   /** Its header stays in view: only when it is the tab's one grid */
   sticky: boolean;
 }) {
-  const { section, current, onCurrent, open, sticky } = props;
+  const { section, current, onCurrent, open, act, sticky } = props;
   const showMenu = useContextMenu((m) => m.show);
   const body = useRef<HTMLTableSectionElement>(null);
 
@@ -211,15 +214,40 @@ function Section(props: {
         icon: "copy",
         onSelect: () => void navigator.clipboard.writeText(row.cells.map((c) => c ?? "").join("\t")),
       },
+      ...(section.row_actions.length > 0 ? (["separator"] as const) : []),
+      ...section.row_actions.map((action) => ({
+        label: t(action.label),
+        icon: action.danger ? "trash" : action.form ? "edit" : undefined,
+        danger: action.danger,
+        disabled: row.key === null,
+        onSelect: () => act(action, row.key),
+      })),
     ]);
   };
 
   return (
     <div className={section.title ? "mb-3" : ""}>
-      {section.title && (
-        <div className="flex h-7 items-center gap-2 border-b border-line bg-panel-2 px-2 font-semibold">
-          {t(section.title)}
-          <span className="font-normal text-faint tabular-nums">{section.rows.length.toLocaleString()}</span>
+      {(section.title || section.actions.length > 0) && (
+        <div className="flex h-7 items-center gap-2 border-b border-line bg-panel-2 px-2">
+          {section.title && (
+            <>
+              <span className="font-semibold">{t(section.title)}</span>
+              <span className="text-faint tabular-nums">{section.rows.length.toLocaleString()}</span>
+            </>
+          )}
+          <div className={`flex items-center gap-1 ${section.title ? "ml-2" : "-ml-1"}`}>
+            {section.actions.map((action) => (
+              <TextButton
+                key={action.id}
+                icon={action.form ? (action.id.startsWith("add_") ? "plus" : "edit") : "run"}
+                label={t(action.label)}
+                onClick={() => act(action, null)}
+              />
+            ))}
+          </div>
+          {section.row_actions.length > 0 && section.rows.length > 0 && (
+            <span className="ml-auto truncate text-faint">{t("Right-click a row for more.")}</span>
+          )}
         </div>
       )}
       {section.rows.length === 0 ? (

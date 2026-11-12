@@ -305,10 +305,47 @@ export interface ObjectRef {
   name: string;
 }
 
+/** Something to do to an object, or to a part of it */
+export interface Action {
+  id: string;
+  label: string;
+  /** It asks for values first */
+  form: boolean;
+  /** It destroys something */
+  danger: boolean;
+}
+
+export type FieldKind = "text" | "code" | "number" | "check" | "select" | "combo";
+
+export interface FormField {
+  id: string;
+  label: string;
+  kind: FieldKind;
+  /** What is there now; a check's is "true" or "false" */
+  value: string;
+  options: string[];
+  required: boolean;
+  hint: string | null;
+}
+
+/** What an action asks before it can be a script */
+export interface Form {
+  title: string;
+  fields: FormField[];
+}
+
+export interface ActionScript {
+  script: string;
+  /** The name the object goes by once the script ran, when it renames it */
+  renamed: string | null;
+}
+
 export interface GridRow {
   cells: Cell[];
   /** The object the row stands for, which opening the row opens */
   open: ObjectRef | null;
+  /** What the section's row actions act on */
+  key: string | null;
 }
 
 export interface GridSection {
@@ -316,6 +353,10 @@ export interface GridSection {
   title: string | null;
   columns: GridColumn[];
   rows: GridRow[];
+  /** What can be done here */
+  actions: Action[];
+  /** What can be done to a row that has a key */
+  row_actions: Action[];
 }
 
 export type TabContent =
@@ -345,6 +386,18 @@ export const api = {
   /** The script that makes an editable tab's new text the object's */
   objectTabScript: (id: string, kind: ObjectKind, name: string, tab: string, text: string) =>
     invoke<string>("object_tab_script", { id, kind, name, tab, text }),
+  /** The form an action fills before it runs, with what is there now */
+  objectActionForm: (id: string, kind: ObjectKind, name: string, action: string, key: string | null) =>
+    invoke<Form>("object_action_form", { id, kind, name, action, key }),
+  /** The script that carries an action out, with its form's values */
+  objectActionScript: (
+    id: string,
+    kind: ObjectKind,
+    name: string,
+    action: string,
+    key: string | null,
+    values: Record<string, string>,
+  ) => invoke<ActionScript>("object_action_script", { id, kind, name, action, key, values }),
   objectDropScript: (id: string, kind: ObjectKind, name: string) => invoke<string>("object_drop_script", { id, kind, name }),
   objectTemplate: (id: string, kind: ObjectKind) => invoke<string>("object_template", { id, kind }),
   extractMetadata: (id: string, objects: ObjectRef[]) => invoke<string>("extract_metadata", { id, objects }),

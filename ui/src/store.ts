@@ -5,7 +5,9 @@ import {
   api,
   errorText,
   isAppError,
+  type Action,
   type DbObject,
+  type Form,
   type ObjectKind,
   type Registration,
   type RegistrationView,
@@ -44,8 +46,11 @@ export type Dialog =
   /** Where and how to write an editor's rows */
   | { type: "export"; tab: string }
   /** A change to the catalog, as the script that makes it: shown, then run
-   *  whole or not at all. `done` is called once it is committed. */
-  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void }
+   *  whole or not at all. `done` is called once it is committed.
+   *  `back` is the dialog it came from, shown again if it is cancelled. */
+  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog }
+  /** What an action on an object asks before it is a script to compile */
+  | { type: "form"; viewer: string; action: Action; key: string | null; form: Form; values?: Record<string, string> }
   /** A viewer closing over text not compiled yet */
   | { type: "discard"; viewer: string };
 

@@ -1,12 +1,12 @@
 // What the toolbar, the menus and the keyboard can do to a registration or
 // to its objects. One place, so each surface offers the same thing under the
 // same name.
-import { api, errorText, type ObjectKind, type ObjectRef } from "./api";
+import { api, errorText, type Action, type ObjectKind, type ObjectRef } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
 import { closePanel, openEditor, openObject } from "./dock";
 import { t } from "./i18n";
-import { useStore } from "./store";
-import { viewerId } from "./viewers";
+import { useStore, type Dialog } from "./store";
+import { useViewers, viewerId, type Viewer } from "./viewers";
 
 export function registrationActions(id: string): (MenuItem | "separator")[] {
   const s = useStore.getState();
@@ -87,6 +87,52 @@ async function dropObject(id: string, object: ObjectRef) {
   } catch (e) {
     s.setNotice(errorText(e));
   }
+}
+
+/** Starts an action of a viewer's: its form when it asks for values, its
+ *  script to confirm otherwise. `key` is the row it acts on, if any. */
+export async function startAction(viewer: Viewer, action: Action, key: string | null) {
+  const s = useStore.getState();
+  try {
+    if (action.form) {
+      const form = await api.objectActionForm(viewer.registration, viewer.kind, viewer.name, action.id, key);
+      s.openDialog({ type: "form", viewer: viewer.id, action, key, form });
+    } else {
+      await confirmAction(viewer, action, key, {});
+    }
+  } catch (e) {
+    s.setNotice(errorText(e));
+  }
+}
+
+/** Shows the script that carries an action out, to be compiled. Fails when
+ *  the values do not make one. `back` is the form the values came from. */
+export async function confirmAction(
+  viewer: Viewer,
+  action: Action,
+  key: string | null,
+  values: Record<string, string>,
+  back?: Dialog,
+) {
+  const { registration, kind, name } = viewer;
+  const { script, renamed } = await api.objectActionScript(registration, kind, name, action.id, key, values);
+  useStore.getState().openDialog({
+    type: "compile",
+    registration,
+    title: `${t(action.label).replace(/…$/, "")}: ${key ? `${name}.${key}` : name}`,
+    script,
+    danger: action.danger,
+    back,
+    done: () => {
+      if (renamed === null) {
+        useViewers.getState().refresh(viewer.id);
+        return;
+      }
+      // Under its new name it is another object, with another viewer
+      closePanel(viewer.id);
+      openObject(registration, kind, renamed);
+    },
+  });
 }
 
 /** The script that creates the objects again, in a new SQL editor */
