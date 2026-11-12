@@ -1,7 +1,6 @@
 // The SQL editors' view state: each tab's transaction, its last statement's
 // outcome and its message log. The text lives in the tab's CodeMirror view,
 // the rows in the backend.
-import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
   api,
@@ -13,13 +12,13 @@ import {
   type Isolation,
   type ResultView,
   type ScriptProblem,
-  type ScriptProgress,
   type StatementRange,
   type TxEnd,
   type TxOptions,
 } from "./api";
 import { metadataChanged } from "./changes";
 import { t } from "./i18n";
+import { newRun, runScript } from "./script";
 import { askParams, forgetParams, paramFields } from "./params";
 
 /** Rows fetched with the execute, and per page as the grid scrolls */
@@ -105,26 +104,11 @@ export const isolations: { value: Isolation; label: string }[] = [
 ];
 
 let opened = 0;
-let scripts = 0;
-/** Of one script's statements, how many problems the log takes */
-const MAX_PROBLEMS = 500;
-
-/** What each running script does with its progress, by run */
-const progress = new Map<number, (event: ScriptProgress) => void>();
-let subscribed: Promise<unknown> | null = null;
-
-/** One listener for every script's progress, set up with the first script */
-function listening(): Promise<unknown> {
-  subscribed ??= listen<ScriptProgress>("script-progress", (event) => progress.get(event.payload.run)?.(event.payload)).catch(
-    () => {
-      // Outside Tauri there are no events: the script's end still tells all
-    },
-  );
-  return subscribed;
-}
-
 /** The text a new editor opens with, by tab, until its panel takes it */
 export const drafts = new Map<string, string>();
+
+/** Of one script's statements, how many problems the log takes */
+const MAX_PROBLEMS = 500;
 
 export const useEditors = create<State>()((set, get) => {
   const patch = (id: string, p: Partial<EditorTab> | ((tab: EditorTab) => Partial<EditorTab>)) =>
@@ -239,7 +223,7 @@ export const useEditors = create<State>()((set, get) => {
         log(id, "info", t("Nothing to execute."));
         return;
       }
-      const run = ++scripts;
+      const run = newRun();
       let shown = 0;
       let first: { from: number; to: number } | null = null;
       const report = (problems: ScriptProblem[]) => {
@@ -254,15 +238,13 @@ export const useEditors = create<State>()((set, get) => {
           else log(id, "error", `${p.error}\n${t("Statement {n}: {sql}", { n: n(p.index + 1), sql })}`, range);
         }
       };
-      await listening();
-      progress.set(run, (event) => {
-        report(event.problems);
-        patch(id, { script: { run, at: event.at, statements: event.statements, failed: event.failed } });
-      });
       patch(id, { running: true, script: { run, at: 0, statements: 0, failed: 0 } });
       try {
         const options = { ...start.scriptOptions, atomic: false };
-        const end = await api.scriptRun(start.registration, run, start.tx, start.txOptions, text, options);
+        const end = await runScript(run, start.registration, start.tx, start.txOptions, text, options, (event) => {
+          report(event.problems);
+          patch(id, { script: { run, at: event.at, statements: event.statements, failed: event.failed } });
+        });
         report(end.problems);
         if (shown > MAX_PROBLEMS) log(id, "info", t("{n} more message(s) not shown.", { n: n(shown - MAX_PROBLEMS) }));
         const counts = t("{done} executed, {failed} failed, {skipped} skipped of {statements} statement(s) in {time}", {
@@ -291,7 +273,6 @@ export const useEditors = create<State>()((set, get) => {
         patch(id, { bottom: "messages" });
         if (isAppError(e) && e.kind === "not_connected") patch(id, { tx: null });
       } finally {
-        progress.delete(run);
         patch(id, { running: false, script: null });
       }
     },

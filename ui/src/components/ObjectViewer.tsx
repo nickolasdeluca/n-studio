@@ -1,11 +1,15 @@
 // An object's viewer: a row of tabs the backend names, each drawn by its
 // shape. Nothing here knows what a Firebird table is made of; a row that
 // stands for another object opens that object's viewer.
-import { EditorState } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { bracketMatching, indentOnInput } from "@codemirror/language";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { EditorState, Prec } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef, useState } from "react";
-import type { CellKind, GridRow, GridSection, ObjectRef, TabContent } from "../api";
+import { api, errorText, type CellKind, type GridRow, type GridSection, type ObjectRef, type TabContent } from "../api";
 import { extractMetadata } from "../actions";
 import { openEditor, openObject } from "../dock";
 import { useEditors } from "../editors";
@@ -55,6 +59,7 @@ export function ObjectViewer({ params, api: panel }: IDockviewPanelProps<{ viewe
             }`}
           >
             {t(tab.label)}
+            {viewer.drafts[tab.id] !== undefined && <span className="ml-1 text-accent" title={t("Changed, not compiled")}>●</span>}
           </button>
         ))}
       </div>
@@ -74,8 +79,7 @@ function Header({ viewer, busy }: { viewer: Viewer; busy: boolean }) {
       <Icon name={viewer.kind} className={`shrink-0 ${kindColor[viewer.kind] ?? ""}`} />
       <span className="truncate font-semibold select-text">{viewer.name}</span>
       <span className="truncate text-muted">
-        {/* The explorer's heading is the plural; without the tree, the kind's own name */}
-        {kind ? t(kind.label) : viewer.kind}
+        {kind ? t(kind.singular) : viewer.kind}
         {registration ? ` · ${registration.name}` : ""}
       </span>
       <span className="flex-1" />
@@ -105,15 +109,32 @@ function Pane({ viewer, content, open }: { viewer: Viewer; content: TabContent; 
     case "grid":
       return <Grids sections={content.sections} open={open} />;
     case "sql":
-      return <SqlText text={content.text} registration={viewer.registration} />;
+      return <SqlText viewer={viewer} text={content.text} editable={content.editable} />;
     case "text":
-      return content.text.trim() ? (
-        <pre className="scroll-thin h-full overflow-auto p-3 font-sans whitespace-pre-wrap select-text">{content.text}</pre>
-      ) : (
-        <Empty>{t("No description.")}</Empty>
-      );
+      return <PlainText viewer={viewer} text={content.text} editable={content.editable} />;
     case "data":
       return <Data viewer={viewer} />;
+  }
+}
+
+/** Shows the script that makes the tab's new text the object's, to compile */
+async function compileTab(viewer: Viewer, tab: string, text: string) {
+  const s = useStore.getState();
+  try {
+    const script = await api.objectTabScript(viewer.registration, viewer.kind, viewer.name, tab, text);
+    s.openDialog({
+      type: "compile",
+      registration: viewer.registration,
+      title: t("Compile {name}", { name: viewer.name }),
+      script,
+      done: () => {
+        const viewers = useViewers.getState();
+        viewers.setDraft(viewer.id, tab, null);
+        viewers.reload(viewer.id);
+      },
+    });
+  } catch (e) {
+    s.setNotice(errorText(e));
   }
 }
 
@@ -251,38 +272,130 @@ function Section(props: {
   );
 }
 
-/** DDL, as the editor would show it, not to be edited here */
-function SqlText({ text, registration }: { text: string; registration: string }) {
+/** An object's script. Where the script creates the object over itself,
+ *  it is how the object is changed: edited here, then compiled. */
+function SqlText({ viewer, text, editable }: { viewer: Viewer; text: string; editable: boolean }) {
+  const tab = viewer.active ?? "";
+  const modified = viewer.drafts[tab] !== undefined;
   const host = useRef<HTMLDivElement>(null);
+  const view = useRef<EditorView | null>(null);
+  const current = () => view.current?.state.doc.toString() ?? text;
+  // The newest of these, for the editor's keys, which are bound once
+  const compile = useRef(() => {});
+  compile.current = () => void compileTab(viewer, tab, current());
+
   useEffect(() => {
     if (!host.current) return;
-    const view = new EditorView({
+    const { id } = viewer;
+    const editing = editable
+      ? [
+          history(),
+          indentOnInput(),
+          bracketMatching(),
+          closeBrackets(),
+          highlightSelectionMatches(),
+          EditorState.tabSize.of(2),
+          Prec.highest(
+            keymap.of(
+              ["F9", "Mod-Enter"].map((key) => ({
+                key,
+                run: () => {
+                  compile.current();
+                  return true;
+                },
+              })),
+            ),
+          ),
+          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
+          EditorView.updateListener.of((update) => {
+            if (!update.docChanged) return;
+            const doc = update.state.doc.toString();
+            useViewers.getState().setDraft(id, tab, doc === text ? null : doc);
+          }),
+        ]
+      : [EditorState.readOnly.of(true), EditorView.editable.of(false)];
+    const v = new EditorView({
       parent: host.current,
       state: EditorState.create({
-        doc: text,
-        extensions: [lineNumbers(), EditorState.readOnly.of(true), EditorView.editable.of(false), firebirdSql, editorLook],
+        // What was typed before the tab was left, or the object's own
+        doc: useViewers.getState().viewers[id]?.drafts[tab] ?? text,
+        extensions: [lineNumbers(), ...editing, firebirdSql, editorLook],
       }),
     });
-    return () => view.destroy();
-  }, [text]);
+    view.current = v;
+    return () => {
+      v.destroy();
+      view.current = null;
+    };
+  }, [viewer.id, tab, text, editable]);
+
+  const revert = () => {
+    const v = view.current;
+    if (v) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } });
+  };
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-1.5">
-        <TextButton icon="copy" label={t("Copy")} onClick={() => void navigator.clipboard.writeText(text)} />
-        <TextButton icon="sql" label={t("Open in SQL Editor")} onClick={() => openEditor(registration, text)} />
+        {editable && (
+          <>
+            <TextButton icon="run" label={t("Compile (F9)")} accent onClick={() => compile.current()} />
+            <TextButton icon="rollback" label={t("Revert")} disabled={!modified} onClick={revert} />
+            <span className="mx-1 h-4 w-px bg-line" />
+          </>
+        )}
+        <TextButton icon="copy" label={t("Copy")} onClick={() => void navigator.clipboard.writeText(current())} />
+        <TextButton icon="sql" label={t("Open in SQL Editor")} onClick={() => openEditor(viewer.registration, current())} />
+        <span className="flex-1" />
+        {modified && <span className="pr-1 text-muted">{t("Changed, not compiled")}</span>}
       </div>
       <div ref={host} className="min-h-0 flex-1 overflow-hidden" />
     </div>
   );
 }
 
-function TextButton(props: { icon: string; label: string; onClick(): unknown }) {
+/** A text of the object's: its description */
+function PlainText({ viewer, text, editable }: { viewer: Viewer; text: string; editable: boolean }) {
+  const tab = viewer.active ?? "";
+  const draft = viewer.drafts[tab];
+  const value = draft ?? text;
+  const setDraft = (next: string | null) => useViewers.getState().setDraft(viewer.id, tab, next);
+  if (!editable) {
+    return text.trim() ? (
+      <pre className="scroll-thin h-full overflow-auto p-3 font-sans whitespace-pre-wrap select-text">{text}</pre>
+    ) : (
+      <Empty>{t("No description.")}</Empty>
+    );
+  }
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-1.5">
+        <TextButton icon="commit" label={t("Save…")} accent disabled={draft === undefined} onClick={() => void compileTab(viewer, tab, value)} />
+        <TextButton icon="rollback" label={t("Revert")} disabled={draft === undefined} onClick={() => setDraft(null)} />
+        <span className="flex-1" />
+        {draft !== undefined && <span className="pr-1 text-muted">{t("Changed, not saved")}</span>}
+      </div>
+      <textarea
+        value={value}
+        onChange={(e) => setDraft(e.target.value === text ? null : e.target.value)}
+        placeholder={t("No description.")}
+        aria-label={t("Description")}
+        spellCheck={false}
+        className="scroll-thin min-h-0 flex-1 resize-none bg-panel p-3 outline-none placeholder:text-faint"
+      />
+    </div>
+  );
+}
+
+function TextButton(props: { icon: string; label: string; accent?: boolean; disabled?: boolean; onClick(): unknown }) {
   return (
     <button
+      type="button"
+      disabled={props.disabled}
       onClick={() => void props.onClick()}
-      className="flex h-6 items-center gap-1.5 rounded px-2 text-fg hover:bg-hover"
+      className="flex h-6 items-center gap-1.5 rounded px-2 text-fg hover:bg-hover disabled:text-faint disabled:hover:bg-transparent"
     >
-      <Icon name={props.icon} size={13} />
+      <Icon name={props.icon} size={13} className={props.accent && !props.disabled ? "text-ok" : ""} />
       {props.label}
     </button>
   );

@@ -7,6 +7,7 @@ import { t } from "../i18n";
 import type { ParamRequest, ParamValue } from "../params";
 import { activeTabs, resolve, type PendingAction } from "../pending";
 import { useStore } from "../store";
+import { CompileDialog, DiscardDialog } from "./CompileDialog";
 import { Button, Field, inputClass, Modal } from "./Modal";
 import { RegistrationDialog } from "./RegistrationDialog";
 
@@ -27,6 +28,11 @@ export function Dialogs() {
       return <ParamsDialog request={dialog.request} />;
     case "export":
       return <ExportDialog tab={dialog.tab} />;
+    case "compile":
+      // Another change is another dialog: its outcome is not the last one's
+      return <CompileDialog key={dialog.script} dialog={dialog} />;
+    case "discard":
+      return <DiscardDialog viewer={dialog.viewer} />;
   }
 }
 

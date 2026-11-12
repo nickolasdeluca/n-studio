@@ -1,11 +1,12 @@
 // What the toolbar, the menus and the keyboard can do to a registration or
 // to its objects. One place, so each surface offers the same thing under the
 // same name.
-import { api, errorText, type ObjectRef } from "./api";
+import { api, errorText, type ObjectKind, type ObjectRef } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
-import { openEditor, openObject } from "./dock";
+import { closePanel, openEditor, openObject } from "./dock";
 import { t } from "./i18n";
 import { useStore } from "./store";
+import { viewerId } from "./viewers";
 
 export function registrationActions(id: string): (MenuItem | "separator")[] {
   const s = useStore.getState();
@@ -44,7 +45,48 @@ export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "se
       disabled: objects.length === 0,
       onSelect: () => void extractMetadata(id, objects),
     },
+    "separator",
+    {
+      label: one ? t("Drop {name}…", { name: one.name }) : t("Drop…"),
+      icon: "trash",
+      danger: true,
+      // One at a time: what depends on what decides the order of several
+      disabled: !one,
+      onSelect: () => one && void dropObject(id, one),
+    },
   ];
+}
+
+/** What can be done to a kind as a whole */
+export function kindActions(id: string, kind: ObjectKind, singular: string): (MenuItem | "separator")[] {
+  return [{ label: t("New {kind}…", { kind: t(singular) }), icon: "plus", onSelect: () => void newObject(id, kind) }];
+}
+
+/** A new SQL editor holding a script that creates an object of the kind */
+async function newObject(id: string, kind: ObjectKind) {
+  try {
+    openEditor(id, await api.objectTemplate(id, kind));
+  } catch (e) {
+    useStore.getState().setNotice(errorText(e));
+  }
+}
+
+/** Shows the statement that drops the object, to be confirmed */
+async function dropObject(id: string, object: ObjectRef) {
+  const s = useStore.getState();
+  try {
+    const script = await api.objectDropScript(id, object.kind, object.name);
+    s.openDialog({
+      type: "compile",
+      registration: id,
+      title: t("Drop {name}", { name: object.name }),
+      script,
+      danger: true,
+      done: () => closePanel(viewerId(id, object.kind, object.name)),
+    });
+  } catch (e) {
+    s.setNotice(errorText(e));
+  }
 }
 
 /** The script that creates the objects again, in a new SQL editor */

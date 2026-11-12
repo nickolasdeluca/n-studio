@@ -51,7 +51,15 @@ export function openObject(registration: string, kind: ObjectKind, name: string)
     panel.api.setActive();
     return;
   }
-  dock.addPanel({ id, component: "object", title: name, params: { viewer: id }, position: beside(dock) });
+  dock.addPanel({
+    id,
+    component: "object",
+    // Its close button asks first when text was changed and not compiled
+    tabComponent: "object",
+    title: name,
+    params: { viewer: id },
+    position: beside(dock),
+  });
 }
 
 export function closePanel(id: string) {

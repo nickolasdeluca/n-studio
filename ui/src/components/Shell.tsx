@@ -35,6 +35,17 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
 };
 
 const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = {
+  object: (props) => (
+    <DockviewDefaultTab
+      {...props}
+      closeActionOverride={() => {
+        // Text typed and not compiled is asked about before it goes
+        const drafts = useViewers.getState().viewers[props.api.id]?.drafts ?? {};
+        if (Object.keys(drafts).length > 0) useStore.getState().openDialog({ type: "discard", viewer: props.api.id });
+        else props.api.close();
+      }}
+    />
+  ),
   sql: (props) => (
     <DockviewDefaultTab {...props} closeActionOverride={() => request({ kind: "close", tab: props.api.id })} />
   ),

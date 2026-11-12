@@ -24,6 +24,8 @@ export interface Viewer {
   contents: Record<string, Loadable<TabContent>>;
   /** The editor tab the Data tab's rows come through, once it was shown */
   data: string | null;
+  /** Text changed and not compiled yet, by tab id */
+  drafts: Record<string, string>;
 }
 
 interface State {
@@ -32,8 +34,10 @@ interface State {
   open(registration: string, kind: ObjectKind, name: string): string;
   close(id: string): void;
   show(id: string, tab: string): void;
-  /** Reads the tab showing again */
+  /** Reads the tab showing again; what was typed in it stays */
   reload(id: string): void;
+  /** What a tab's text was changed to; `null` when it is the object's again */
+  setDraft(id: string, tab: string, text: string | null): void;
 }
 
 export const viewerId = (registration: string, kind: ObjectKind, name: string) => `obj-${registration}:${kind}:${name}`;
@@ -86,6 +90,7 @@ export const useViewers = create<State>()((set, get) => {
         active: null,
         contents: {},
         data: null,
+        drafts: {},
       };
       set((s) => ({ viewers: { ...s.viewers, [id]: viewer } }));
       api.objectTabs(kind).then(
@@ -120,6 +125,15 @@ export const useViewers = create<State>()((set, get) => {
     reload(id) {
       const viewer = get().viewers[id];
       if (viewer?.active) void load(id, viewer.active);
+    },
+
+    setDraft(id, tab, text) {
+      patch(id, (v) => {
+        const drafts = { ...v.drafts };
+        if (text === null) delete drafts[tab];
+        else drafts[tab] = text;
+        return { drafts };
+      });
     },
   };
 });

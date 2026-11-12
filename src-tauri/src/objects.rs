@@ -122,11 +122,15 @@ pub enum TabContent {
     Grid {
         sections: Vec<GridSection>,
     },
+    /// `editable`: the text can be changed and compiled back, as
+    /// [`object_tab_script`] has it
     Sql {
         text: String,
+        editable: bool,
     },
     Text {
         text: String,
+        editable: bool,
     },
     /// A query for the viewer to run and page through, as an editor would
     Data {
@@ -187,12 +191,67 @@ pub async fn extract_metadata(app: AppHandle, id: String, objects: Vec<ObjectRef
     .await
 }
 
+/// Whether a kind's script creates the object over the one that is there
+/// (`CREATE OR ALTER`, `RECREATE`): then the script, edited, is how the
+/// object is changed
+fn recompiles(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::View | ObjectKind::Procedure | ObjectKind::Function | ObjectKind::Package | ObjectKind::Trigger
+    )
+}
+
+/// The script that makes an editable tab's new text the object's: for the
+/// user to see, and then to run
+#[tauri::command]
+pub async fn object_tab_script(
+    app: AppHandle,
+    id: String,
+    kind: ObjectKind,
+    name: String,
+    tab: String,
+    text: String,
+) -> AppResult<String> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        let ctx = fb_meta::ddl::Context::of(conn.info());
+        match tab.as_str() {
+            // Already the script
+            "ddl" if recompiles(kind) => Ok(text),
+            "description" => Ok(fb_meta::ddl::script(&[fb_meta::change::describe(kind, &name, &text, &ctx)])),
+            _ => Err(AppError::Invalid { message: format!("The {tab} tab cannot be changed.") }),
+        }
+    })
+    .await
+}
+
+/// The script that drops an object
+#[tauri::command]
+pub async fn object_drop_script(app: AppHandle, id: String, kind: ObjectKind, name: String) -> AppResult<String> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        let ctx = fb_meta::ddl::Context::of(conn.info());
+        Ok(fb_meta::ddl::script(&[fb_meta::change::drop(kind, &name, &ctx)]))
+    })
+    .await
+}
+
+/// A script to start a new object of a kind from
+#[tauri::command]
+pub async fn object_template(app: AppHandle, id: String, kind: ObjectKind) -> AppResult<String> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        Ok(fb_meta::change::template(kind, &fb_meta::ddl::Context::of(conn.info())))
+    })
+    .await
+}
+
 fn content(conn: &Connection, kind: ObjectKind, name: &str, tab: &str) -> AppResult<TabContent> {
     let dialect = conn.info().dialect;
     Ok(match (tab, kind) {
-        ("ddl", _) => TabContent::Sql { text: extract::script(conn, kind, name)? },
+        ("ddl", _) => TabContent::Sql { text: extract::script(conn, kind, name)?, editable: recompiles(kind) },
         ("description", _) => {
-            TabContent::Text { text: extract::description(conn, kind, name)?.unwrap_or_default() }
+            TabContent::Text { text: extract::description(conn, kind, name)?.unwrap_or_default(), editable: true }
         }
         ("dependencies", _) => {
             let found = fb_meta::dependencies(conn, kind, name)?;
@@ -542,7 +601,7 @@ mod tests {
                             }
                             Shape::Grid
                         }
-                        TabContent::Sql { text } => {
+                        TabContent::Sql { text, .. } => {
                             assert!(!text.trim().is_empty(), "{kind:?}: an empty script");
                             Shape::Sql
                         }

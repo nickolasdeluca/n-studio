@@ -76,6 +76,8 @@ export function Button(props: {
   danger?: boolean;
   disabled?: boolean;
   submit?: boolean;
+  /** Where the dialog's focus starts */
+  autoFocus?: boolean;
 }) {
   const tone = props.primary
     ? "border-accent bg-accent text-accent-fg hover:brightness-110"
@@ -87,6 +89,7 @@ export function Button(props: {
       type={props.submit ? "submit" : "button"}
       onClick={props.onClick}
       disabled={props.disabled}
+      data-autofocus={props.autoFocus ? "" : undefined}
       className={`h-7 rounded border px-3 disabled:opacity-50 ${tone}`}
     >
       {props.children}

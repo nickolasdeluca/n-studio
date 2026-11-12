@@ -71,6 +71,8 @@ pub struct RegistrationView {
 pub struct TreeKind {
     kind: ObjectKind,
     label: &'static str,
+    /// One of the kind: "Table"
+    singular: &'static str,
     count: u64,
 }
 
@@ -198,7 +200,7 @@ pub async fn explorer_tree(app: AppHandle, id: String) -> AppResult<Vec<TreeKind
         let conn = state.session(&id)?;
         Ok(fb_meta::counts(&conn)?
             .into_iter()
-            .map(|(kind, count)| TreeKind { kind, label: kind.label(), count })
+            .map(|(kind, count)| TreeKind { kind, label: kind.label(), singular: kind.singular(), count })
             .collect())
     })
     .await

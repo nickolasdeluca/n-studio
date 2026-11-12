@@ -12,6 +12,7 @@
 use fb_core::{Connection, Error, Result, ServerInfo, Value};
 use serde::{Deserialize, Serialize};
 
+pub mod change;
 pub mod ddl;
 mod deps;
 pub mod extract;
@@ -70,6 +71,24 @@ impl ObjectKind {
         ObjectKind::Role,
         ObjectKind::Index,
     ];
+
+    /// One of the kind, as a title or a menu names it
+    pub fn singular(self) -> &'static str {
+        match self {
+            ObjectKind::Domain => "Domain",
+            ObjectKind::Table => "Table",
+            ObjectKind::View => "View",
+            ObjectKind::Procedure => "Procedure",
+            ObjectKind::Function => "Function",
+            ObjectKind::Package => "Package",
+            ObjectKind::Trigger => "Trigger",
+            ObjectKind::Generator => "Generator",
+            ObjectKind::Exception => "Exception",
+            ObjectKind::Udf => "UDF",
+            ObjectKind::Role => "Role",
+            ObjectKind::Index => "Index",
+        }
+    }
 
     /// The explorer's heading for the kind, as IBExpert names it
     pub fn label(self) -> &'static str {

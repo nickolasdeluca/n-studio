@@ -50,11 +50,11 @@ pub struct Statement {
 }
 
 impl Statement {
-    fn plain(sql: impl Into<String>) -> Self {
+    pub(crate) fn plain(sql: impl Into<String>) -> Self {
         Self { sql: sql.into(), psql: false, foreign_key: false }
     }
 
-    fn psql(sql: impl Into<String>) -> Self {
+    pub(crate) fn psql(sql: impl Into<String>) -> Self {
         Self { sql: sql.into(), psql: true, foreign_key: false }
     }
 }

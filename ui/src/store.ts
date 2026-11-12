@@ -42,7 +42,12 @@ export type Dialog =
   /** A statement's parameter values, which a run waits for */
   | { type: "params"; request: ParamRequest }
   /** Where and how to write an editor's rows */
-  | { type: "export"; tab: string };
+  | { type: "export"; tab: string }
+  /** A change to the catalog, as the script that makes it: shown, then run
+   *  whole or not at all. `done` is called once it is committed. */
+  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void }
+  /** A viewer closing over text not compiled yet */
+  | { type: "discard"; viewer: string };
 
 /** What the tree has selected: a registration, and maybe a kind and object */
 export interface Selection {

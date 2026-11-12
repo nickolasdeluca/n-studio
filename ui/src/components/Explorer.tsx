@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { objectActions, registrationActions } from "../actions";
+import { kindActions, objectActions, registrationActions } from "../actions";
 import { openObject } from "../dock";
 import { serverSummary, type ObjectKind } from "../api";
 import { t } from "../i18n";
@@ -220,7 +220,7 @@ export function Explorer() {
                   kind && object
                     ? [...objectActions(id, [{ kind, name: object }]), "separator" as const, refresh]
                     : kind
-                      ? [refresh]
+                      ? [...kindActions(id, kind, trees[id]?.data?.find((k) => k.kind === kind)?.singular ?? kind), "separator" as const, refresh]
                       : registrationActions(id);
                 showMenu(e.clientX, e.clientY, items);
               }}

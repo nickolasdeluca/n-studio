@@ -43,6 +43,8 @@ export type ObjectKind = string;
 export interface TreeKind {
   kind: ObjectKind;
   label: string;
+  /** One of the kind: "Table" */
+  singular: string;
   count: number;
 }
 
@@ -318,8 +320,9 @@ export interface GridSection {
 
 export type TabContent =
   | { shape: "grid"; sections: GridSection[] }
-  | { shape: "sql"; text: string }
-  | { shape: "text"; text: string }
+  /** `editable`: the text can be changed and compiled back */
+  | { shape: "sql"; text: string; editable: boolean }
+  | { shape: "text"; text: string; editable: boolean }
   /** A query for the viewer to run and page through */
   | { shape: "data"; sql: string };
 
@@ -339,6 +342,11 @@ export const api = {
   objectTabs: (kind: ObjectKind) => invoke<TabInfo[]>("object_tabs", { kind }),
   objectTab: (id: string, kind: ObjectKind, name: string, tab: string) =>
     invoke<TabContent>("object_tab", { id, kind, name, tab }),
+  /** The script that makes an editable tab's new text the object's */
+  objectTabScript: (id: string, kind: ObjectKind, name: string, tab: string, text: string) =>
+    invoke<string>("object_tab_script", { id, kind, name, tab, text }),
+  objectDropScript: (id: string, kind: ObjectKind, name: string) => invoke<string>("object_drop_script", { id, kind, name }),
+  objectTemplate: (id: string, kind: ObjectKind) => invoke<string>("object_template", { id, kind }),
   extractMetadata: (id: string, objects: ObjectRef[]) => invoke<string>("extract_metadata", { id, objects }),
 
   editorBegin: (id: string, options: TxOptions) => invoke<number>("editor_begin", { id, options }),
