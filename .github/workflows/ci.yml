@@ -138,4 +138,9 @@ jobs:
 
       - name: Server log
         if: failure()
-        run: docker compose -f docker/compose.yml logs ${{ matrix.service }}
+        # The container's output, then the server's own log, wherever this
+        # version keeps it: a server that drops its connections says why there
+        run: |
+          docker compose -f docker/compose.yml logs ${{ matrix.service }}
+          docker compose -f docker/compose.yml exec -T ${{ matrix.service }} \
+            sh -c 'cat /opt/firebird/firebird.log /usr/local/firebird/firebird.log /var/firebird/log/firebird.log 2>/dev/null | tail -200' || true
