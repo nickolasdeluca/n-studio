@@ -1,11 +1,12 @@
 //! An object's DDL, read from a live database.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use fb_core::{Connection, Result};
 
 use crate::ddl::{self, Context, Statement};
 use crate::table::TriggerScope;
+use crate::deps::{self, Part};
 use crate::{grant, object, routine, table, ObjectKind};
 
 /// The statements that would create one object again. A table comes with
@@ -64,8 +65,8 @@ const ONE_BY_ONE: usize = 12;
 /// granted on any of them last: a grant to a procedure needs the procedure.
 /// What a table brings with it is not repeated when it was selected too.
 ///
-/// Routines come in the order given: one that calls another declared after
-/// it needs that one to exist first, which only the reader can arrange.
+/// Views and routines come each after the ones it uses; routines that
+/// call each other are declared with empty bodies first, then defined.
 pub fn selection(conn: &Connection, objects: &[(ObjectKind, String)]) -> Result<Vec<Statement>> {
     let ctx = Context::of(conn.info());
     let of = |kind: ObjectKind| -> Vec<&str> {
@@ -94,13 +95,46 @@ pub fn selection(conn: &Connection, objects: &[(ObjectKind, String)]) -> Result<
     }
     out.extend(foreign_keys);
 
+    // Views and routines use one another: each goes after what it uses
     let views = of(ObjectKind::View);
-    for name in view_order(conn, &views)? {
-        out.extend(ddl::view(&table::view(conn, name)?, &ctx));
+    let mut parts: Vec<Piece> = Vec::new();
+    for &name in &views {
+        parts.push(Piece::new(Part::View, name, ddl::view(&table::view(conn, name)?, &ctx)));
     }
-    for kind in [ObjectKind::Function, ObjectKind::Procedure, ObjectKind::Package] {
-        for name in of(kind) {
-            out.extend(object_statements(conn, kind, name)?);
+    for name in of(ObjectKind::Function) {
+        let function = routine::function(conn, name)?;
+        let stub = ddl::routine_stub(&function, &ctx);
+        parts.push(Piece { stub, ..Piece::new(Part::Function, name, ddl::routine(&function, &ctx)) });
+    }
+    for name in of(ObjectKind::Procedure) {
+        let procedure = routine::procedure(conn, name)?;
+        let stub = ddl::routine_stub(&procedure, &ctx);
+        parts.push(Piece { stub, ..Piece::new(Part::Procedure, name, ddl::routine(&procedure, &ctx)) });
+    }
+    for name in of(ObjectKind::Package) {
+        let (body, header): (Vec<_>, Vec<_>) = ddl::package(&routine::package(conn, name)?, &ctx)
+            .into_iter()
+            .partition(|s| s.sql.starts_with("RECREATE PACKAGE BODY"));
+        parts.push(Piece::new(Part::PackageHeader, name, header));
+        if !body.is_empty() {
+            parts.push(Piece::new(Part::PackageBody, name, body));
+        }
+    }
+    let uses = if parts.len() > 1 { uses_among(&parts, deps::uses_between_routines(conn)?) } else { vec![vec![]; parts.len()] };
+    for group in components(&uses) {
+        // Routines that call each other: all declared, then all defined
+        let declared: Vec<usize> =
+            if group.len() > 1 { group.iter().copied().filter(|i| parts[*i].stub.is_some()).collect() } else { Vec::new() };
+        out.extend(declared.iter().filter_map(|i| parts[*i].stub.clone()));
+        let within: Vec<Vec<usize>> = group
+            .iter()
+            .map(|i| {
+                let on = uses[*i].iter().filter(|on| !declared.contains(on));
+                on.filter_map(|on| group.iter().position(|member| member == on)).collect()
+            })
+            .collect();
+        for i in ordered(&within) {
+            out.extend(parts[group[i]].statements.iter().cloned());
         }
     }
 
@@ -148,20 +182,100 @@ pub fn selection(conn: &Connection, objects: &[(ObjectKind, String)]) -> Result<
     Ok(out)
 }
 
-/// The views with each one after those of them it selects from
-fn view_order<'a>(conn: &Connection, views: &[&'a str]) -> Result<Vec<&'a str>> {
-    let mut uses = Vec::with_capacity(views.len());
-    for &view in views {
-        let found = crate::dependencies(conn, ObjectKind::View, view)?;
-        let on: Vec<usize> = found
-            .uses
-            .iter()
-            .filter(|d| d.kind == Some(ObjectKind::View))
-            .filter_map(|d| views.iter().position(|v| *v == d.name))
-            .collect();
-        uses.push(on);
+/// A view, a routine or half a package, with the statements that create it
+struct Piece {
+    part: Part,
+    name: String,
+    statements: Vec<Statement>,
+    /// What declares it before it is defined, when it can be
+    stub: Option<Statement>,
+}
+
+impl Piece {
+    fn new(part: Part, name: &str, statements: Vec<Statement>) -> Self {
+        Self { part, name: name.to_string(), statements, stub: None }
     }
-    Ok(ordered(&uses).into_iter().map(|i| views[i]).collect())
+}
+
+/// For each piece, the pieces it uses, from the catalog's uses. A package
+/// body uses its header, which the catalog does not say.
+fn uses_among(parts: &[Piece], between: Vec<((Part, String), (Part, String))>) -> Vec<Vec<usize>> {
+    let index: HashMap<(Part, &str), usize> =
+        parts.iter().enumerate().map(|(i, p)| ((p.part, p.name.as_str()), i)).collect();
+    let mut uses = vec![Vec::new(); parts.len()];
+    for ((user, user_name), (used, used_name)) in &between {
+        let (Some(&i), Some(&on)) = (index.get(&(*user, user_name.as_str())), index.get(&(*used, used_name.as_str()))) else {
+            continue;
+        };
+        // One that calls itself needs nothing before it
+        if i != on && !uses[i].contains(&on) {
+            uses[i].push(on);
+        }
+    }
+    for (i, piece) in parts.iter().enumerate() {
+        if piece.part == Part::PackageBody {
+            uses[i].extend(index.get(&(Part::PackageHeader, piece.name.as_str())));
+        }
+    }
+    for on in &mut uses {
+        on.sort_unstable();
+    }
+    uses
+}
+
+/// The indices grouped so that each group comes after the groups it uses:
+/// a group of several is a cycle, each of them using the others. Groups
+/// keep the order given wherever nothing says otherwise. (Tarjan's
+/// strongly connected components.)
+fn components(uses: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    struct Walk<'a> {
+        uses: &'a [Vec<usize>],
+        /// When each was reached, and the earliest reached from it
+        reached: Vec<Option<(usize, usize)>>,
+        stack: Vec<usize>,
+        on_stack: Vec<bool>,
+        clock: usize,
+        out: Vec<Vec<usize>>,
+    }
+    fn visit(i: usize, w: &mut Walk) {
+        w.reached[i] = Some((w.clock, w.clock));
+        w.clock += 1;
+        w.stack.push(i);
+        w.on_stack[i] = true;
+        for &on in &w.uses[i] {
+            let low = match w.reached[on] {
+                None => {
+                    visit(on, w);
+                    w.reached[on].map(|(_, low)| low)
+                }
+                Some((at, _)) if w.on_stack[on] => Some(at),
+                Some(_) => None,
+            };
+            if let (Some(low), Some((_, mine))) = (low, w.reached[i].as_mut()) {
+                *mine = (*mine).min(low);
+            }
+        }
+        if w.reached[i].is_some_and(|(at, low)| at == low) {
+            let mut group = Vec::new();
+            while let Some(member) = w.stack.pop() {
+                w.on_stack[member] = false;
+                group.push(member);
+                if member == i {
+                    break;
+                }
+            }
+            group.sort_unstable();
+            w.out.push(group);
+        }
+    }
+    let n = uses.len();
+    let mut walk = Walk { uses, reached: vec![None; n], stack: Vec::new(), on_stack: vec![false; n], clock: 0, out: Vec::new() };
+    for i in 0..n {
+        if walk.reached[i].is_none() {
+            visit(i, &mut walk);
+        }
+    }
+    walk.out
 }
 
 /// `0..uses.len()` with each index after the ones it uses, otherwise in
@@ -200,7 +314,17 @@ pub fn description(conn: &Connection, kind: ObjectKind, name: &str) -> Result<Op
 
 #[cfg(test)]
 mod tests {
-    use super::ordered;
+    use super::{components, ordered};
+
+    #[test]
+    fn groups_come_after_what_they_use_and_cycles_stay_together() {
+        // Nothing uses anything: the order given
+        assert_eq!(components(&[vec![], vec![], vec![]]), [[0], [1], [2]]);
+        // 0 uses 2, 1 uses 0
+        assert_eq!(components(&[vec![2], vec![0], vec![]]), [[2], [0], [1]]);
+        // 1 and 2 call each other; 0 uses 1, 3 is used by 2
+        assert_eq!(components(&[vec![1], vec![2], vec![1, 3], vec![]]), [vec![3], vec![1, 2], vec![0]]);
+    }
 
     #[test]
     fn what_is_used_comes_first() {

@@ -315,13 +315,17 @@ fn params(list: &[Param], ctx: &Context) -> String {
     format!("(\n{})", lines.join(",\n"))
 }
 
-pub fn routine(r: &Routine, ctx: &Context) -> Vec<Statement> {
-    let name = ctx.name(&r.name);
-    let keyword = match r.kind {
+fn routine_keyword(r: &Routine) -> &'static str {
+    match r.kind {
         RoutineKind::Procedure => "PROCEDURE",
         RoutineKind::Function => "FUNCTION",
-    };
-    let mut sql = format!("CREATE OR ALTER {keyword} {name}");
+    }
+}
+
+/// A routine up to its body: its name, its parameters, what it returns
+fn routine_header(r: &Routine, ctx: &Context) -> String {
+    let name = ctx.name(&r.name);
+    let mut sql = format!("CREATE OR ALTER {} {name}", routine_keyword(r));
     if !r.inputs.is_empty() {
         sql.push_str(&format!(" {}", params(&r.inputs, ctx)));
     }
@@ -339,6 +343,29 @@ pub fn routine(r: &Routine, ctx: &Context) -> Vec<Statement> {
         }
         RoutineKind::Procedure => {}
     }
+    sql
+}
+
+/// A routine declared and doing nothing yet, for what calls it to compile
+/// against: two routines that call each other cannot both come first.
+/// `None` for an external routine, which calls nothing.
+pub fn routine_stub(r: &Routine, ctx: &Context) -> Option<Statement> {
+    if r.external.is_some() {
+        return None;
+    }
+    let does = match r.kind {
+        RoutineKind::Function => "    RETURN NULL;\n",
+        // Selected from, it has to be a procedure that can be
+        RoutineKind::Procedure if !r.outputs.is_empty() => "    SUSPEND;\n",
+        RoutineKind::Procedure => "",
+    };
+    Some(Statement::psql(format!("{}\nAS\nBEGIN\n{does}END", routine_header(r, ctx))))
+}
+
+pub fn routine(r: &Routine, ctx: &Context) -> Vec<Statement> {
+    let name = ctx.name(&r.name);
+    let keyword = routine_keyword(r);
+    let mut sql = routine_header(r, ctx);
     match &r.external {
         Some((engine, entry)) => {
             let entry = entry.as_deref().map(|e| format!(" {}", literal(e))).unwrap_or_default();

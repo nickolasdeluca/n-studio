@@ -57,6 +57,55 @@ const COLLATION: i64 = 17;
 const PACKAGE_HEADER: i64 = 18;
 const PACKAGE_BODY: i64 = 19;
 
+/// What a script has to create in an order: the objects that can use one
+/// another. A package is two, since its header is all a caller needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Part {
+    View,
+    Procedure,
+    Function,
+    PackageHeader,
+    PackageBody,
+}
+
+/// Every use of a view or a routine by another, as (the one using, the one
+/// used). A relation used is given as a view, whichever it is: the caller
+/// knows its views.
+pub(crate) fn uses_between_routines(conn: &Connection) -> Result<Vec<((Part, String), (Part, String))>> {
+    let fb3 = Generation::of(conn.info()) == Generation::Fb3;
+    let package = if fb3 { "trim(d.rdb$package_name)" } else { "cast(null as char(31))" };
+    let dependents = list(&[VIEW, PROCEDURE, FUNCTION, PACKAGE_HEADER, PACKAGE_BODY]);
+    let targets = list(&[RELATION, VIEW, PROCEDURE, FUNCTION, PACKAGE_HEADER, PACKAGE_BODY]);
+    let sql = format!(
+        "select distinct trim(d.rdb$dependent_name), d.rdb$dependent_type, trim(d.rdb$depended_on_name), \
+         d.rdb$depended_on_type, {package} from rdb$dependencies d \
+         where d.rdb$dependent_type in ({dependents}) and d.rdb$depended_on_type in ({targets})"
+    );
+    let part = |code: i64| match code {
+        RELATION | VIEW => Some(Part::View),
+        PROCEDURE => Some(Part::Procedure),
+        FUNCTION => Some(Part::Function),
+        PACKAGE_HEADER => Some(Part::PackageHeader),
+        PACKAGE_BODY => Some(Part::PackageBody),
+        _ => None,
+    };
+    Ok(rows(conn, &sql, vec![])?
+        .into_iter()
+        .filter_map(|row| {
+            let user = (part(row.int(1)?)?, row.text(0)?);
+            let used = match row.text(4) {
+                // A packaged routine: what is used is its package
+                Some(package) => (Part::PackageHeader, package),
+                None => match part(row.int(3)?)? {
+                    Part::PackageBody => (Part::PackageHeader, row.text(2)?),
+                    part => (part, row.text(2)?),
+                },
+            };
+            Some((user, used))
+        })
+        .collect())
+}
+
 /// The types a kind is depended on as, and the types it depends as
 fn codes(kind: ObjectKind) -> (&'static [i64], &'static [i64]) {
     match kind {

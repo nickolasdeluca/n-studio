@@ -150,6 +150,43 @@ END^
 
 SET TERM ; ^
 
+/* Two procedures that call each other, and a view over one of them: they
+   can be created only with one declared before it is defined. */
+SET TERM ^ ;
+
+CREATE PROCEDURE P_EVEN (N INTEGER)
+RETURNS (R SMALLINT)
+AS
+BEGIN
+  SUSPEND;
+END^
+
+CREATE PROCEDURE P_ODD (N INTEGER)
+RETURNS (R SMALLINT)
+AS
+BEGIN
+  IF (N = 0) THEN
+    R = 0;
+  ELSE
+    SELECT E.R FROM P_EVEN(:N - 1) E INTO :R;
+  SUSPEND;
+END^
+
+ALTER PROCEDURE P_EVEN (N INTEGER)
+RETURNS (R SMALLINT)
+AS
+BEGIN
+  IF (N = 0) THEN
+    R = 1;
+  ELSE
+    SELECT O.R FROM P_ODD(:N - 1) O INTO :R;
+  SUSPEND;
+END^
+
+SET TERM ; ^
+
+CREATE VIEW V_EVEN (R) AS SELECT E.R FROM P_EVEN(4) E;
+
 /* Privileges: a role, a user (which need not exist to be granted to), a
    procedure and PUBLIC, on objects whose DDL no test spells out in full. */
 CREATE ROLE R_FIXTURE;

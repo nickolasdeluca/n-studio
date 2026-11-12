@@ -62,8 +62,8 @@ fn the_fixture_lists_what_it_seeded() {
         tables.push("TIPOS_FB4");
     }
     assert_eq!(names(&list(ObjectKind::Table)), tables);
-    assert_eq!(names(&list(ObjectKind::View)), ["V_PEDIDO_TOTAL", "V_TIPOS"]);
-    assert_eq!(names(&list(ObjectKind::Procedure)), ["P_FIXTURE", "P_PEDIDO_TOTAL", "P_SEED_BULK"]);
+    assert_eq!(names(&list(ObjectKind::View)), ["V_EVEN", "V_PEDIDO_TOTAL", "V_TIPOS"]);
+    assert_eq!(names(&list(ObjectKind::Procedure)), ["P_EVEN", "P_FIXTURE", "P_ODD", "P_PEDIDO_TOTAL", "P_SEED_BULK"]);
     // The identity column's sequence is the engine's, not the user's
     assert_eq!(names(&list(ObjectKind::Generator)), ["GEN_TIPOS_ID"]);
     assert_eq!(names(&list(ObjectKind::Exception)), ["E_FIXTURE"]);
@@ -371,3 +371,71 @@ GRANT ALL ON BULK_ROWS TO U_FIXTURE WITH GRANT OPTION;
     assert!(at("PROCEDURE P_FIXTURE") < at("GRANT SELECT ON BULK_ROWS TO PROCEDURE P_FIXTURE"), "{script}");
     assert_eq!(script.matches("GRANT ALL ON BULK_ROWS").count(), 1, "{script}");
 }
+
+/// Where `CREATE OR ALTER <what> <name>` is in a script: every place, in
+/// order. A longer name that starts the same is not it.
+fn creations(script: &str, what: &str, name: &str) -> Vec<usize> {
+    let wanted = format!("CREATE OR ALTER {what} {name}");
+    script
+        .match_indices(&wanted)
+        .filter(|(at, _)| {
+            let after = script[at + wanted.len()..].chars().next();
+            !after.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+#[test]
+fn routines_that_call_each_other_are_declared_first() {
+    let Some(conn) = fixture() else { return };
+    let pick = |kind, name: &str| (kind, name.to_string());
+    let picked = [
+        pick(ObjectKind::View, "V_EVEN"),
+        pick(ObjectKind::Procedure, "P_ODD"),
+        pick(ObjectKind::Procedure, "P_EVEN"),
+        pick(ObjectKind::Procedure, "P_FIXTURE"),
+    ];
+    let script = fb_meta::ddl::script(&extract::selection(&conn, &picked).unwrap());
+    let even = creations(&script, "PROCEDURE", "P_EVEN");
+    let odd = creations(&script, "PROCEDURE", "P_ODD");
+    let view = creations(&script, "VIEW", "V_EVEN");
+    // Each of the two is there empty, then whole; the view after both
+    assert_eq!((even.len(), odd.len(), view.len()), (2, 2, 1), "{script}");
+    assert!(even[0] < odd[1] && odd[0] < even[1], "{script}");
+    assert!(even[0] < view[0], "{script}");
+    assert!(script.contains("CREATE OR ALTER PROCEDURE P_EVEN (\n    N INTEGER\n)\nRETURNS (\n    R SMALLINT\n)\nAS\nBEGIN\n    SUSPEND;\nEND^"), "{script}");
+    // One that calls nobody back is there once
+    assert_eq!(creations(&script, "PROCEDURE", "P_FIXTURE").len(), 1, "{script}");
+}
+
+/// On any database: whatever a routine or a view of a selection uses, of
+/// the selection, is created before it is defined
+#[test]
+fn a_selection_creates_nothing_before_what_it_uses() {
+    let Some(conn) = connect() else { return };
+    let dialect = conn.info().dialect;
+    let mut picked = Vec::new();
+    for kind in [ObjectKind::Procedure, ObjectKind::View] {
+        let list = objects(&conn, kind).unwrap();
+        picked.extend(sample(&list, 40).into_iter().map(|o| (kind, o.name)));
+    }
+    let script = fb_meta::ddl::script(&extract::selection(&conn, &picked).unwrap());
+    let what = |kind| if kind == ObjectKind::View { "VIEW" } else { "PROCEDURE" };
+    let places = |kind, name: &str| creations(&script, what(kind), &fb_meta::quote(name, dialect));
+    for (kind, name) in &picked {
+        let defined = *places(*kind, name).last().unwrap_or_else(|| panic!("{kind:?} {name} is not in the script"));
+        for used in dependencies(&conn, *kind, name).unwrap().uses {
+            let Some(used_kind) = used.kind.filter(|k| matches!(k, ObjectKind::Procedure | ObjectKind::View)) else { continue };
+            if used.detail.is_some() && used_kind == ObjectKind::Procedure || (used_kind, &used.name) == (*kind, name) {
+                continue;
+            }
+            if !picked.contains(&(used_kind, used.name.clone())) {
+                continue;
+            }
+            let created = places(used_kind, &used.name)[0];
+            assert!(created < defined, "a {kind:?} is defined before the {used_kind:?} it uses is created");
+        }
+    }
+}
+
