@@ -5,6 +5,7 @@ import { errorText, type ScriptProblem } from "../api";
 import { metadataChanged } from "../changes";
 import { closePanel, openEditor } from "../dock";
 import { t } from "../i18n";
+import { request, type PendingAction } from "../pending";
 import { defaultTx, newRun, runScript } from "../script";
 import { useStore, type Dialog } from "../store";
 import { useViewers } from "../viewers";
@@ -101,17 +102,25 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
   );
 }
 
-/** A viewer closing over text typed and not compiled */
-export function DiscardDialog({ viewer }: { viewer: string }) {
-  const name = useViewers((s) => s.viewers[viewer]?.name);
+/** Viewers closing over what was typed and not compiled or applied */
+export function DiscardDialog({ viewers, action }: { viewers: string[]; action?: PendingAction }) {
+  const names = useViewers((s) => viewers.map((id) => s.viewers[id]?.name ?? ""));
   const close = () => useStore.getState().openDialog(null);
   const discard = () => {
     close();
-    closePanel(viewer);
+    if (!action) {
+      viewers.forEach(closePanel);
+      return;
+    }
+    // Forgotten first, so that what goes on does not ask again
+    viewers.forEach((id) => useViewers.getState().discard(id));
+    request(action);
   };
+  const one = names.length === 1 ? names[0] : null;
+  const what = action ? { close: t("Close"), disconnect: t("Disconnect"), quit: t("Quit N Studio") }[action.kind] : t("Close");
   return (
     <Modal
-      title={t("Close {name}", { name: name ?? "" })}
+      title={one ? `${what}: ${one}` : what}
       width="w-[26rem]"
       onCancel={close}
       onSubmit={discard}
@@ -127,7 +136,18 @@ export function DiscardDialog({ viewer }: { viewer: string }) {
         </>
       }
     >
-      <p>{t("{name} has changes that were not compiled. Closing it discards them.", { name: name ?? "" })}</p>
+      {one ? (
+        <p>{t("{name} has changes that were not compiled or applied. Going on discards them.", { name: one })}</p>
+      ) : (
+        <>
+          <p>{t("These objects have changes that were not compiled or applied. Going on discards them.")}</p>
+          <ul className="mt-1.5 list-disc pl-5 text-muted">
+            {names.map((name, i) => (
+              <li key={i}>{name}</li>
+            ))}
+          </ul>
+        </>
+      )}
     </Modal>
   );
 }

@@ -18,7 +18,7 @@ import { onMetadataChanged } from "./changes";
 import { useEditors } from "./editors";
 import { t } from "./i18n";
 import type { ParamRequest } from "./params";
-import { activeTabs, type PendingAction } from "./pending";
+import { activeTabs, unsavedViewers, type PendingAction } from "./pending";
 
 interface Loadable<T> {
   data?: T;
@@ -52,8 +52,10 @@ export type Dialog =
   | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog; verb?: string }
   /** What an action on an object asks before it is a script to compile */
   | { type: "form"; viewer: string; action: Action; key: string | null; form: Form; values?: Record<string, string> }
-  /** A viewer closing over text not compiled yet */
-  | { type: "discard"; viewer: string };
+  /** Viewers closing over what was typed and not compiled or applied;
+   *  `action` is what goes on once it is discarded, when it is not just
+   *  the viewers closing */
+  | { type: "discard"; viewers: string[]; action?: PendingAction };
 
 /** What the tree has selected: a registration, and maybe a kind and object */
 export interface Selection {
@@ -163,6 +165,11 @@ export const useStore = create<State>()((set, get) => ({
   },
 
   async disconnect(id, force = false) {
+    const unsaved = force ? [] : unsavedViewers((registration) => registration === id);
+    if (unsaved.length > 0) {
+      set({ dialog: { type: "discard", viewers: unsaved, action: { kind: "disconnect", id } } });
+      return;
+    }
     if (!force && activeTabs((registration) => registration === id).length > 0) {
       set({ dialog: { type: "pending", tabs: activeTabs((r) => r === id), action: { kind: "disconnect", id } } });
       return;

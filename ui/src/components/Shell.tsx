@@ -41,7 +41,7 @@ const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeader
       closeActionOverride={() => {
         // Text typed and not compiled is asked about before it goes
         const viewer = useViewers.getState().viewers[props.api.id];
-        if (viewer && hasChanges(viewer)) useStore.getState().openDialog({ type: "discard", viewer: props.api.id });
+        if (viewer && hasChanges(viewer)) useStore.getState().openDialog({ type: "discard", viewers: [props.api.id] });
         else props.api.close();
       }}
     />

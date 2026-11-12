@@ -35,7 +35,7 @@ export function Dialogs() {
     case "form":
       return <FormDialog dialog={dialog} />;
     case "discard":
-      return <DiscardDialog viewer={dialog.viewer} />;
+      return <DiscardDialog viewers={dialog.viewers} action={dialog.action} />;
   }
 }
 

@@ -48,6 +48,8 @@ interface State {
   /** What a tab's text was changed to; `null` when it is the object's again */
   setDraft(id: string, tab: string, text: string | null): void;
   setEdits(id: string, edits: RowEdits): void;
+  /** Forgets what was typed in the viewer and not compiled or applied */
+  discard(id: string): void;
 }
 
 export const viewerId = (registration: string, kind: ObjectKind, name: string) => `obj-${registration}:${kind}:${name}`;
@@ -145,6 +147,10 @@ export const useViewers = create<State>()((set, get) => {
       // What the tab showing has stays on screen while it is read again
       patch(id, { contents: active && viewer.contents[active] ? { [active]: viewer.contents[active] } : {} });
       if (active) void load(id, active);
+    },
+
+    discard(id) {
+      patch(id, { drafts: {}, edits: noEdits });
     },
 
     setEdits(id, edits) {

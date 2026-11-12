@@ -1,10 +1,12 @@
 // Editors with an active transaction are never closed behind the user's
 // back: closing one, disconnecting its database or quitting asks first
-// whether to commit or roll back.
+// whether to commit or roll back. Nor are object viewers holding something
+// typed and not compiled or applied: those ask whether to discard it.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closePanel, panelTitle } from "./dock";
 import { useEditors } from "./editors";
 import { useStore } from "./store";
+import { hasChanges, useViewers } from "./viewers";
 
 export type PendingAction = { kind: "close"; tab: string } | { kind: "disconnect"; id: string } | { kind: "quit" };
 
@@ -16,8 +18,22 @@ export function activeTabs(filter: (registration: string, tab: string) => boolea
     .map((tab) => tab.id);
 }
 
-/** Does `action` now if no transaction stands in the way; asks otherwise */
+/** Viewers with changes that closing them would lose, optionally only some */
+export function unsavedViewers(filter: (registration: string) => boolean = () => true): string[] {
+  return Object.values(useViewers.getState().viewers)
+    .filter((viewer) => hasChanges(viewer) && filter(viewer.registration))
+    .map((viewer) => viewer.id);
+}
+
+/** Does `action` now if nothing stands in the way; asks otherwise: first
+ *  about viewers' changes, then about transactions */
 export function request(action: PendingAction): void {
+  const unsaved =
+    action.kind === "close" ? [] : unsavedViewers(action.kind === "disconnect" ? (r) => r === action.id : undefined);
+  if (unsaved.length > 0) {
+    useStore.getState().openDialog({ type: "discard", viewers: unsaved, action });
+    return;
+  }
   const tabs = affected(action);
   if (tabs.length === 0) void perform(action);
   else useStore.getState().openDialog({ type: "pending", tabs, action });
@@ -66,7 +82,7 @@ async function perform(action: PendingAction) {
 export async function guardQuit(): Promise<void> {
   try {
     await getCurrentWindow().onCloseRequested((event) => {
-      if (activeTabs().length === 0) return;
+      if (activeTabs().length === 0 && unsavedViewers().length === 0) return;
       event.preventDefault();
       request({ kind: "quit" });
     });
