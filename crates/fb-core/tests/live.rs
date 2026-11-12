@@ -91,9 +91,12 @@ fn read_only() -> TxOptions {
 #[test]
 fn an_editor_select_fetches_in_pages() {
     let Some(conn) = connect() else { return };
-    let total = conn.query("select count(*) from rdb$relations", vec![]).unwrap().rows[0][0].as_i64().unwrap();
-
     let tx = conn.begin(read_only()).unwrap();
+    // Counted in the snapshot the rows are read in: other tests create and
+    // drop tables meanwhile
+    let quiet = ExecuteOptions { plan: false, performance: false };
+    let counted = conn.execute(tx, "select count(*) from rdb$relations", vec![], quiet).unwrap();
+    let total = conn.fetch(counted.cursor.unwrap(), 1).unwrap().rows[0][0].as_i64().unwrap();
     let executed = conn
         .execute(tx, "select rdb$relation_id, rdb$relation_name from rdb$relations", vec![], ExecuteOptions::default())
         .unwrap();
@@ -364,7 +367,10 @@ fn an_atomic_script_that_fails_leaves_nothing() {
     let summary = run_script(&conn, None, TxOptions::default(), script, options, &never, |_, _| {}).unwrap();
     assert_eq!((summary.statements, summary.done, summary.failed), (3, 1, 1));
     assert_eq!((summary.tx, summary.ended), (None, Some(TxEnd::Rollback)));
-    let left = conn.query("select count(*) from rdb$relations where rdb$relation_name starting with 'SCRIPT_'", vec![]).unwrap();
+    // Not SCRIPT_T: that one is another test's, running meanwhile
+    let left = conn
+        .query("select count(*) from rdb$relations where rdb$relation_name in ('SCRIPT_A', 'SCRIPT_B')", vec![])
+        .unwrap();
     assert_eq!(left.rows[0][0], Value::Integer(0));
 
     // A script already cancelled runs nothing
