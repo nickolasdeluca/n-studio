@@ -19,11 +19,13 @@ mod deps;
 pub mod extract;
 pub mod grant;
 mod ident;
+pub mod monitor;
 mod object;
 mod routine;
 mod row;
 mod table;
 mod types;
+pub mod users;
 
 pub use grant::{Grant, GranteeKind};
 pub use deps::{dependencies, Dependencies, Dependency};

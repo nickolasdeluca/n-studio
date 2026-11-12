@@ -494,3 +494,132 @@ fn the_fixtures_rows_change_as_the_grid_says() {
     conn.end(tx, TxEnd::Rollback).unwrap();
 }
 
+
+/// Reads only: who is attached is asked of any database
+#[test]
+fn the_monitor_sees_this_connection() {
+    use fb_meta::monitor;
+    let Some(conn) = connect() else { return };
+
+    let database = monitor::database(&conn).unwrap().expect("mon$database has a row");
+    assert_eq!(database.page_size, conn.info().page_size as i64);
+    assert!(database.next_transaction >= database.oldest_transaction, "{database:?}");
+    assert!(database.created.as_deref().is_some_and(|c| c.len() == 19), "{:?}", database.created);
+
+    let attachments = monitor::attachments(&conn).unwrap();
+    let own: Vec<_> = attachments.iter().filter(|a| a.current).collect();
+    assert_eq!(own.len(), 1, "one attachment is this one");
+    assert!(own[0].user.is_some() && !own[0].system && own[0].since.is_some());
+    assert!(own[0].page_fetches > 0);
+
+    // Each reader is a transaction, so it sees itself, and its own statement
+    let transactions = monitor::transactions(&conn).unwrap();
+    assert!(transactions.iter().any(|t| t.attachment == own[0].id && t.read_only && t.active));
+    let statements = monitor::statements(&conn, true).unwrap();
+    let this = statements.iter().find(|s| s.attachment == own[0].id).expect("the statement reading them");
+    assert!(this.sql.as_deref().is_some_and(|s| s.contains("mon$statements")), "{:?}", this.state);
+    // That statement ended with its query: its text is no longer there to read
+    assert_eq!(monitor::statement_text(&conn, this.id).unwrap(), None);
+    assert!(monitor::statements(&conn, false).unwrap().len() >= statements.len());
+}
+
+/// Ends another attachment and another's statement: only among the
+/// fixture's own connections
+#[test]
+fn another_attachment_is_killed_and_its_statement_cancelled() {
+    use fb_core::{Error, ExecuteOptions, TxOptions};
+    use fb_meta::monitor;
+    let Some(conn) = fixture() else { return };
+    let params = ConnectParams::from_env().unwrap();
+    let other = Connection::open(&params).unwrap();
+    let other_id = other.query("select current_connection from rdb$database", vec![]).unwrap().rows[0][0]
+        .as_i64()
+        .unwrap();
+    let own_id = monitor::attachments(&conn).unwrap().iter().find(|a| a.current).unwrap().id;
+    assert_ne!(own_id, other_id);
+
+    // A statement that would run for a long while, cancelled from here
+    let runner = std::thread::spawn(move || {
+        let tx = other.begin(TxOptions { read_only: true, ..Default::default() }).unwrap();
+        let slow = "select count(*) from rdb$fields a, rdb$fields b, rdb$fields c, rdb$fields d";
+        let options = ExecuteOptions { plan: false, performance: false };
+        let ran = other.execute(tx, slow, vec![], options).and_then(|e| other.fetch(e.cursor.unwrap(), 1));
+        (other, ran.is_err())
+    });
+    let mut cancelled = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let running = monitor::statements(&conn, true).unwrap();
+        if let Some(s) = running.iter().find(|s| s.attachment == other_id && s.state == "active") {
+            monitor::cancel_statement(&conn, s.id).unwrap();
+            cancelled = true;
+            break;
+        }
+    }
+    assert!(cancelled, "the other attachment's statement never showed as active");
+    let (other, failed) = runner.join().unwrap();
+    assert!(failed, "the cancelled statement should have failed");
+    // Cancelled, the attachment still answers
+    other.query("select 1 from rdb$database", vec![]).unwrap();
+
+    // Killing this connection from itself does nothing
+    monitor::kill_attachment(&conn, own_id).unwrap();
+    conn.query("select 1 from rdb$database", vec![]).unwrap();
+
+    monitor::kill_attachment(&conn, other_id).unwrap();
+    let mut gone = false;
+    for _ in 0..50 {
+        match other.query("select 1 from rdb$database", vec![]) {
+            Err(Error::Server { .. } | Error::Network { .. } | Error::Closed) => {
+                gone = true;
+                break;
+            }
+            Err(e) => panic!("{e:?}"),
+            Ok(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+    assert!(gone, "the killed attachment still answers");
+    assert!(!monitor::attachments(&conn).unwrap().iter().any(|a| a.id == other_id));
+}
+
+/// Users are the server's, not the database's: created and dropped only
+/// on the fixture's server
+#[test]
+fn users_are_created_changed_and_dropped() {
+    use fb_core::{run_script, ScriptOptions};
+    use fb_meta::ddl::{script, Context};
+    use fb_meta::users::{self, UserChange};
+    let Some(conn) = fixture() else { return };
+    let ctx = Context::of(conn.info());
+    let name = "U_M5_TEST";
+    let run = |statements: &[fb_meta::ddl::Statement]| {
+        let options = ScriptOptions { stop_on_error: true, auto_ddl: true, atomic: true };
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let summary =
+            run_script(&conn, None, Default::default(), &script(statements), options, &never, |_, _| {}).unwrap();
+        assert_eq!(summary.failed, 0, "{}", script(statements));
+    };
+    let listed = || -> Option<(Option<String>, bool)> {
+        if ctx.major >= 3 {
+            let all = users::users(&conn).unwrap();
+            all.into_iter().find(|u| u.name == name).map(|u| (u.last_name, u.active))
+        } else {
+            let all = fb_core::service_users(&ConnectParams::from_env().unwrap()).unwrap();
+            all.into_iter().find(|u| u.name == name).map(|u| (Some(u.last_name).filter(|l| !l.is_empty()), true))
+        }
+    };
+    if listed().is_some() {
+        run(&[users::drop(name, None, &ctx)]);
+    }
+
+    let new = UserChange { password: Some("pw-m5-test".into()), last_name: Some("Before".into()), ..Default::default() };
+    run(&[users::create(name, &new, &ctx).unwrap()]);
+    assert_eq!(listed(), Some((Some("Before".to_string()), true)));
+
+    let change = UserChange { last_name: Some("After".into()), active: Some(false), ..Default::default() };
+    run(&[users::alter(name, &change, &ctx).unwrap()]);
+    assert_eq!(listed(), Some((Some("After".to_string()), ctx.major < 3)));
+
+    run(&[users::drop(name, None, &ctx)]);
+    assert_eq!(listed(), None);
+}
