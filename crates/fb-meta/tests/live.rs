@@ -175,15 +175,19 @@ ALTER TABLE PEDIDO_ITEM ADD CONSTRAINT CK_ITEM_QTD CHECK (QTD > 0);
 CREATE DESCENDING INDEX IDX_ITEM_PRECO ON PEDIDO_ITEM (PRECO);
 "
     );
+    // Firebird 2 keeps the query's indentation, later versions drop it
+    let query = if conn.info().major >= 3 { "SELECT" } else { "  SELECT" };
     assert_eq!(
         ddl(ObjectKind::View, "V_PEDIDO_TOTAL"),
-        "\
+        format!(
+            "\
 CREATE OR ALTER VIEW V_PEDIDO_TOTAL (
     PEDIDO,
     TOTAL)
 AS
-  SELECT I.PEDIDO, SUM(I.TOTAL) FROM PEDIDO_ITEM I GROUP BY I.PEDIDO;
+{query} I.PEDIDO, SUM(I.TOTAL) FROM PEDIDO_ITEM I GROUP BY I.PEDIDO;
 "
+        )
     );
     assert_eq!(
         ddl(ObjectKind::Procedure, "P_PEDIDO_TOTAL"),
@@ -295,3 +299,4 @@ fn the_fixture_knows_what_uses_what() {
     assert!(has(&view.uses, ObjectKind::Table, "Table", "PEDIDO_ITEM"), "{view:?}");
     assert!(has(&view.used_by, ObjectKind::Procedure, "Procedure", "P_PEDIDO_TOTAL"), "{view:?}");
 }
+

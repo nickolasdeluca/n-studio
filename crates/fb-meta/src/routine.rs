@@ -113,7 +113,13 @@ pub fn procedure(conn: &Connection, name: &str) -> Result<Routine> {
          {type_joins} \
          where a.rdb$procedure_name = ? {standalone} \
          order by a.rdb$parameter_type, a.rdb$parameter_number",
-        default = inline("a.rdb$default_source"),
+        // Firebird 2 keeps the default of a parameter declared with a plain
+        // type on the domain made for it; a named domain's default is the
+        // domain's, not the parameter's
+        default = inline(
+            "coalesce(a.rdb$default_source, \
+             case when a.rdb$field_source starting with 'RDB$' then f.rdb$default_source end)"
+        ),
         description = inline("a.rdb$description"),
         type_joins = type_joins("coalesce(a.rdb$collation_id, f.rdb$collation_id)"),
     );
