@@ -13,6 +13,15 @@ use fb_core::{
     ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
 };
 
+/// Held by the tests that change the catalog, and by the one that backs the
+/// database up: a backup reads every table by its id, and fails when one
+/// is dropped under it ("table id 137 is not defined").
+static CATALOG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn catalog() -> std::sync::MutexGuard<'static, ()> {
+    CATALOG.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn connect() -> Option<Connection> {
     let Some(params) = ConnectParams::from_env() else {
         eprintln!("FB_DB not set: skipping live test");
@@ -321,6 +330,7 @@ fn a_script_runs_past_its_errors_and_commits_its_ddl() {
         return;
     }
     let Some(conn) = connect() else { return };
+    let _catalog = catalog();
     let script = "\
 SET AUTODDL ON;
 CREATE TABLE SCRIPT_T (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(20));
@@ -367,6 +377,7 @@ fn an_atomic_script_that_fails_leaves_nothing() {
         return;
     }
     let Some(conn) = connect() else { return };
+    let _catalog = catalog();
     let script = "CREATE TABLE SCRIPT_A (ID INTEGER); INSERT INTO NO_SUCH_TABLE VALUES (1); CREATE TABLE SCRIPT_B (ID INTEGER);";
     let options = ScriptOptions { stop_on_error: false, auto_ddl: true, atomic: true };
     let never = std::sync::atomic::AtomicBool::new(false);
@@ -419,6 +430,7 @@ fn fixture_services_back_up_restore_and_look_after_a_database() {
         return;
     }
     let Some(params) = ConnectParams::from_env() else { return };
+    let _catalog = catalog();
     let conn = Connection::open(&params).expect("connect");
     let major = conn.info().major;
     let database = params.database.clone();
@@ -515,6 +527,7 @@ fn fixture_a_service_can_be_left_before_it_ends() {
         return;
     }
     let Some(params) = ConnectParams::from_env() else { return };
+    let _catalog = catalog();
     let cancel = AtomicBool::new(false);
     let task = ServiceTask::Statistics {
         database: params.database.clone(),

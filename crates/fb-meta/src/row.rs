@@ -36,9 +36,13 @@ impl Row {
         self.0.get(i)?.as_i64()
     }
 
-    /// A flag column: null and 0 are both "no"
+    /// A flag column: null and 0 are both "no". The catalog's flags are
+    /// numbers; the security database's (Firebird 3) are booleans.
     pub fn flag(&self, i: usize) -> bool {
-        self.int(i).unwrap_or(0) != 0
+        match self.0.get(i) {
+            Some(Value::Boolean(on)) => *on,
+            _ => self.int(i).unwrap_or(0) != 0,
+        }
     }
 
     pub fn float(&self, i: usize) -> Option<f64> {
