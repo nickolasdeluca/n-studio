@@ -13,8 +13,9 @@ export function setDock(api: DockviewApi) {
   dock = api;
 }
 
-/** Editors and object viewers: what the center of the window holds */
-export const isDocument = (panel: string) => panel.startsWith("sql-") || panel.startsWith("obj-");
+/** Editors, object viewers and the administration tools: what the center
+ *  of the window holds */
+export const isDocument = (panel: string) => ["sql-", "obj-", "adm-"].some((prefix) => panel.startsWith(prefix));
 
 /** Where a new document goes: with the others, or the start page */
 function beside(api: DockviewApi) {
@@ -60,6 +61,17 @@ export function openObject(registration: string, kind: ObjectKind, name: string)
     params: { viewer: id },
     position: beside(dock),
   });
+}
+
+/** Shows a tool's panel: the one with that id, or a new one */
+export function openAdminPanel(id: string, component: "admin" | "service", title: string) {
+  if (!dock) return;
+  const panel = dock.getPanel(id);
+  if (panel) {
+    panel.api.setActive();
+    return;
+  }
+  dock.addPanel({ id, component, title, params: { id }, position: beside(dock) });
 }
 
 export function closePanel(id: string) {

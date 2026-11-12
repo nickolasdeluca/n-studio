@@ -1,6 +1,7 @@
 // What the toolbar, the menus and the keyboard can do to a registration or
 // to its objects. One place, so each surface offers the same thing under the
 // same name.
+import { adminActions } from "./admin";
 import { api, errorText, type Action, type ObjectKind, type ObjectRef } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
 import { closePanel, openEditor, openObject } from "./dock";
@@ -18,6 +19,8 @@ export function registrationActions(id: string): (MenuItem | "separator")[] {
     { label: t("Refresh"), icon: "refresh", disabled: !connected, onSelect: () => void s.refresh(id) },
     "separator",
     { label: t("New SQL Editor"), icon: "sql", disabled: !connected, onSelect: () => openEditor(id) },
+    "separator",
+    ...adminActions(id),
     "separator",
     {
       label: t("Edit Registration…"),
@@ -96,7 +99,16 @@ export async function startAction(viewer: Viewer, action: Action, key: string | 
   try {
     if (action.form) {
       const form = await api.objectActionForm(viewer.registration, viewer.kind, viewer.name, action.id, key);
-      s.openDialog({ type: "form", viewer: viewer.id, action, key, form });
+      s.openDialog({
+        type: "form",
+        title: `${t(action.label).replace(/…$/, "")}: ${form.title}`,
+        form,
+        submit: async (values, back) => {
+          // The viewer as it is by then: closed meanwhile, there is nothing to do
+          const now = useViewers.getState().viewers[viewer.id];
+          if (now) await confirmAction(now, action, key, values, back);
+        },
+      });
     } else {
       await confirmAction(viewer, action, key, {});
     }

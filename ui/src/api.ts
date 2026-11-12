@@ -249,6 +249,19 @@ export interface ScriptProblem {
   sqlcode: number | null;
 }
 
+export type AdminView = "monitor" | "users";
+
+/** The `service-output` event */
+export interface ServiceOutput {
+  run: number;
+  lines: string[];
+}
+
+export interface ServiceResult {
+  end: "finished" | "cancelled";
+  lines: string[];
+}
+
 /** The `script-progress` event */
 export interface ScriptProgress {
   run: number;
@@ -315,7 +328,7 @@ export interface Action {
   danger: boolean;
 }
 
-export type FieldKind = "text" | "code" | "number" | "check" | "select" | "combo";
+export type FieldKind = "text" | "password" | "code" | "number" | "check" | "select" | "combo";
 
 export interface FormField {
   id: string;
@@ -452,6 +465,19 @@ export const api = {
   scriptRun: (id: string, run: number, tx: number | null, txOptions: TxOptions, text: string, options: ScriptOptions) =>
     invoke<ScriptEnd>("script_run", { id, run, tx, txOptions, text, options }),
   scriptCancel: (id: string, run: number) => invoke<boolean>("script_cancel", { id, run }),
+  /** The grids of the activity monitor ("monitor", `idle` for the idle
+   *  statements too) or of the server's users ("users") */
+  adminView: (id: string, view: AdminView, idle: boolean) => invoke<GridSection[]>("admin_view", { id, view, idle }),
+  /** What a tool asks before it runs; `key` is the row it acts on */
+  adminForm: (id: string, tool: string, key: string | null) => invoke<Form>("admin_form", { id, tool, key }),
+  /** The script that carries a tool out, to be shown and then run */
+  adminScript: (id: string, tool: string, key: string | null, values: Record<string, string>) =>
+    invoke<ActionScript>("admin_script", { id, tool, key, values }),
+  /** Runs a service on the registration's server; its output comes as
+   *  `service-output` events, and what no event carried with the answer */
+  serviceRun: (id: string, run: number, tool: string, values: Record<string, string>) =>
+    invoke<ServiceResult>("service_run", { id, run, tool, values }),
+  serviceCancel: (run: number) => invoke<boolean>("service_cancel", { run }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

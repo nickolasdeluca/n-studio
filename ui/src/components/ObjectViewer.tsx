@@ -167,7 +167,7 @@ function Grids({ viewer, sections, open }: { viewer: Viewer; sections: GridSecti
   );
 }
 
-function Section(props: {
+export function Section(props: {
   section: GridSection;
   current: number;
   onCurrent(row: number): void;
@@ -417,7 +417,7 @@ function PlainText({ viewer, text, editable }: { viewer: Viewer; text: string; e
   );
 }
 
-function TextButton(props: { icon: string; label: string; accent?: boolean; disabled?: boolean; onClick(): unknown }) {
+export function TextButton(props: { icon: string; label: string; accent?: boolean; disabled?: boolean; onClick(): unknown }) {
   return (
     <button
       type="button"

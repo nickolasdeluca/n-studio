@@ -8,6 +8,7 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import { useEffect, useRef, type ReactNode } from "react";
+import { forgetService, useAdmin } from "../admin";
 import { serverSummary } from "../api";
 import { isDocument, openEditor, setDock } from "../dock";
 import { useEditors } from "../editors";
@@ -17,6 +18,7 @@ import { Icon } from "../icons";
 import { useStore } from "../store";
 import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
+import { AdminView, ServiceOutput } from "./AdminPanels";
 import { Dialogs } from "./Dialogs";
 import { Explorer } from "./Explorer";
 import { ObjectList } from "./ObjectList";
@@ -32,6 +34,8 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   start: () => <Start />,
   sql: (props) => <SqlEditor {...(props as IDockviewPanelProps<{ tab: string }>)} />,
   object: (props) => <ObjectViewer {...(props as IDockviewPanelProps<{ viewer: string }>)} />,
+  admin: (props) => <AdminView {...(props as IDockviewPanelProps<{ id: string }>)} />,
+  service: (props) => <ServiceOutput {...(props as IDockviewPanelProps<{ id: string }>)} />,
 };
 
 const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = {
@@ -85,6 +89,9 @@ export function Shell() {
     // An editor's tab closing ends its transaction
     e.api.onDidRemovePanel((panel) => {
       if (panel.id.startsWith("obj-")) useViewers.getState().close(panel.id);
+      // A service's tab closing stops listening to it
+      if (panel.id.startsWith("adm-svc-")) forgetService(panel.id);
+      else if (panel.id.startsWith("adm-")) useAdmin.getState().close(panel.id);
       if (!panel.id.startsWith("sql-")) return;
       forgetEditor(panel.id);
       void useEditors.getState().close(panel.id);

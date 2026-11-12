@@ -3,16 +3,14 @@
 // nothing here knows what the fields mean.
 import { useId, useState } from "react";
 import { errorText, type FormField } from "../api";
-import { confirmAction } from "../actions";
 import { t } from "../i18n";
 import { useStore, type Dialog } from "../store";
-import { useViewers } from "../viewers";
 import { Button, Field, inputClass, Modal } from "./Modal";
 
 type FormRequest = Extract<Dialog, { type: "form" }>;
 
 export function FormDialog({ dialog }: { dialog: FormRequest }) {
-  const { form, action } = dialog;
+  const { form } = dialog;
   const [values, setValues] = useState<Record<string, string>>(
     () => dialog.values ?? Object.fromEntries(form.fields.map((f) => [f.id, f.value])),
   );
@@ -22,13 +20,12 @@ export function FormDialog({ dialog }: { dialog: FormRequest }) {
   const missing = form.fields.some((f) => f.required && !(values[f.id] ?? "").trim());
 
   const submit = async () => {
-    const viewer = useViewers.getState().viewers[dialog.viewer];
-    if (busy || missing || !viewer) return;
+    if (busy || missing) return;
     setBusy(true);
     setError(null);
     try {
-      // Cancelled, the script comes back here with what was typed
-      await confirmAction(viewer, action, dialog.key, values, { ...dialog, values });
+      // Cancelled, what it leads to comes back here with what was typed
+      await dialog.submit(values, { ...dialog, values });
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -37,16 +34,16 @@ export function FormDialog({ dialog }: { dialog: FormRequest }) {
 
   return (
     <Modal
-      title={`${t(action.label).replace(/…$/, "")}: ${form.title}`}
+      title={dialog.title}
       width="w-[32rem]"
       onCancel={close}
       onSubmit={() => void submit()}
       footer={
         <>
-          <span className="flex-1 text-muted">{t("The script is shown before anything runs.")}</span>
+          <span className="flex-1 text-muted">{dialog.note ?? t("The script is shown before anything runs.")}</span>
           <Button onClick={close}>{t("Cancel")}</Button>
           <Button primary submit disabled={busy || missing}>
-            {t("Continue…")}
+            {dialog.verb ?? t("Continue…")}
           </Button>
         </>
       }
@@ -133,6 +130,7 @@ function Input({ field, value, onChange }: { field: FormField; value: string; on
       input = (
         <input
           className={`${inputClass} ${field.kind === "number" ? "w-40 tabular-nums" : ""}`}
+          type={field.kind === "password" ? "password" : undefined}
           inputMode={field.kind === "number" ? "numeric" : undefined}
           value={value}
           spellCheck={false}

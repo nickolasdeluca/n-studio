@@ -5,7 +5,6 @@ import {
   api,
   errorText,
   isAppError,
-  type Action,
   type DbObject,
   type Form,
   type ObjectKind,
@@ -50,8 +49,21 @@ export type Dialog =
    *  `back` is the dialog it came from, shown again if it is cancelled;
    *  `verb` names the button when the script compiles nothing. */
   | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog; verb?: string }
-  /** What an action on an object asks before it is a script to compile */
-  | { type: "form"; viewer: string; action: Action; key: string | null; form: Form; values?: Record<string, string> }
+  /** What an action asks before it goes on: usually to a script to compile */
+  | {
+      type: "form";
+      title: string;
+      form: Form;
+      /** What was typed, when the dialog comes back from what it led to */
+      values?: Record<string, string>;
+      /** Goes on with the values, or fails with why it cannot; `back` is
+       *  this dialog with them, for whatever comes next to return to */
+      submit(values: Record<string, string>, back: Dialog): Promise<void>;
+      /** What happens next, under the fields; the script is shown, unless said otherwise */
+      note?: string;
+      /** The button's name: "Continue…" unless said otherwise */
+      verb?: string;
+    }
   /** Viewers closing over what was typed and not compiled or applied;
    *  `action` is what goes on once it is discarded, when it is not just
    *  the viewers closing */
