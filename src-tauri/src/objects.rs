@@ -5,7 +5,7 @@
 
 use fb_core::Connection;
 use fb_meta::{
-    extract, Column, Constraint, ConstraintKind, Dependency, Index, ObjectKind, Param, Routine, Trigger, TriggerScope,
+    extract, Column, Constraint, ConstraintKind, Dependency, Grant, Index, ObjectKind, Param, Routine, Trigger, TriggerScope,
 };
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -45,19 +45,20 @@ const DESCRIPTION: TabInfo = tab("description", "Description", Shape::Text);
 const DDL: TabInfo = tab("ddl", "DDL", Shape::Sql);
 const PARAMETERS: TabInfo = tab("parameters", "Parameters", Shape::Grid);
 const PROPERTIES: TabInfo = tab("properties", "Properties", Shape::Grid);
+const GRANTS: TabInfo = tab("grants", "Grants", Shape::Grid);
 
 /// A kind's tabs, the first being the one a viewer opens on: IBExpert's
 /// layout for tables, the source first for what is mostly source
 fn tabs(kind: ObjectKind) -> &'static [TabInfo] {
     match kind {
-        ObjectKind::Table => &[FIELDS, CONSTRAINTS, INDICES, DEPENDENCIES, TRIGGERS, DATA, DESCRIPTION, DDL],
-        ObjectKind::View => &[FIELDS, DEPENDENCIES, TRIGGERS, DATA, DESCRIPTION, DDL],
-        ObjectKind::Procedure | ObjectKind::Function => &[DDL, PARAMETERS, DEPENDENCIES, DESCRIPTION],
-        ObjectKind::Package | ObjectKind::Trigger | ObjectKind::Udf => &[DDL, DEPENDENCIES, DESCRIPTION],
-        ObjectKind::Domain | ObjectKind::Generator | ObjectKind::Exception | ObjectKind::Index => {
-            &[PROPERTIES, DEPENDENCIES, DESCRIPTION, DDL]
-        }
-        ObjectKind::Role => &[PROPERTIES, DESCRIPTION, DDL],
+        ObjectKind::Table => &[FIELDS, CONSTRAINTS, INDICES, DEPENDENCIES, TRIGGERS, DATA, GRANTS, DESCRIPTION, DDL],
+        ObjectKind::View => &[FIELDS, DEPENDENCIES, TRIGGERS, DATA, GRANTS, DESCRIPTION, DDL],
+        ObjectKind::Procedure | ObjectKind::Function => &[DDL, PARAMETERS, DEPENDENCIES, GRANTS, DESCRIPTION],
+        ObjectKind::Package => &[DDL, DEPENDENCIES, GRANTS, DESCRIPTION],
+        ObjectKind::Trigger | ObjectKind::Udf => &[DDL, DEPENDENCIES, DESCRIPTION],
+        ObjectKind::Generator | ObjectKind::Exception => &[PROPERTIES, DEPENDENCIES, GRANTS, DESCRIPTION, DDL],
+        ObjectKind::Domain | ObjectKind::Index => &[PROPERTIES, DEPENDENCIES, DESCRIPTION, DDL],
+        ObjectKind::Role => &[GRANTS, PROPERTIES, DESCRIPTION, DDL],
     }
 }
 
@@ -268,7 +269,7 @@ pub async fn object_template(app: AppHandle, id: String, kind: ObjectKind) -> Ap
 fn content(conn: &Connection, kind: ObjectKind, name: &str, tab: &str) -> AppResult<TabContent> {
     let mut content = read(conn, kind, name, tab)?;
     if let TabContent::Grid { sections } = &mut content {
-        changes::attach(sections, kind, tab);
+        changes::attach(sections, kind, tab, conn.info().major);
     }
     Ok(content)
 }
@@ -286,6 +287,17 @@ fn read(conn: &Connection, kind: ObjectKind, name: &str, tab: &str) -> AppResult
                 sections: vec![dependencies("Uses", &found.uses), dependencies("Used by", &found.used_by)],
             }
         }
+        ("grants", ObjectKind::Role) => {
+            let held = fb_meta::grant::held_by_role(conn, name)?;
+            // A privilege on a relation does not say whether it is a view
+            let views: Vec<String> = if held.iter().any(|g| g.object_type <= 1) {
+                fb_meta::objects(conn, ObjectKind::View)?.into_iter().map(|v| v.name).collect()
+            } else {
+                Vec::new()
+            };
+            TabContent::Grid { sections: vec![members(&fb_meta::grant::on(conn, kind, name)?), held_by(&held, &views)] }
+        }
+        ("grants", _) => grants(&fb_meta::grant::on(conn, kind, name)?),
         ("data", ObjectKind::Table | ObjectKind::View) => {
             TabContent::Data { sql: format!("select * from {}", fb_meta::quote(name, dialect)) }
         }
@@ -578,6 +590,99 @@ fn dependencies(title: &'static str, list: &[Dependency]) -> GridSection {
         })
         .collect();
     GridSection::new(Some(title), vec![text("Type"), text("Name"), text("Part"), text("Columns")], rows)
+}
+
+/// A grant's row: it opens the grantee when that is an object, and is
+/// keyed for what revokes it
+fn granted_to(cells: Vec<Option<String>>, g: &Grant) -> GridRow {
+    let open = g.grantee_kind.object().map(|kind| ObjectRef { kind, name: g.grantee.clone() });
+    GridRow { cells, open, key: Some(changes::grant_key(g)) }
+}
+
+fn privilege(g: &Grant) -> String {
+    match g.privilege_name() {
+        Some(name) => name.to_string(),
+        None if g.is_membership() => "MEMBER".to_string(),
+        None => g.privilege.to_string(),
+    }
+}
+
+fn grants(list: &[Grant]) -> TabContent {
+    let rows = list
+        .iter()
+        .map(|g| {
+            let cells = vec![
+                some(&g.grantee),
+                some(g.grantee_kind.label()),
+                some(privilege(g)),
+                g.column.clone(),
+                mark(g.option),
+                g.grantor.clone(),
+            ];
+            granted_to(cells, g)
+        })
+        .collect();
+    one(
+        vec![text("Grantee"), text("Kind"), text("Privilege"), text("Column"), flag("Grant option"), text("Granted by")],
+        rows,
+    )
+}
+
+/// Who is in a role
+fn members(list: &[Grant]) -> GridSection {
+    let rows = list
+        .iter()
+        .filter(|g| g.is_membership())
+        .map(|g| {
+            let cells = vec![
+                some(&g.grantee),
+                some(g.grantee_kind.label()),
+                mark(g.option),
+                mark(g.default_role),
+                g.grantor.clone(),
+            ];
+            granted_to(cells, g)
+        })
+        .collect();
+    GridSection::new(
+        Some("Members"),
+        vec![text("Member"), text("Kind"), flag("Admin option"), flag("Default"), text("Granted by")],
+        rows,
+    )
+}
+
+/// What a role was granted; each row opens what the privilege is on
+fn held_by(list: &[Grant], views: &[String]) -> GridSection {
+    let rows = list
+        .iter()
+        .map(|g| {
+            let kind = match g.object_type {
+                0 | 1 if views.contains(&g.object) => ObjectKind::View,
+                0 | 1 => ObjectKind::Table,
+                5 => ObjectKind::Procedure,
+                15 => ObjectKind::Function,
+                18 => ObjectKind::Package,
+                14 => ObjectKind::Generator,
+                7 => ObjectKind::Exception,
+                13 => ObjectKind::Role,
+                _ => return row(vec![some(&g.object), None, some(privilege(g)), g.column.clone(), mark(g.option), g.grantor.clone()]),
+            };
+            let cells = vec![
+                some(&g.object),
+                some(kind.singular()),
+                some(privilege(g)),
+                g.column.clone(),
+                mark(g.option),
+                g.grantor.clone(),
+            ];
+            opens(cells, kind, &g.object)
+        })
+        .collect();
+    GridSection::new(
+        Some("Privileges"),
+        vec![text("On"), text("Kind"), text("Privilege"), text("Column"), flag("Grant option"), text("Granted by")],
+        rows,
+    )
 }
 
 fn properties(list: Vec<(&'static str, Option<String>)>) -> TabContent {

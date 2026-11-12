@@ -6,11 +6,19 @@ use fb_core::{Connection, Result};
 
 use crate::ddl::{self, Context, Statement};
 use crate::table::TriggerScope;
-use crate::{object, routine, table, ObjectKind};
+use crate::{grant, object, routine, table, ObjectKind};
 
 /// The statements that would create one object again. A table comes with
-/// its constraints, indices and triggers; a generator with its value.
+/// its constraints, indices and triggers; a generator with its value. What
+/// was granted on it comes last.
 pub fn statements(conn: &Connection, kind: ObjectKind, name: &str) -> Result<Vec<Statement>> {
+    let mut statements = object_statements(conn, kind, name)?;
+    statements.extend(grant::statements(&grant::on(conn, kind, name)?, &Context::of(conn.info())));
+    Ok(statements)
+}
+
+/// An object without its grants
+fn object_statements(conn: &Connection, kind: ObjectKind, name: &str) -> Result<Vec<Statement>> {
     let ctx = Context::of(conn.info());
     Ok(match kind {
         ObjectKind::Table => {
@@ -52,8 +60,9 @@ const ONE_BY_ONE: usize = 12;
 /// The statements that would create a selection of objects again, in an
 /// order they can run in: what tables are made of first, then the tables
 /// and the foreign keys between them, the views (each after the views it
-/// selects from), the routines, and the triggers and indices last. What a
-/// table brings with it is not repeated when it was selected too.
+/// selects from), the routines, the triggers and indices, and what was
+/// granted on any of them last: a grant to a procedure needs the procedure.
+/// What a table brings with it is not repeated when it was selected too.
 ///
 /// Routines come in the order given: one that calls another declared after
 /// it needs that one to exist first, which only the reader can arrange.
@@ -66,7 +75,7 @@ pub fn selection(conn: &Connection, objects: &[(ObjectKind, String)]) -> Result<
     for kind in [ObjectKind::Domain, ObjectKind::Generator, ObjectKind::Exception, ObjectKind::Udf, ObjectKind::Role]
     {
         for name in of(kind) {
-            out.extend(statements(conn, kind, name)?);
+            out.extend(object_statements(conn, kind, name)?);
         }
     }
 
@@ -91,7 +100,7 @@ pub fn selection(conn: &Connection, objects: &[(ObjectKind, String)]) -> Result<
     }
     for kind in [ObjectKind::Function, ObjectKind::Procedure, ObjectKind::Package] {
         for name in of(kind) {
-            out.extend(statements(conn, kind, name)?);
+            out.extend(object_statements(conn, kind, name)?);
         }
     }
 
@@ -113,7 +122,23 @@ pub fn selection(conn: &Connection, objects: &[(ObjectKind, String)]) -> Result<
     }
     for kind in [ObjectKind::Trigger, ObjectKind::Index] {
         for name in of(kind) {
-            out.extend(statements(conn, kind, name)?);
+            out.extend(object_statements(conn, kind, name)?);
+        }
+    }
+
+    let granted: Vec<&(ObjectKind, String)> =
+        objects.iter().filter(|(kind, _)| !grant::object_types(*kind).is_empty()).collect();
+    if granted.len() > ONE_BY_ONE {
+        let wanted: HashSet<(i64, &str)> = granted
+            .iter()
+            .flat_map(|(kind, name)| grant::object_types(*kind).iter().map(move |t| (*t, name.as_str())))
+            .collect();
+        let grants: Vec<_> =
+            grant::all(conn)?.into_iter().filter(|g| wanted.contains(&(g.object_type, g.object.as_str()))).collect();
+        out.extend(grant::statements(&grants, &ctx));
+    } else {
+        for (kind, name) in granted {
+            out.extend(grant::statements(&grant::on(conn, *kind, name)?, &ctx));
         }
     }
 

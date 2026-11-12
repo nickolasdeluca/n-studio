@@ -16,6 +16,7 @@ pub mod change;
 pub mod ddl;
 mod deps;
 pub mod extract;
+pub mod grant;
 mod ident;
 mod object;
 mod routine;
@@ -23,6 +24,7 @@ mod row;
 mod table;
 mod types;
 
+pub use grant::{Grant, GranteeKind};
 pub use deps::{dependencies, Dependencies, Dependency};
 pub use ident::{literal, quote};
 pub use object::{

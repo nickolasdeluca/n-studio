@@ -101,6 +101,23 @@ pub fn typed(name: &str, ctx: &Context) -> String {
     }
 }
 
+/// A typed name as the catalog would keep it: `nome` is `NOME`, `"Nome"`
+/// is `Nome`
+pub fn stored(name: &str) -> String {
+    let name = name.trim();
+    if let Some(inner) = name.strip_prefix('"').and_then(|n| n.strip_suffix('"')).filter(|_| name.len() >= 2) {
+        return inner.replace("\"\"", "\"");
+    }
+    let mut chars = name.chars();
+    let plain = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+    if plain {
+        name.to_ascii_uppercase()
+    } else {
+        name.to_string()
+    }
+}
+
 /// Typed names, separated by commas: `id, "Nome"`
 pub fn typed_list(names: &str, ctx: &Context) -> String {
     names.split(',').map(str::trim).filter(|n| !n.is_empty()).map(|n| typed(n, ctx)).collect::<Vec<_>>().join(", ")
@@ -377,6 +394,17 @@ mod tests {
 
     fn ctx() -> Context {
         Context { dialect: 3, charset: "UTF8".into(), major: 4 }
+    }
+
+    #[test]
+    fn a_typed_name_is_stored_as_sql_would_have_it() {
+        assert_eq!(stored(" nome "), "NOME");
+        assert_eq!(stored("\"Nome\""), "Nome");
+        assert_eq!(stored("\"a \"\"b\"\"\""), "a \"b\"");
+        assert_eq!(stored("ação"), "ação");
+        for name in ["nome", "\"Nome\"", "com espaço"] {
+            assert_eq!(typed(name, &ctx()), quote(&stored(name), 3), "{name}");
+        }
     }
 
     #[test]

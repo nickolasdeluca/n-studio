@@ -159,7 +159,7 @@ function Grids({ viewer, sections, open }: { viewer: Viewer; sections: GridSecti
           onCurrent={(row) => setCursor([s, row])}
           open={open}
           act={(action, key) => void startAction(viewer, action, key)}
-          sticky={sections.length === 1 && section.actions.length === 0}
+          sticky={sections.length === 1}
         />
       ))}
     </div>
@@ -179,6 +179,7 @@ function Section(props: {
   const { section, current, onCurrent, open, act, sticky } = props;
   const showMenu = useContextMenu((m) => m.show);
   const body = useRef<HTMLTableSectionElement>(null);
+  const bar = !!section.title || section.actions.length > 0;
 
   const move = (row: number) => {
     const next = Math.max(0, Math.min(section.rows.length - 1, row));
@@ -227,8 +228,8 @@ function Section(props: {
 
   return (
     <div className={section.title ? "mb-3" : ""}>
-      {(section.title || section.actions.length > 0) && (
-        <div className="flex h-7 items-center gap-2 border-b border-line bg-panel-2 px-2">
+      {bar && (
+        <div className={`flex h-7 items-center gap-2 border-b border-line bg-panel-2 px-2 ${sticky ? "sticky top-0 z-20" : ""}`}>
           {section.title && (
             <>
               <span className="font-semibold">{t(section.title)}</span>
@@ -260,7 +261,7 @@ function Section(props: {
                 <th
                   key={i}
                   className={`border-r border-b border-line bg-panel-2 px-2 text-left font-semibold whitespace-nowrap text-muted ${
-                    sticky ? "sticky top-0 z-10" : ""
+                    sticky ? `sticky z-10 ${bar ? "top-7" : "top-0"}` : ""
                   } ${column.kind === "number" ? "text-right" : column.kind === "flag" ? "text-center" : ""}`}
                   style={{ height: 22 }}
                 >

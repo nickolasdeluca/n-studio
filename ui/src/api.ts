@@ -336,6 +336,8 @@ export interface Form {
 
 export interface ActionScript {
   script: string;
+  /** What the script is about: the object, and the part of it */
+  title: string;
   /** The name the object goes by once the script ran, when it renames it */
   renamed: string | null;
 }

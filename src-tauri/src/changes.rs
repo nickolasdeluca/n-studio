@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use fb_core::Connection;
 use fb_meta::change::{self, ColumnChange, DomainChange, NewColumn, NewConstraint, NewIndex};
 use fb_meta::ddl::{script, Context, Statement};
+use fb_meta::grant::{self, Grant, GranteeKind};
 use fb_meta::ObjectKind;
 use serde::Serialize;
 use tauri::AppHandle;
@@ -46,7 +47,7 @@ const INDEX_ACTIONS: [Action; 3] = [
 ];
 
 /// Gives a tab's grids their actions, and their rows the keys those act on
-pub fn attach(sections: &mut [GridSection], kind: ObjectKind, tab: &str) {
+pub fn attach(sections: &mut [GridSection], kind: ObjectKind, tab: &str, major: u32) {
     let Some(section) = sections.first_mut() else { return };
     // The column of the grid that names what a row is
     let mut key = None;
@@ -79,6 +80,15 @@ pub fn attach(sections: &mut [GridSection], kind: ObjectKind, tab: &str) {
             ];
             key = Some(0);
         }
+        ("grants", _) if !grantable(kind, major) => {}
+        ("grants", ObjectKind::Role) => {
+            section.actions = vec![asks("add_member", "Add Member…")];
+            section.row_actions = vec![destroys("revoke", "Revoke…")];
+        }
+        ("grants", _) => {
+            section.actions = vec![asks("grant", "Grant…")];
+            section.row_actions = vec![destroys("revoke", "Revoke…")];
+        }
         ("properties", ObjectKind::Domain) => section.actions = vec![asks("edit_domain", "Edit Domain…")],
         ("properties", ObjectKind::Generator) => section.actions = vec![asks("set_generator", "Set Value…")],
         ("properties", ObjectKind::Exception) => section.actions = vec![asks("edit_exception", "Edit Message…")],
@@ -90,6 +100,55 @@ pub fn attach(sections: &mut [GridSection], kind: ObjectKind, tab: &str) {
             row.key = GridSection::cell(row, column);
         }
     }
+}
+
+/// Whether the server has privileges on the kind: on sequences and
+/// exceptions, as on functions and packages, from Firebird 3
+fn grantable(kind: ObjectKind, major: u32) -> bool {
+    match kind {
+        ObjectKind::Generator | ObjectKind::Exception | ObjectKind::Function | ObjectKind::Package => major >= 3,
+        _ => !grant::object_types(kind).is_empty(),
+    }
+}
+
+/// What parts a grant's key; no name has it
+const KEY_PART: char = '\u{1f}';
+
+/// A grant's row key: the grantee and the one privilege, enough to revoke it
+pub fn grant_key(g: &Grant) -> String {
+    let column = g.column.as_deref().unwrap_or_default();
+    [g.grantee_kind.label(), &g.grantee, &g.privilege.to_string(), column].join(&KEY_PART.to_string())
+}
+
+/// The grant on an object that a row key names
+fn keyed_grant(kind: ObjectKind, name: &str, key: &str) -> AppResult<Grant> {
+    let invalid = || AppError::Invalid { message: "This row is not a grant that can be revoked.".into() };
+    let parts: Vec<&str> = key.split(KEY_PART).collect();
+    let [grantee_kind, grantee, privilege, column] = parts[..] else { return Err(invalid()) };
+    Ok(Grant {
+        object: name.to_string(),
+        object_type: *grant::object_types(kind).first().ok_or_else(invalid)?,
+        privilege: privilege.chars().next().ok_or_else(invalid)?,
+        column: (!column.is_empty()).then(|| column.to_string()),
+        grantee: grantee.to_string(),
+        grantee_kind: GranteeKind::labelled(grantee_kind).ok_or_else(invalid)?,
+        option: false,
+        default_role: false,
+        grantor: None,
+    })
+}
+
+/// The privileges a table or a view has, by the form's field for each
+const RELATION_PRIVILEGES: [(&str, &str, char); 5] = [
+    ("select", "Select", 'S'),
+    ("insert", "Insert", 'I'),
+    ("update", "Update", 'U'),
+    ("delete", "Delete", 'D'),
+    ("references", "References", 'R'),
+];
+
+fn role_names(conn: &Connection) -> AppResult<Vec<String>> {
+    Ok(fb_meta::objects(conn, ObjectKind::Role)?.into_iter().map(|r| r.name).collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -298,6 +357,49 @@ fn form(conn: &Connection, kind: ObjectKind, name: &str, action: &str, key: &Opt
                 field("check", "Check", Code).value(d.check.unwrap_or_default()),
             ]
         }
+        ("grant", _) if kind != ObjectKind::Role && grantable(kind, ctx.major) => {
+            let kinds = GranteeKind::ALL
+                .into_iter()
+                .filter(|k| ctx.major >= 3 || !matches!(k, GranteeKind::Function | GranteeKind::Package))
+                .map(GranteeKind::label);
+            let mut fields = vec![
+                field("grantee", "Grantee", Combo)
+                    .required()
+                    .options(std::iter::once("PUBLIC".to_string()).chain(role_names(conn)?))
+                    .hint("A user's name, PUBLIC, a role, or an object of the database."),
+                field("grantee_kind", "Grantee is a", Select)
+                    .value(GranteeKind::User.label())
+                    .options(kinds)
+                    .hint("A role's name given as a user's is taken as the role."),
+            ];
+            if matches!(kind, ObjectKind::Table | ObjectKind::View) {
+                for (id, label, privilege) in RELATION_PRIVILEGES {
+                    fields.push(field(id, label, Check).value(flag(privilege == 'S')));
+                }
+                fields.push(
+                    field("columns", "Columns", Text)
+                        .hint("For Update and References only. Left empty, every column; separated by commas."),
+                );
+            }
+            fields.push(field("option", "With grant option", Check).value("false"));
+            fields
+        }
+        ("add_member", ObjectKind::Role) => {
+            let mut fields = vec![field("grantee", "Member", Text).required().hint("A user's name.")];
+            if ctx.major >= 4 {
+                fields[0] = field("grantee", "Member", Combo)
+                    .required()
+                    .options(role_names(conn)?.into_iter().filter(|r| r != name))
+                    .hint("A user's name, or another role.");
+                fields.push(
+                    field("grantee_kind", "Member is a", Select)
+                        .value(GranteeKind::User.label())
+                        .options([GranteeKind::User.label(), GranteeKind::Role.label()]),
+                );
+            }
+            fields.push(field("option", "With admin option", Check).value("false"));
+            fields
+        }
         ("set_generator", ObjectKind::Generator) => {
             let g = fb_meta::generator(conn, name)?;
             vec![field("value", "Value", Number)
@@ -311,35 +413,36 @@ fn form(conn: &Connection, kind: ObjectKind, name: &str, action: &str, key: &Opt
         }
         _ => return Err(AppError::Invalid { message: format!("{action} asks nothing of this object.") }),
     };
-    let title = match key {
-        Some(key) => format!("{name}.{key}"),
-        None => name.to_string(),
-    };
-    Ok(Form { title, fields })
+    Ok(Form { title: title(name, action, key), fields })
 }
 
 /// An action as the script that carries it out
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ActionScript {
     script: String,
+    /// What the script is about, for whoever reads it before it runs
+    title: String,
     /// The name the object goes by once the script ran, when it renames it
     renamed: Option<String>,
+}
+
+/// What an action is about: the object, and the part of it when it has one
+fn title(name: &str, action: &str, key: &Option<String>) -> String {
+    match key.as_deref() {
+        // A grant's key is not for reading: its grantee is
+        Some(key) if action == "revoke" => format!("{name}, {}", key.split(KEY_PART).nth(1).unwrap_or_default()),
+        Some(key) => format!("{name}.{key}"),
+        None => name.to_string(),
+    }
 }
 
 /// The name a form gives the object itself, when it is not the one it has
 fn renamed(action: &str, name: &str, values: &HashMap<String, String>, ctx: &Context) -> Option<String> {
     let typed = values.get("name").filter(|_| action == "edit_domain")?;
     let quoted = change::typed(typed, ctx);
-    (quoted != fb_meta::quote(name, ctx.dialect)).then(|| unquoted(&quoted))
+    (quoted != fb_meta::quote(name, ctx.dialect)).then(|| change::stored(typed))
 }
 
-/// A name out of the quotes DDL has it in: as the catalog stores it
-fn unquoted(name: &str) -> String {
-    match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
-        Some(inner) => inner.replace("\"\"", "\""),
-        None => name.to_string(),
-    }
-}
 
 /// The script that carries an action out, with a form's values when the
 /// action has a form: for the user to see, and then to run
@@ -360,7 +463,7 @@ pub async fn object_action_script(
             return Err(AppError::Invalid { message: "Nothing was changed.".into() });
         }
         let renamed = renamed(&action, &name, &values, &Context::of(conn.info()));
-        Ok(ActionScript { script: script(&statements), renamed })
+        Ok(ActionScript { script: script(&statements), title: title(&name, &action, &key), renamed })
     })
     .await
 }
@@ -487,6 +590,48 @@ fn statements(
             };
             change::alter_domain(name, &domain_change, &ctx)
         }
+        ("grant" | "add_member", _) if grantable(kind, ctx.major) && (action == "add_member") == (kind == ObjectKind::Role) => {
+            let typed = needs("grantee", if kind == ObjectKind::Role { "Member" } else { "Grantee" })?;
+            let public = typed.eq_ignore_ascii_case("PUBLIC");
+            let grantee = if public { "PUBLIC".to_string() } else { change::stored(&typed) };
+            let mut grantee_kind = GranteeKind::labelled(get("grantee_kind")).unwrap_or(GranteeKind::User);
+            // Before Firebird 4 the server itself reads a role's name so
+            if grantee_kind == GranteeKind::User && !public && kind != ObjectKind::Role && role_names(conn)?.contains(&grantee) {
+                grantee_kind = GranteeKind::Role;
+            }
+            let columns: Vec<String> = get("columns").split(',').map(change::stored).filter(|c| !c.is_empty()).collect();
+            let privileges: Vec<char> = match grant::only_privilege(kind) {
+                Some(only) => vec![only],
+                None => RELATION_PRIVILEGES.iter().filter(|(id, ..)| on(id)).map(|(.., p)| *p).collect(),
+            };
+            if privileges.is_empty() {
+                return Err(AppError::Invalid { message: "Pick at least one privilege.".into() });
+            }
+            let one = |privilege: char, column: Option<String>| Grant {
+                object: name.to_string(),
+                object_type: grant::object_types(kind)[0],
+                privilege,
+                column,
+                grantee: grantee.clone(),
+                grantee_kind,
+                option: on("option"),
+                default_role: false,
+                grantor: None,
+            };
+            let mut grants = Vec::new();
+            for privilege in privileges {
+                if matches!(privilege, 'U' | 'R') && !columns.is_empty() {
+                    grants.extend(columns.iter().map(|c| one(privilege, Some(c.clone()))));
+                } else {
+                    grants.push(one(privilege, None));
+                }
+            }
+            grant::statements(&grants, &ctx)
+        }
+        ("revoke", _) if grantable(kind, ctx.major) => {
+            let revoked = grant::revoke(&keyed_grant(kind, name, key_of(key)?)?, &ctx);
+            vec![revoked.ok_or_else(|| AppError::Invalid { message: "This privilege is not one that can be revoked here.".into() })?]
+        }
         ("set_generator", ObjectKind::Generator) => {
             let value = needs("value", "Value")?
                 .parse()
@@ -519,6 +664,81 @@ mod tests {
         assert_eq!(renamed("edit_domain", "D_ID", &values("\"Key\""), &ctx), Some("Key".into()));
         // A field's name is not the object's
         assert_eq!(renamed("edit_field", "T", &values("other"), &ctx), None);
+    }
+
+    #[test]
+    fn a_grants_row_key_names_the_grant_again() {
+        let granted = Grant {
+            object: "PEDIDO".into(),
+            object_type: 0,
+            privilege: 'U',
+            column: Some("CLIENTE".into()),
+            grantee: "R VENDAS".into(),
+            grantee_kind: GranteeKind::Role,
+            option: false,
+            default_role: false,
+            grantor: None,
+        };
+        let key = grant_key(&granted);
+        assert_eq!(keyed_grant(ObjectKind::Table, "PEDIDO", &key).unwrap(), granted);
+        assert_eq!(title("PEDIDO", "revoke", &Some(key)), "PEDIDO, R VENDAS");
+        assert_eq!(title("PEDIDO", "edit_field", &Some("CLIENTE".into())), "PEDIDO.CLIENTE");
+        // A row of another grid is no grant, and an index has none
+        assert!(keyed_grant(ObjectKind::Table, "PEDIDO", "CLIENTE").is_err());
+        assert!(keyed_grant(ObjectKind::Index, "PEDIDO", &grant_key(&granted)).is_err());
+    }
+
+    #[test]
+    fn privileges_wait_for_the_server_that_has_them() {
+        assert!(grantable(ObjectKind::Table, 2) && grantable(ObjectKind::Procedure, 2) && grantable(ObjectKind::Role, 2));
+        assert!(!grantable(ObjectKind::Generator, 2) && grantable(ObjectKind::Generator, 3));
+        assert!(!grantable(ObjectKind::Index, 5) && !grantable(ObjectKind::Domain, 5));
+    }
+
+    /// Against the server the `FB_*` variables name; skipped without them.
+    /// Only reads: the scripts are written, never run.
+    #[test]
+    fn grants_are_written_and_each_one_there_can_be_revoked() {
+        let Some(params) = fb_core::ConnectParams::from_env() else {
+            eprintln!("FB_DB not set: skipping live test");
+            return;
+        };
+        let conn = Connection::open(&params).expect("connect");
+        let ctx = Context::of(conn.info());
+        let values = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let sql = |statements: Vec<Statement>| statements.into_iter().map(|s| s.sql).collect::<Vec<_>>();
+        for kind in [ObjectKind::Table, ObjectKind::Procedure, ObjectKind::Role] {
+            let objects = fb_meta::objects(&conn, kind).unwrap();
+            let Some(object) = objects.first() else { continue };
+            let name = fb_meta::quote(&object.name, ctx.dialect);
+            let action = if kind == ObjectKind::Role { "add_member" } else { "grant" };
+            assert!(!form(&conn, kind, &object.name, action, &None).unwrap().fields.is_empty(), "{kind:?}");
+            let filled = values(&[("grantee", "someone"), ("select", "true"), ("update", "true"), ("columns", "a, b")]);
+            let written = sql(statements(&conn, kind, &object.name, action, &None, &filled).unwrap());
+            let expected = match kind {
+                ObjectKind::Table => format!("GRANT SELECT, UPDATE (A, B) ON {name} TO SOMEONE"),
+                ObjectKind::Procedure => format!("GRANT EXECUTE ON PROCEDURE {name} TO SOMEONE"),
+                _ => format!("GRANT {name} TO SOMEONE"),
+            };
+            assert_eq!(written, [expected]);
+            // What is granted on a few of the kind's objects
+            for object in objects.iter().take(20) {
+                for granted in grant::on(&conn, kind, &object.name).unwrap() {
+                    let key = Some(grant_key(&granted));
+                    let revoked = statements(&conn, kind, &object.name, "revoke", &key, &HashMap::new()).unwrap();
+                    assert_eq!(revoked.len(), 1);
+                    assert!(revoked[0].sql.starts_with("REVOKE "), "{}", revoked[0].sql);
+                }
+            }
+        }
+        let table = fb_meta::objects(&conn, ObjectKind::Table).unwrap();
+        if let Some(table) = table.first() {
+            let nothing = statements(&conn, ObjectKind::Table, &table.name, "grant", &None, &values(&[("grantee", "x")]));
+            assert!(nothing.is_err(), "a grant of no privilege");
+            assert!(statements(&conn, ObjectKind::Table, &table.name, "add_member", &None, &HashMap::new()).is_err());
+        }
     }
 
     /// Against the server the `FB_*` variables name; skipped without them.

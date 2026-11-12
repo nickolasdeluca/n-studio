@@ -67,7 +67,9 @@ pub fn script(statements: &[Statement]) -> String {
     // What a run of like statements starts with: ALTER TABLE, COMMENT ON
     let kind = |s: &Statement| -> Option<String> {
         let one_line = !s.psql && !s.sql.trim_end().contains('\n');
-        one_line.then(|| s.sql.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+        // Grants are a run whatever each one gives
+        let words = if s.sql.starts_with("GRANT ") { 1 } else { 2 };
+        one_line.then(|| s.sql.split_whitespace().take(words).collect::<Vec<_>>().join(" "))
     };
     let mut out = String::new();
     let mut in_psql = false;

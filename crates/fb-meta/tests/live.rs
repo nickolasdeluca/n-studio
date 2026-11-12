@@ -333,3 +333,41 @@ fn a_selection_scripts_in_an_order_that_runs() {
     }
     assert!(script.ends_with("SET TERM ; ^\n"), "{script}");
 }
+
+#[test]
+fn the_fixture_grants_what_it_was_told_to() {
+    let Some(conn) = fixture() else { return };
+    let ddl = |kind, name| extract::script(&conn, kind, name).unwrap();
+
+    // What the owner holds for having created the table is not a grant
+    let table = ddl(ObjectKind::Table, "BULK_ROWS");
+    assert!(
+        table.ends_with(
+            "\n\
+GRANT SELECT ON BULK_ROWS TO PROCEDURE P_FIXTURE;
+GRANT SELECT, UPDATE (NOME, VALOR) ON BULK_ROWS TO ROLE R_FIXTURE;
+GRANT ALL ON BULK_ROWS TO U_FIXTURE WITH GRANT OPTION;
+"
+        ),
+        "{table}"
+    );
+    assert_eq!(table.lines().filter(|line| line.starts_with("GRANT ")).count(), 3, "{table}");
+    let view = ddl(ObjectKind::View, "V_TIPOS");
+    assert!(view.ends_with("\nGRANT SELECT ON V_TIPOS TO PUBLIC;\n"), "{view}");
+    let procedure = ddl(ObjectKind::Procedure, "P_SEED_BULK");
+    assert!(procedure.ends_with("SET TERM ; ^\n\nGRANT EXECUTE ON PROCEDURE P_SEED_BULK TO U_FIXTURE;\n"), "{procedure}");
+    assert_eq!(ddl(ObjectKind::Role, "R_FIXTURE"), "CREATE ROLE R_FIXTURE;\n\nGRANT R_FIXTURE TO U_FIXTURE WITH ADMIN OPTION;\n");
+    // An object nobody was granted anything on says nothing of grants
+    assert!(!ddl(ObjectKind::Table, "PEDIDO").contains("GRANT"));
+
+    let held = fb_meta::grant::held_by_role(&conn, "R_FIXTURE").unwrap();
+    let held: Vec<_> = held.iter().map(|g| (g.object.as_str(), g.privilege, g.column.as_deref())).collect();
+    assert_eq!(held, [("BULK_ROWS", 'S', None), ("BULK_ROWS", 'U', Some("NOME")), ("BULK_ROWS", 'U', Some("VALOR"))]);
+
+    // In a selection the grants wait for whatever they are granted to
+    let picked = [(ObjectKind::Table, "BULK_ROWS".to_string()), (ObjectKind::Procedure, "P_FIXTURE".to_string())];
+    let script = fb_meta::ddl::script(&extract::selection(&conn, &picked).unwrap());
+    let at = |text: &str| script.find(text).unwrap_or_else(|| panic!("{text} in {script}"));
+    assert!(at("PROCEDURE P_FIXTURE") < at("GRANT SELECT ON BULK_ROWS TO PROCEDURE P_FIXTURE"), "{script}");
+    assert_eq!(script.matches("GRANT ALL ON BULK_ROWS").count(), 1, "{script}");
+}

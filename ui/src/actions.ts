@@ -115,11 +115,11 @@ export async function confirmAction(
   back?: Dialog,
 ) {
   const { registration, kind, name } = viewer;
-  const { script, renamed } = await api.objectActionScript(registration, kind, name, action.id, key, values);
+  const { script, title, renamed } = await api.objectActionScript(registration, kind, name, action.id, key, values);
   useStore.getState().openDialog({
     type: "compile",
     registration,
-    title: `${t(action.label).replace(/…$/, "")}: ${key ? `${name}.${key}` : name}`,
+    title: `${t(action.label).replace(/…$/, "")}: ${title}`,
     script,
     danger: action.danger,
     back,
