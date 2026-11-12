@@ -143,9 +143,19 @@ over an active transaction, sorting by a header click (every row fetched first;
 numbers by value, text ignoring case, nulls first) and export to CSV or TSV
 (every row, in the grid's order, blobs read in full while the transaction lasts).
 
-### M3 — Object viewers (read-only)
-Per-object-type editors with the IBExpert tab layout: Fields, Constraints, Indices,
-Dependencies, Triggers, Data, Description, DDL. Metadata extract for a selection.
+### M3 — Object viewers (read-only) — done
+Per-object-type viewers with the IBExpert tab layout: Fields, Constraints, Indices,
+Dependencies, Triggers, Data, Description, DDL for tables; the source first for
+procedures, functions, packages and triggers; properties for the rest. A viewer
+opens by a double-click in the explorer or the object list, and a grid row that
+stands for another object (a column's domain, a foreign key's table, a dependency)
+opens that one. The backend names each kind's tabs and fills them as a few shapes
+(grids, SQL, text, a query), so the UI knows nothing of Firebird's catalog. The Data
+tab is the editor's grid over a read-only transaction of the viewer's own. Metadata
+extract for a selection: several objects picked in the object list become one
+script in an order that runs (foreign keys after every table, views after the
+views they select from, triggers last). Routines are not ordered by what they
+call; that comes with the script executor in M4.
 
 ### M4 — Metadata editing
 DDL generation and compile-back for tables, views, procedures, triggers, generators,
