@@ -55,6 +55,14 @@ pub struct QueryResult {
 
 type Reply<T> = Sender<Result<T>>;
 
+/// Answers a request, the connection no longer busy by the time the caller
+/// has the answer: a cancel right after it must find nothing to cancel, or
+/// the server would hold it for the next request.
+fn answer<T>(busy: &Mutex<bool>, reply: Reply<T>, result: Result<T>) {
+    *busy.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    let _ = reply.send(result);
+}
+
 enum Request {
     Query {
         sql: String,
@@ -144,34 +152,33 @@ impl Connection {
                     *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     match request {
                         Request::Query { sql, params, reply } => {
-                            let _ = reply.send(actor.query(&sql, params));
+                            answer(&running, reply, actor.query(&sql, params));
                         }
                         Request::Begin { options, reply } => {
-                            let _ = reply.send(actor.begin(options));
+                            answer(&running, reply, actor.begin(options));
                         }
                         Request::End { tx, how, reply } => {
-                            let _ = reply.send(actor.end(tx, how));
+                            answer(&running, reply, actor.end(tx, how));
                         }
                         Request::Execute { tx, sql, params, options, explained, reply } => {
-                            let _ = reply.send(actor.execute(tx, &sql, params, options, explained));
+                            answer(&running, reply, actor.execute(tx, &sql, params, options, explained));
                         }
                         Request::DescribeParams { tx, sql, reply } => {
-                            let _ = reply.send(actor.describe_params(tx, &sql));
+                            answer(&running, reply, actor.describe_params(tx, &sql));
                         }
                         Request::Fetch { cursor, max, reply } => {
-                            let _ = reply.send(actor.fetch(cursor, max));
+                            answer(&running, reply, actor.fetch(cursor, max));
                         }
                         Request::CursorPerformance { cursor, reply } => {
-                            let _ = reply.send(actor.cursor_performance(cursor));
+                            answer(&running, reply, actor.cursor_performance(cursor));
                         }
                         Request::CloseCursor { cursor, reply } => {
-                            let _ = reply.send(actor.close_cursor(cursor));
+                            answer(&running, reply, actor.close_cursor(cursor));
                         }
                         Request::ReadBlob { tx, id, text, max, reply } => {
-                            let _ = reply.send(actor.read_blob(tx, id, text, max));
+                            answer(&running, reply, actor.read_blob(tx, id, text, max));
                         }
                     }
-                    *running.lock().unwrap_or_else(|e| e.into_inner()) = false;
                 }
                 actor.detach();
             })
