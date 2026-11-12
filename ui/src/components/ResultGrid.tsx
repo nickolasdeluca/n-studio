@@ -3,8 +3,9 @@
 // what a screenful does. Reaching the end of what was fetched fetches more.
 //
 // With `edit`, cells take new values, rows are marked to be deleted and new
-// rows are added after the fetched ones: all of it kept by whoever owns the
-// grid until it is applied, and shown over the rows as they were read.
+// rows are added: all of it kept by whoever owns the grid until it is
+// applied, and shown over the rows as they were read. New rows come before
+// the fetched ones, where more rows arriving does not move them.
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState, type Ref } from "react";
 import { api, type Cell, type ColumnInfo, type ColumnKind, type ResultView } from "../api";
@@ -97,7 +98,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   // Set when the keyboard ended the typing, so that losing focus does not end it again
   const ended = useRef(false);
   const inserted = edit?.edits.inserted ?? [];
-  const total = result.rows + inserted.length;
+  /** How many rows come before the first fetched one */
+  const offset = inserted.length;
+  const total = result.rows + offset;
   const names = useMemo(() => columns.map((c) => c.name), [columns]);
 
   // A new result starts over
@@ -161,8 +164,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   );
 
   const virtualRows = rows.getVirtualItems();
-  const first = virtualRows[0]?.index ?? 0;
-  const last = virtualRows[virtualRows.length - 1]?.index ?? 0;
+  // In fetched rows: the new ones are held here, not in pages
+  const first = Math.max(0, (virtualRows[0]?.index ?? 0) - offset);
+  const last = Math.max(0, (virtualRows[virtualRows.length - 1]?.index ?? 0) - offset);
   const firstPage = Math.floor(first / PAGE);
   const lastPage = Math.floor(last / PAGE);
 
@@ -193,7 +197,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
     });
   }, [last, result.rows, result.eof, onFetchMore]);
 
-  const cellAt = (r: number, c: number): Cell | undefined => pages.current.get(Math.floor(r / PAGE))?.[r % PAGE]?.[c];
+  /** A fetched row's cell, by the row's place among the fetched */
+  const cellAt = (f: number, c: number): Cell | undefined => pages.current.get(Math.floor(f / PAGE))?.[f % PAGE]?.[c];
 
   // Keep the cursor in view as it moves, and only then: more rows arriving
   // must not pull the view back to it
@@ -213,8 +218,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
 
   const rowState = (r: number): RowState | null => {
     if (!edit) return null;
-    if (r >= result.rows) return r < total ? { inserted: r - result.rows } : null;
-    const cells = pages.current.get(Math.floor(r / PAGE))?.[r % PAGE];
+    if (r < offset) return { inserted: r };
+    const f = r - offset;
+    const cells = pages.current.get(Math.floor(f / PAGE))?.[f % PAGE];
     if (!cells) return null;
     const key = edit.key.map((k) => cells[k]);
     const id = rowId(key);
@@ -228,7 +234,7 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       return { value: row?.[names[c]], dirty: row !== undefined && names[c] in row };
     }
     if (state?.set && names[c] in state.set) return { value: state.set[names[c]], dirty: true };
-    return { value: cellAt(r, c), dirty: false };
+    return { value: cellAt(r - offset, c), dirty: false };
   };
   const put = (r: number, c: number, value: Cell) => {
     const state = rowState(r);
@@ -261,7 +267,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       if (!edit) return;
       edit.onEdits(addInserted(edit.edits));
       const col = edit.editable[cursor.col] ? cursor.col : Math.max(0, edit.editable.indexOf(true));
-      onCursor({ row: total, col });
+      // After the new rows there already are
+      onCursor({ row: offset, col });
       scrollRef.current?.focus();
     },
     deleteRow() {
@@ -382,11 +389,11 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
         </div>
         {virtualRows.map((r) => {
           const state = rowState(r.index);
-          const added = state?.inserted !== undefined;
-          const loaded = added || pages.current.has(Math.floor(r.index / PAGE));
+          const added = r.index < offset;
+          const loaded = added || pages.current.has(Math.floor((r.index - offset) / PAGE));
           const current = r.index === cursor.row;
-          const deleted = !!state && !added && state.deleted;
-          const changed = !!state && !added && !!state.set;
+          const deleted = state?.inserted === undefined && !!state?.deleted;
+          const changed = state?.inserted === undefined && !!state?.set;
           return (
             <div
               key={r.key}
@@ -417,7 +424,7 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
                         {deleted ? "×" : "•"}
                       </span>
                     )}
-                    {r.index + 1}
+                    {r.index - offset + 1}
                   </>
                 )}
               </div>

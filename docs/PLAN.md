@@ -179,7 +179,7 @@ after the other as isql would (`SET TERM`, `SET AUTODDL`, commits along the way)
 with progress, cancelling, stop-on-error and a log of what failed and where.
 
 A table's Data tab is edited in place: new values, deleted rows and new rows are
-kept beside the fetched ones and applied as a script like any other change. Rows are
+kept beside the fetched ones (new rows first, where more rows arriving does not move them) and applied as a script like any other change. Rows are
 found by a primary key, or a unique one without nulls; a table without either stays
 read-only. Blobs are not edited in the grid. Result grids of the SQL editor stay
 read-only: a query does not say which table a row belongs to.

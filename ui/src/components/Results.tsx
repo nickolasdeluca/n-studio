@@ -39,13 +39,14 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
   const fetchAll = async () => {
     await fetchMore(Number.MAX_SAFE_INTEGER);
     const rows = useEditors.getState().tabs[tab.id]?.outcome?.result?.rows ?? 0;
-    setCursor({ row: Math.max(0, rows - 1), col: cursor.col });
+    setCursor({ row: Math.max(0, added + rows - 1), col: cursor.col });
   };
-  // New rows come after the fetched ones
-  const total = result.rows + (edit?.edits.inserted.length ?? 0);
+  // New rows come before the fetched ones
+  const added = edit?.edits.inserted.length ?? 0;
+  const total = result.rows + added;
   const go = (row: number) => setCursor({ row: Math.max(0, Math.min(row, total - 1)), col: cursor.col });
   const pending = edit ? editCount(edit.edits) : 0;
-  const onNew = cursor.row >= result.rows;
+  const onNew = cursor.row < added;
 
   return (
     <div className="flex h-full flex-col">
@@ -66,7 +67,7 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
             : onNew
               ? t("New record")
               : t("Record {n} of {total}", {
-                  n: (cursor.row + 1).toLocaleString(),
+                  n: (cursor.row - added + 1).toLocaleString(),
                   total: result.eof ? result.rows.toLocaleString() : `${result.rows.toLocaleString()}+`,
                 })}
         </span>
@@ -129,9 +130,9 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
             ref={grid}
           />
         </div>
-        {isBlob(executed.columns[cursor.col]?.kind) && cursor.row < result.rows && (
+        {isBlob(executed.columns[cursor.col]?.kind) && !onNew && cursor.row < total && (
           <div className="w-[38%] min-w-64 shrink-0 border-l border-line">
-            <BlobViewer result={result.id} row={cursor.row} col={cursor.col} />
+            <BlobViewer result={result.id} row={cursor.row - added} col={cursor.col} />
           </div>
         )}
       </div>
