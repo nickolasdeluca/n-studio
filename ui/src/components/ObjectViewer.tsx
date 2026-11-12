@@ -8,8 +8,8 @@ import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
-import { useEffect, useRef, useState } from "react";
-import { api, errorText, type Action, type CellKind, type GridRow, type GridSection, type ObjectRef, type TabContent } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, errorText, type Action, type CellKind, type GridRow, type GridSection, type ObjectRef, type RowEditing, type TabContent } from "../api";
 import { extractMetadata, startAction } from "../actions";
 import { openEditor, openObject } from "../dock";
 import { useEditors } from "../editors";
@@ -17,10 +17,11 @@ import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { useStore } from "../store";
+import { editCount, noEdits, toChanges, type RowEdits } from "../rowEdits";
 import { useViewers, type Viewer } from "../viewers";
 import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
-import { Empty, Results } from "./Results";
+import { Empty, Results, type ResultsEdit } from "./Results";
 
 export function ObjectViewer({ params, api: panel }: IDockviewPanelProps<{ viewer: string }>) {
   const viewer = useViewers((s) => s.viewers[params.viewer]);
@@ -59,7 +60,7 @@ export function ObjectViewer({ params, api: panel }: IDockviewPanelProps<{ viewe
             }`}
           >
             {t(tab.label)}
-            {viewer.drafts[tab.id] !== undefined && <span className="ml-1 text-accent" title={t("Changed, not compiled")}>●</span>}
+            {(viewer.drafts[tab.id] !== undefined || (tab.shape === "data" && editCount(viewer.edits) > 0)) && <span className="ml-1 text-accent" title={t("Changed, not compiled")}>●</span>}
           </button>
         ))}
       </div>
@@ -113,7 +114,7 @@ function Pane({ viewer, content, open }: { viewer: Viewer; content: TabContent; 
     case "text":
       return <PlainText viewer={viewer} text={content.text} editable={content.editable} />;
     case "data":
-      return <Data viewer={viewer} />;
+      return <Data viewer={viewer} editing={content.edit} />;
   }
 }
 
@@ -431,10 +432,52 @@ function TextButton(props: { icon: string; label: string; accent?: boolean; disa
 }
 
 /** The object's rows, through an editor tab of the viewer's own */
-function Data({ viewer }: { viewer: Viewer }) {
+/** The kinds of column whose values the grid shows as they can be typed */
+const typed = new Set(["integer", "decimal", "float", "text", "date", "time", "timestamp", "boolean"]);
+
+/** Shows the script that makes the Data tab's changes the table's, to run */
+async function applyEdits(viewer: Viewer) {
+  const s = useStore.getState();
+  try {
+    const script = await api.dataChangesScript(viewer.registration, viewer.name, toChanges(viewer.edits));
+    s.openDialog({
+      type: "compile",
+      registration: viewer.registration,
+      title: t("Apply Changes: {name}", { name: viewer.name }),
+      script,
+      verb: t("Run and Commit"),
+      done: () => {
+        const viewers = useViewers.getState();
+        viewers.setEdits(viewer.id, noEdits);
+        viewers.refresh(viewer.id);
+      },
+    });
+  } catch (e) {
+    s.setNotice(errorText(e));
+  }
+}
+
+function Data({ viewer, editing }: { viewer: Viewer; editing: RowEditing | null }) {
   const tab = useEditors((s) => (viewer.data ? s.tabs[viewer.data] : undefined));
   const [cursor, setCursor] = useState<GridCursor>({ row: 0, col: 0 });
   const resultId = tab?.outcome?.result?.id;
+  const columns = tab?.outcome?.executed.columns;
+  // The table's key and columns, as places in what the query brought
+  const places = useMemo(() => {
+    if (!editing || !columns) return null;
+    const key = editing.key.map((name) => columns.findIndex((c) => c.name === name));
+    if (key.some((k) => k < 0 || !typed.has(columns[k].kind))) return null;
+    return { key, editable: columns.map((c) => editing.editable.includes(c.name) && typed.has(c.kind)) };
+  }, [editing, columns]);
+  const edit: ResultsEdit | undefined = places
+    ? {
+        ...places,
+        edits: viewer.edits,
+        onEdits: (edits: RowEdits) => useViewers.getState().setEdits(viewer.id, edits),
+        onApply: () => void applyEdits(viewer),
+        onRevert: () => useViewers.getState().setEdits(viewer.id, noEdits),
+      }
+    : undefined;
   useEffect(() => {
     setCursor({ row: 0, col: 0 });
   }, [resultId]);
@@ -447,8 +490,13 @@ function Data({ viewer }: { viewer: Viewer }) {
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1">
-        <Results tab={tab} cursor={cursor} setCursor={setCursor} />
+        <Results tab={tab} cursor={cursor} setCursor={setCursor} edit={edit} />
       </div>
+      {!editing && viewer.kind === "table" && (
+        <div className="shrink-0 truncate border-t border-line px-2 py-0.5 text-muted">
+          {t("Read-only: the table has no primary key, nor a unique one without nulls, to tell its rows apart.")}
+        </div>
+      )}
       {last?.level === "error" && (
         <div className="shrink-0 truncate border-t border-line px-2 py-0.5 text-danger" role="alert" title={last.text}>
           {last.text}

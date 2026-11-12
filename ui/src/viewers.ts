@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { api, errorText, type ObjectKind, type TabContent, type TabInfo } from "./api";
 import { useEditors } from "./editors";
+import { editCount, noEdits, type RowEdits } from "./rowEdits";
 
 interface Loadable<T> {
   data?: T;
@@ -26,7 +27,12 @@ export interface Viewer {
   data: string | null;
   /** Text changed and not compiled yet, by tab id */
   drafts: Record<string, string>;
+  /** What was done to the Data tab's rows and is not in the table yet */
+  edits: RowEdits;
 }
+
+/** Whether closing the viewer would lose something typed in it */
+export const hasChanges = (viewer: Viewer) => Object.keys(viewer.drafts).length > 0 || editCount(viewer.edits) > 0;
 
 interface State {
   viewers: Record<string, Viewer>;
@@ -41,6 +47,7 @@ interface State {
   refresh(id: string): void;
   /** What a tab's text was changed to; `null` when it is the object's again */
   setDraft(id: string, tab: string, text: string | null): void;
+  setEdits(id: string, edits: RowEdits): void;
 }
 
 export const viewerId = (registration: string, kind: ObjectKind, name: string) => `obj-${registration}:${kind}:${name}`;
@@ -94,6 +101,7 @@ export const useViewers = create<State>()((set, get) => {
         contents: {},
         data: null,
         drafts: {},
+        edits: noEdits,
       };
       set((s) => ({ viewers: { ...s.viewers, [id]: viewer } }));
       api.objectTabs(kind).then(
@@ -137,6 +145,10 @@ export const useViewers = create<State>()((set, get) => {
       // What the tab showing has stays on screen while it is read again
       patch(id, { contents: active && viewer.contents[active] ? { [active]: viewer.contents[active] } : {} });
       if (active) void load(id, active);
+    },
+
+    setEdits(id, edits) {
+      patch(id, { edits });
     },
 
     setDraft(id, tab, text) {

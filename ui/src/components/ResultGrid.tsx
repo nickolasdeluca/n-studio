@@ -1,11 +1,24 @@
 // A select's rows. The backend holds every fetched row; the grid asks for
 // the pages in view and keeps a bounded few, so a million rows cost the UI
 // what a screenful does. Reaching the end of what was fetched fetches more.
+//
+// With `edit`, cells take new values, rows are marked to be deleted and new
+// rows are added after the fetched ones: all of it kept by whoever owns the
+// grid until it is applied, and shown over the rows as they were read.
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState, type Ref } from "react";
 import { api, type Cell, type ColumnInfo, type ColumnKind, type ResultView } from "../api";
 import { PAGE } from "../editors";
 import { t } from "../i18n";
+import {
+  addInserted,
+  removeInserted,
+  rowId,
+  setCell,
+  setInserted,
+  toggleDeleted,
+  type RowEdits,
+} from "../rowEdits";
 
 const ROW_H = 22;
 const GUTTER_W = 56;
@@ -19,6 +32,28 @@ export interface GridCursor {
   col: number;
 }
 
+/** How the grid's rows can be changed, and what was changed so far */
+export interface GridEdit {
+  /** The columns that tell a row from every other, by index */
+  key: number[];
+  /** By column: whether a value can be typed into it */
+  editable: boolean[];
+  edits: RowEdits;
+  onEdits(edits: RowEdits): void;
+}
+
+/** What a toolbar does to the row or the cell the cursor is on */
+export interface GridHandle {
+  insertRow(): void;
+  deleteRow(): void;
+  setNull(): void;
+}
+
+/** What a row is to the edits: a new one, or a fetched one by its key */
+type RowState =
+  | { inserted: number }
+  | { inserted?: undefined; key: Cell[]; cells: Cell[]; set: Record<string, Cell> | undefined; deleted: boolean };
+
 interface Props {
   result: ResultView;
   columns: ColumnInfo[];
@@ -27,6 +62,8 @@ interface Props {
   onFetchMore(max: number): Promise<void>;
   /** A header was clicked: sort by that column, or stop sorting */
   onSort(col: number): void;
+  edit?: GridEdit;
+  ref?: Ref<GridHandle>;
 }
 
 const numeric = (k: ColumnKind) => k === "integer" || k === "decimal" || k === "float";
@@ -48,13 +85,20 @@ function initialWidth(c: ColumnInfo): number {
   return Math.round(Math.max(60, Math.min(Math.max(name, content), 360)));
 }
 
-export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort }: Props) {
+export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort, edit, ref }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, Cell[][]>());
   const inflight = useRef(new Set<number>());
   const fetching = useRef(false);
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const [widths, setWidths] = useState<number[]>(() => columns.map(initialWidth));
+  /** The cell being typed into; `first`: it began with a key, not with all selected */
+  const [typing, setTyping] = useState<{ row: number; col: number; text: string; initial: string; first: boolean } | null>(null);
+  // Set when the keyboard ended the typing, so that losing focus does not end it again
+  const ended = useRef(false);
+  const inserted = edit?.edits.inserted ?? [];
+  const total = result.rows + inserted.length;
+  const names = useMemo(() => columns.map((c) => c.name), [columns]);
 
   // A new result starts over
   useEffect(() => {
@@ -78,7 +122,7 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   }, [result.rows]);
 
   const rows = useVirtualizer({
-    count: result.rows,
+    count: total,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_H,
     overscan: 20,
@@ -153,8 +197,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
 
   // Keep the cursor in view as it moves, and only then: more rows arriving
   // must not pull the view back to it
-  const live = useRef({ rows, cols, count: result.rows });
-  live.current = { rows, cols, count: result.rows };
+  const live = useRef({ rows, cols, count: total });
+  live.current = { rows, cols, count: total };
   useEffect(() => {
     const { rows, cols, count } = live.current;
     if (count === 0) return;
@@ -163,9 +207,76 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   }, [cursor.row, cursor.col]);
 
   const move = (row: number, col: number) => {
-    const maxRow = Math.max(0, result.rows - 1);
+    const maxRow = Math.max(0, total - 1);
     onCursor({ row: Math.max(0, Math.min(row, maxRow)), col: Math.max(0, Math.min(col, columns.length - 1)) });
   };
+
+  const rowState = (r: number): RowState | null => {
+    if (!edit) return null;
+    if (r >= result.rows) return r < total ? { inserted: r - result.rows } : null;
+    const cells = pages.current.get(Math.floor(r / PAGE))?.[r % PAGE];
+    if (!cells) return null;
+    const key = edit.key.map((k) => cells[k]);
+    const id = rowId(key);
+    return { key, cells, set: edit.edits.changed[id]?.set, deleted: id in edit.edits.deleted };
+  };
+  /** A cell as it will be once the edits are applied; `undefined` for a
+   *  new row's cell nothing was typed into */
+  const shown = (state: RowState | null, r: number, c: number): { value: Cell | undefined; dirty: boolean } => {
+    if (state?.inserted !== undefined) {
+      const row = inserted[state.inserted];
+      return { value: row?.[names[c]], dirty: row !== undefined && names[c] in row };
+    }
+    if (state?.set && names[c] in state.set) return { value: state.set[names[c]], dirty: true };
+    return { value: cellAt(r, c), dirty: false };
+  };
+  const put = (r: number, c: number, value: Cell) => {
+    const state = rowState(r);
+    if (!edit || !state || !edit.editable[c]) return;
+    if (state.inserted !== undefined) edit.onEdits(setInserted(edit.edits, state.inserted, names[c], value));
+    else if (!state.deleted) edit.onEdits(setCell(edit.edits, state.key, names[c], value, state.cells[c]));
+  };
+
+  const startTyping = (first?: string) => {
+    const { row, col } = cursor;
+    const state = rowState(row);
+    if (!edit?.editable[col] || !state || (state.inserted === undefined && state.deleted)) return;
+    const initial = shown(state, row, col).value ?? "";
+    ended.current = false;
+    setTyping({ row, col, text: first ?? initial, initial, first: first !== undefined });
+  };
+  const endTyping = (keep: boolean) => {
+    if (!typing) return;
+    ended.current = true;
+    setTyping(null);
+    scrollRef.current?.focus();
+    if (!keep || typing.text === typing.initial) return;
+    // Only text can hold nothing and not be null
+    const empty = typing.text.trim() === "" && columns[typing.col].kind !== "text";
+    put(typing.row, typing.col, empty ? null : typing.text);
+  };
+
+  const handle: GridHandle = {
+    insertRow() {
+      if (!edit) return;
+      edit.onEdits(addInserted(edit.edits));
+      const col = edit.editable[cursor.col] ? cursor.col : Math.max(0, edit.editable.indexOf(true));
+      onCursor({ row: total, col });
+      scrollRef.current?.focus();
+    },
+    deleteRow() {
+      const state = rowState(cursor.row);
+      if (!edit || !state) return;
+      if (state.inserted !== undefined) edit.onEdits(removeInserted(edit.edits, state.inserted));
+      else edit.onEdits(toggleDeleted(edit.edits, state.key));
+      scrollRef.current?.focus();
+    },
+    setNull() {
+      put(cursor.row, cursor.col, null);
+      scrollRef.current?.focus();
+    },
+  };
+  useImperativeHandle(ref, () => handle);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     const page = Math.max(1, Math.floor((scrollRef.current?.clientHeight ?? 200) / ROW_H) - 2);
@@ -179,15 +290,32 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       PageDown: () => move(row + page, col),
       PageUp: () => move(row - page, col),
       Home: () => (mod ? move(0, col) : move(row, 0)),
-      End: () => (mod ? move(result.rows - 1, col) : move(row, columns.length - 1)),
+      End: () => (mod ? move(total - 1, col) : move(row, columns.length - 1)),
     };
     if (keys[e.key]) {
       e.preventDefault();
       keys[e.key]();
     } else if (mod && e.key.toLowerCase() === "c") {
       e.preventDefault();
-      const v = cellAt(row, col);
+      const v = shown(rowState(row), row, col).value;
       if (v !== undefined) void navigator.clipboard.writeText(v ?? "");
+    } else if (edit) {
+      const erase = e.key === "Delete" || e.key === "Backspace";
+      const act =
+        e.key === "Enter" || e.key === "F2"
+          ? () => startTyping()
+          : e.key === "Insert"
+            ? handle.insertRow
+            : erase && mod
+              ? handle.deleteRow
+              : erase && e.shiftKey
+                ? handle.setNull
+                : e.key.length === 1 && !mod && !e.altKey
+                  ? () => startTyping(e.key)
+                  : null;
+      if (!act) return;
+      e.preventDefault();
+      act();
     }
   };
 
@@ -219,7 +347,7 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       onKeyDown={onKeyDown}
       className="scroll-thin relative h-full overflow-auto bg-panel font-mono text-[12px] outline-none"
       role="grid"
-      aria-rowcount={result.rows}
+      aria-rowcount={total}
       aria-colcount={columns.length}
     >
       <div style={{ height: rows.getTotalSize(), width, position: "relative" }}>
@@ -253,13 +381,19 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
           })}
         </div>
         {virtualRows.map((r) => {
-          const loaded = pages.current.has(Math.floor(r.index / PAGE));
+          const state = rowState(r.index);
+          const added = state?.inserted !== undefined;
+          const loaded = added || pages.current.has(Math.floor(r.index / PAGE));
           const current = r.index === cursor.row;
+          const deleted = !!state && !added && state.deleted;
+          const changed = !!state && !added && !!state.set;
           return (
             <div
               key={r.key}
               role="row"
-              className={`absolute left-0 flex border-b border-line/60 ${current ? "bg-selected-inactive" : ""}`}
+              className={`absolute left-0 flex border-b border-line/60 ${
+                current ? "bg-selected-inactive" : added ? "bg-ok/5" : deleted ? "bg-danger/5" : ""
+              } ${deleted ? "text-faint line-through" : ""}`}
               style={{ top: r.start, height: ROW_H, width }}
             >
               <div
@@ -269,23 +403,72 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
                 style={{ width: GUTTER_W, lineHeight: `${ROW_H - 1}px` }}
               >
                 {current ? "▸ " : ""}
-                {r.index + 1}
+                {added ? (
+                  <span className="text-ok" title={t("A new row, not in the table yet")}>
+                    +
+                  </span>
+                ) : (
+                  <>
+                    {(changed || deleted) && (
+                      <span
+                        className={`mr-0.5 ${deleted ? "text-danger" : "text-accent"}`}
+                        title={deleted ? t("To be deleted") : t("Changed, not applied")}
+                      >
+                        {deleted ? "×" : "•"}
+                      </span>
+                    )}
+                    {r.index + 1}
+                  </>
+                )}
               </div>
               {virtualCols.map((c) => {
-                const v = loaded ? cellAt(r.index, c.index) : undefined;
+                const { value: v, dirty } = loaded ? shown(state, r.index, c.index) : { value: undefined, dirty: false };
                 const focused = current && c.index === cursor.col;
+                if (typing && typing.row === r.index && typing.col === c.index) {
+                  return (
+                    <input
+                      key={c.key}
+                      ref={(el) => {
+                        if (!el || document.activeElement === el) return;
+                        el.focus();
+                        if (!typing.first) el.select();
+                      }}
+                      value={typing.text}
+                      aria-label={columns[c.index].name}
+                      spellCheck={false}
+                      autoComplete="off"
+                      onChange={(e) => setTyping({ ...typing, text: e.target.value })}
+                      onBlur={() => !ended.current && endTyping(true)}
+                      onKeyDown={(e) => {
+                        // The grid's keys are not for what is being typed
+                        e.stopPropagation();
+                        if (e.key === "Escape") endTyping(false);
+                        else if (e.key === "Enter" || e.key === "Tab") {
+                          e.preventDefault();
+                          endTyping(true);
+                          if (e.key === "Tab") move(r.index, c.index + (e.shiftKey ? -1 : 1));
+                        }
+                      }}
+                      className={`absolute top-0 z-10 h-full border-0 bg-panel px-1.5 outline outline-2 -outline-offset-2 outline-accent ${align[c.index]}`}
+                      style={{ left: c.start, width: c.size }}
+                    />
+                  );
+                }
                 return (
                   <div
                     key={c.key}
                     role="gridcell"
                     onMouseDown={() => move(r.index, c.index)}
+                    onDoubleClick={() => startTyping()}
                     className={`absolute top-0 truncate border-r border-line/60 px-1.5 ${align[c.index]} ${
-                      focused ? "bg-selected outline outline-1 -outline-offset-1 outline-accent" : ""
+                      focused ? "bg-selected outline outline-1 -outline-offset-1 outline-accent" : dirty && !added ? "bg-accent/10" : ""
                     }`}
                     style={{ left: c.start, width: c.size, lineHeight: `${ROW_H - 1}px` }}
                   >
                     {!loaded ? (
                       <span className="inline-block h-2 w-10 rounded bg-hover align-middle" />
+                    ) : v === undefined ? (
+                      added && <span className="text-faint italic">{t("<default>")}</span>
                     ) : v === null ? (
                       <span className="text-faint italic">{t("<null>")}</span>
                     ) : blob[c.index] ? (

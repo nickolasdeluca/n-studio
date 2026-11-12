@@ -46,6 +46,17 @@ pub(crate) fn type_joins(collation: &str) -> String {
     )
 }
 
+/// How a type's values are written into a statement
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Written {
+    /// As they are: `12.5`
+    Number,
+    /// `TRUE` or `FALSE`
+    Boolean,
+    /// In quotes, for the server to convert: text, dates, times
+    Quoted,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataType {
@@ -101,6 +112,27 @@ impl DataType {
             t.collation = collation;
         }
         t
+    }
+
+    /// How a value typed for it goes into a statement; `None` for what
+    /// cannot be typed: blobs, arrays, bytes
+    pub fn written(&self) -> Option<Written> {
+        if self.array > 0 || !self.dimensions.is_empty() {
+            return None;
+        }
+        Some(match self.code {
+            code::BLOB | code::QUAD => return None,
+            code::CHAR | code::VARCHAR | code::CSTRING if self.charset.as_deref() == Some("OCTETS") => return None,
+            code::SMALLINT | code::INTEGER | code::BIGINT | code::INT128 | code::FLOAT | code::D_FLOAT | code::DOUBLE
+            | code::DECFLOAT16 | code::DECFLOAT34 => Written::Number,
+            code::BOOLEAN => Written::Boolean,
+            _ => Written::Quoted,
+        })
+    }
+
+    /// Whether what is read of it may not be what is stored: a float
+    pub fn is_approximate(&self) -> bool {
+        matches!(self.code, code::FLOAT | code::D_FLOAT | code::DOUBLE)
     }
 
     /// Whether it has a character set

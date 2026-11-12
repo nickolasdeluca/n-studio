@@ -73,7 +73,7 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
             {dialog.back ? t("Back") : t("Cancel")}
           </Button>
           <Button primary={!dialog.danger} danger={dialog.danger} submit disabled={running} autoFocus={!dialog.danger}>
-            {dialog.danger ? t("Run and Commit") : failure ? t("Compile Again") : t("Compile and Commit")}
+            {dialog.verb ?? (dialog.danger ? t("Run and Commit") : failure ? t("Compile Again") : t("Compile and Commit"))}
           </Button>
         </>
       }

@@ -439,3 +439,58 @@ fn a_selection_creates_nothing_before_what_it_uses() {
     }
 }
 
+/// On any database: a table has a key its rows are changed by, or its rows
+/// are not changed at all. Statements are written, never run.
+#[test]
+fn rows_are_changed_by_a_key_or_not_at_all() {
+    use fb_meta::data::{editing, statements, RowChanges};
+    let Some(conn) = connect() else { return };
+    let ctx = fb_meta::ddl::Context::of(conn.info());
+    for object in sample(&objects(&conn, ObjectKind::Table).unwrap(), 12) {
+        let table = table(&conn, &object.name).unwrap();
+        let delete = |key: usize| RowChanges { deletes: vec![vec![Some("1".to_string()); key]], ..RowChanges::default() };
+        match editing(&table) {
+            Some(editing) => {
+                assert!(!editing.key.is_empty());
+                assert!(editing.key.iter().all(|k| table.columns.iter().any(|c| &c.name == k)));
+                let written = statements(&table, &delete(editing.key.len()), &ctx).unwrap();
+                assert_eq!(written.len(), 1);
+                assert!(written[0].sql.starts_with("DELETE FROM ") && written[0].sql.contains(" WHERE "));
+            }
+            None => assert!(statements(&table, &delete(1), &ctx).is_err()),
+        }
+    }
+}
+
+/// The statements a grid's changes become are ones the server takes, on
+/// every version: run in a transaction that is rolled back
+#[test]
+fn the_fixtures_rows_change_as_the_grid_says() {
+    use fb_core::{ExecuteOptions, TxEnd, TxOptions};
+    use fb_meta::data::{editing, statements, Assign, RowChanges, RowUpdate};
+    let Some(conn) = fixture() else { return };
+    let ctx = fb_meta::ddl::Context::of(conn.info());
+    let pedido = table(&conn, "PEDIDO").unwrap();
+    assert_eq!(editing(&pedido).unwrap().key, ["ID"]);
+    let set = |column: &str, value: &str| Assign { column: column.into(), value: Some(value.into()) };
+    let key = vec![Some("990001".to_string())];
+
+    let tx = conn.begin(TxOptions::default()).unwrap();
+    let run = |changes: RowChanges| {
+        let written = statements(&pedido, &changes, &ctx).unwrap();
+        assert_eq!(written.len(), 1);
+        conn.execute(tx, &written[0].sql, vec![], ExecuteOptions::default()).unwrap().records
+    };
+    // The date left out takes its default
+    let inserted = run(RowChanges { inserts: vec![vec![set("ID", "990001"), set("CLIENTE", "O'Neil")]], ..RowChanges::default() });
+    assert_eq!(inserted.inserted, 1);
+    let updated = run(RowChanges {
+        updates: vec![RowUpdate { key: key.clone(), set: vec![set("CLIENTE", "Ana"), set("EMISSAO", " 2024-02-29 ")] }],
+        ..RowChanges::default()
+    });
+    assert_eq!(updated.updated, 1);
+    let deleted = run(RowChanges { deletes: vec![key], ..RowChanges::default() });
+    assert_eq!(deleted.deleted, 1);
+    conn.end(tx, TxEnd::Rollback).unwrap();
+}
+

@@ -37,6 +37,7 @@ fn main() {
             objects::object_tab,
             objects::extract_metadata,
             objects::object_tab_script,
+            objects::data_changes_script,
             objects::object_drop_script,
             objects::object_template,
             changes::object_action_form,

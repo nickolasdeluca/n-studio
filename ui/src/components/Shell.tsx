@@ -15,7 +15,7 @@ import { t } from "../i18n";
 import { guardQuit, request } from "../pending";
 import { Icon } from "../icons";
 import { useStore } from "../store";
-import { useViewers } from "../viewers";
+import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { Dialogs } from "./Dialogs";
 import { Explorer } from "./Explorer";
@@ -40,8 +40,8 @@ const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeader
       {...props}
       closeActionOverride={() => {
         // Text typed and not compiled is asked about before it goes
-        const drafts = useViewers.getState().viewers[props.api.id]?.drafts ?? {};
-        if (Object.keys(drafts).length > 0) useStore.getState().openDialog({ type: "discard", viewer: props.api.id });
+        const viewer = useViewers.getState().viewers[props.api.id];
+        if (viewer && hasChanges(viewer)) useStore.getState().openDialog({ type: "discard", viewer: props.api.id });
         else props.api.close();
       }}
     />

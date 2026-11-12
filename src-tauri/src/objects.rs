@@ -4,6 +4,7 @@
 //! table is made of, so another engine's objects need only say theirs.
 
 use fb_core::Connection;
+use fb_meta::data::{self, RowChanges, RowEditing};
 use fb_meta::{
     extract, Column, Constraint, ConstraintKind, Dependency, Grant, Index, ObjectKind, Param, Routine, Trigger, TriggerScope,
 };
@@ -152,9 +153,12 @@ pub enum TabContent {
         text: String,
         editable: bool,
     },
-    /// A query for the viewer to run and page through, as an editor would
+    /// A query for the viewer to run and page through, as an editor would.
+    /// `edit`: how its rows can be changed, when they can, as
+    /// [`data_changes_script`] has it
     Data {
         sql: String,
+        edit: Option<RowEditing>,
     },
 }
 
@@ -207,6 +211,26 @@ pub async fn extract_metadata(app: AppHandle, id: String, objects: Vec<ObjectRef
         let conn = state.session(&id)?;
         let picked: Vec<(ObjectKind, String)> = objects.into_iter().map(|o| (o.kind, o.name)).collect();
         Ok(fb_meta::ddl::script(&extract::selection(&conn, &picked)?))
+    })
+    .await
+}
+
+/// The script that makes a grid's changes the table's: for the user to
+/// see, and then to run
+#[tauri::command]
+pub async fn data_changes_script(app: AppHandle, id: String, table: String, changes: RowChanges) -> AppResult<String> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        let ctx = fb_meta::ddl::Context::of(conn.info());
+        let statements = data::statements(&fb_meta::table(&conn, &table)?, &changes, &ctx).map_err(|e| match e {
+            // What the grid sent does not fit the table: nothing went wrong with the connection
+            fb_core::Error::Client { message } => AppError::Invalid { message },
+            e => e.into(),
+        })?;
+        if statements.is_empty() {
+            return Err(AppError::Invalid { message: "Nothing was changed.".into() });
+        }
+        Ok(fb_meta::ddl::script(&statements))
     })
     .await
 }
@@ -299,7 +323,9 @@ fn read(conn: &Connection, kind: ObjectKind, name: &str, tab: &str) -> AppResult
         }
         ("grants", _) => grants(&fb_meta::grant::on(conn, kind, name)?),
         ("data", ObjectKind::Table | ObjectKind::View) => {
-            TabContent::Data { sql: format!("select * from {}", fb_meta::quote(name, dialect)) }
+            // A view's rows are whatever its tables' are: changed there
+            let edit = if kind == ObjectKind::Table { data::editing(&fb_meta::table(conn, name)?) } else { None };
+            TabContent::Data { sql: format!("select * from {}", fb_meta::quote(name, dialect)), edit }
         }
         ("fields", ObjectKind::Table) => {
             let columns: Vec<Column> = fb_meta::columns(conn, Some(name))?.into_iter().map(|(_, c)| c).collect();
@@ -754,8 +780,8 @@ mod tests {
             r#"{"shape":"grid","sections":[{"title":null,"columns":[{"label":"PK","kind":"flag"}],"rows":[{"cells":["✓"],"open":{"kind":"domain","name":"D_ID"},"key":null}],"actions":[],"row_actions":[]}]}"#
         );
         assert_eq!(
-            serde_json::to_string(&TabContent::Data { sql: "select 1".into() }).unwrap(),
-            r#"{"shape":"data","sql":"select 1"}"#
+            serde_json::to_string(&TabContent::Data { sql: "select 1".into(), edit: None }).unwrap(),
+            r#"{"shape":"data","sql":"select 1","edit":null}"#
         );
     }
 }

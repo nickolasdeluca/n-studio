@@ -366,8 +366,30 @@ export type TabContent =
   /** `editable`: the text can be changed and compiled back */
   | { shape: "sql"; text: string; editable: boolean }
   | { shape: "text"; text: string; editable: boolean }
-  /** A query for the viewer to run and page through */
-  | { shape: "data"; sql: string };
+  /** A query for the viewer to run and page through; `edit` when its rows
+   *  can be changed */
+  | { shape: "data"; sql: string; edit: RowEditing | null };
+
+/** How a table's rows can be changed from the grid */
+export interface RowEditing {
+  /** The columns that tell a row from every other */
+  key: string[];
+  /** The columns a value can be typed into */
+  editable: string[];
+}
+
+export interface Assign {
+  column: string;
+  /** `null` is NULL */
+  value: Cell;
+}
+
+/** What was done to a grid's rows and is not in the table yet */
+export interface RowChanges {
+  updates: { key: Cell[]; set: Assign[] }[];
+  deletes: Cell[][];
+  inserts: Assign[][];
+}
 
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
@@ -400,6 +422,9 @@ export const api = {
     key: string | null,
     values: Record<string, string>,
   ) => invoke<ActionScript>("object_action_script", { id, kind, name, action, key, values }),
+  /** The script that makes a grid's changes the table's */
+  dataChangesScript: (id: string, table: string, changes: RowChanges) =>
+    invoke<string>("data_changes_script", { id, table, changes }),
   objectDropScript: (id: string, kind: ObjectKind, name: string) => invoke<string>("object_drop_script", { id, kind, name }),
   objectTemplate: (id: string, kind: ObjectKind) => invoke<string>("object_template", { id, kind }),
   extractMetadata: (id: string, objects: ObjectRef[]) => invoke<string>("extract_metadata", { id, objects }),

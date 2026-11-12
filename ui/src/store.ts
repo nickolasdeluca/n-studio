@@ -47,8 +47,9 @@ export type Dialog =
   | { type: "export"; tab: string }
   /** A change to the catalog, as the script that makes it: shown, then run
    *  whole or not at all. `done` is called once it is committed.
-   *  `back` is the dialog it came from, shown again if it is cancelled. */
-  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog }
+   *  `back` is the dialog it came from, shown again if it is cancelled;
+   *  `verb` names the button when the script compiles nothing. */
+  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog; verb?: string }
   /** What an action on an object asks before it is a script to compile */
   | { type: "form"; viewer: string; action: Action; key: string | null; form: Form; values?: Record<string, string> }
   /** A viewer closing over text not compiled yet */

@@ -13,6 +13,7 @@ use fb_core::{Connection, Error, Result, ServerInfo, Value};
 use serde::{Deserialize, Serialize};
 
 pub mod change;
+pub mod data;
 pub mod ddl;
 mod deps;
 pub mod extract;
