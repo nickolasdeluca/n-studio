@@ -42,3 +42,17 @@ pub fn statements(conn: &Connection, kind: ObjectKind, name: &str) -> Result<Vec
 pub fn script(conn: &Connection, kind: ObjectKind, name: &str) -> Result<String> {
     Ok(ddl::script(&statements(conn, kind, name)?))
 }
+
+/// An object's whole COMMENT ON text; the object list has only its start
+pub fn description(conn: &Connection, kind: ObjectKind, name: &str) -> Result<Option<String>> {
+    let Some(source) = crate::Generation::of(conn.info()).source(kind) else {
+        return Ok(None);
+    };
+    // Packaged routines share their names' table with standalone ones, so
+    // the kind's own filter stays
+    let sql = format!(
+        "select o.rdb$description from {} o where o.{} = ? and {}",
+        source.table, source.name, source.filter
+    );
+    Ok(crate::row::rows(conn, &sql, vec![name.into()])?.first().and_then(|r| r.text(0)))
+}

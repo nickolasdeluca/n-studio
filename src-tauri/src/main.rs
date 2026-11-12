@@ -5,6 +5,7 @@ mod commands;
 mod editor;
 mod error;
 mod export;
+mod objects;
 mod registry;
 mod results;
 mod secrets;
@@ -30,6 +31,8 @@ fn main() {
             commands::disconnect,
             commands::explorer_tree,
             commands::object_list,
+            objects::object_tabs,
+            objects::object_tab,
             editor::editor_begin,
             editor::editor_end,
             editor::editor_cancel,
