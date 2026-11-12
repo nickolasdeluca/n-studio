@@ -103,8 +103,11 @@ fn every_kind_scripts_and_resolves_its_dependencies() {
         for object in sample(&objects(&conn, kind).unwrap(), 4) {
             let ddl = extract::script(&conn, kind, &object.name).unwrap_or_else(|e| panic!("{kind:?}: {e}"));
             assert!(ddl.ends_with(";\n") || ddl.ends_with("SET TERM ; ^\n"), "{kind:?} DDL ends oddly");
+            // `TYPE <code>` is what an unknown type renders as; a blob's
+            // `SUB_TYPE 0` is not one
+            let types = ddl.replace("SUB_TYPE", "");
             assert!(
-                !ddl.contains("TYPE 0") && !ddl.contains("TYPE -"),
+                !types.contains("TYPE 0") && !types.contains("TYPE -"),
                 "{kind:?}: a type the catalog reader does not know"
             );
             dependencies(&conn, kind, &object.name).unwrap_or_else(|e| panic!("{kind:?} dependencies: {e}"));

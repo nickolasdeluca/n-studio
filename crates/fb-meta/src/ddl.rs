@@ -181,7 +181,9 @@ fn column(c: &Column, width: usize, ctx: &Context) -> String {
     if let Some(default) = &c.default {
         line.push_str(&format!(" {}", default.trim()));
     }
-    if c.not_null {
+    // A key column is flagged NOT NULL itself even when only its domain was
+    // declared so; saying it twice is not what anyone wrote
+    if c.not_null && !(c.domain.is_some() && c.domain_not_null) {
         line.push_str(" NOT NULL");
     }
     if let Some(collation) = &c.data_type.collation {
