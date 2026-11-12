@@ -7,7 +7,7 @@ use std::{convert::TryFrom, str};
 
 use crate::{
     client::{BlobId, FirebirdWireConnection},
-    consts::{gds_to_msg, AuthPluginType, Cnct, ProtocolVersion, WireOp},
+    consts::{gds_to_msg, AuthPluginType, Cnct, ProtocolVersion, WireOp, UNKNOWN_MESSAGE},
     srp::*,
     util::*,
     xsqlda::{XSqlVar, XSQLDA_DESCRIBE_VARS},
@@ -941,6 +941,16 @@ impl ParsedColumn {
 }
 
 /// Parses the error messages from the response
+/// Adds an argument to the line of a code that has no message of its own
+fn append_argument(message: &mut String, argument: &str) {
+    if message.ends_with('\n') {
+        message.pop();
+    }
+    message.push(' ');
+    message.push_str(argument);
+    message.push('\n');
+}
+
 pub fn parse_status_vector(resp: &mut Bytes) -> Result<(), FbError> {
     // Sql error code (default to -1)
     let mut sql_code = -1;
@@ -951,6 +961,8 @@ pub fn parse_status_vector(resp: &mut Bytes) -> Result<(), FbError> {
     let mut gds_code = 0;
     // Error message argument index
     let mut num_arg = 0;
+    // The last code has no message for its arguments to go into
+    let mut unknown = false;
 
     loop {
         match resp.get_u32()? {
@@ -959,7 +971,14 @@ pub fn parse_status_vector(resp: &mut Bytes) -> Result<(), FbError> {
                 gds_code = resp.get_u32()?;
 
                 if gds_code != 0 {
-                    message += gds_to_msg(gds_code);
+                    // A code newer than the table of messages: its number
+                    // and its arguments say more than "not found" does
+                    unknown = gds_to_msg(gds_code) == UNKNOWN_MESSAGE;
+                    if unknown {
+                        message += &format!("Server error {}\n", gds_code);
+                    } else {
+                        message += gds_to_msg(gds_code);
+                    }
                     num_arg = 0;
                 }
             }
@@ -973,6 +992,9 @@ pub fn parse_status_vector(resp: &mut Bytes) -> Result<(), FbError> {
                 }
 
                 num_arg += 1;
+                if unknown {
+                    append_argument(&mut message, &num.to_string());
+                }
                 message = message.replace(&format!("@{}", num_arg), &format!("{}", num));
             }
 
@@ -982,6 +1004,9 @@ pub fn parse_status_vector(resp: &mut Bytes) -> Result<(), FbError> {
                 let msg = std::str::from_utf8(&msg[..]).unwrap_or("**Invalid message**");
 
                 num_arg += 1;
+                if unknown {
+                    append_argument(&mut message, msg);
+                }
                 message = message.replace(&format!("@{}", num_arg), msg);
             }
 

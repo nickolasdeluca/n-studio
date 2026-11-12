@@ -15,7 +15,8 @@ pub struct User {
     pub first_name: Option<String>,
     pub middle_name: Option<String>,
     pub last_name: Option<String>,
-    /// An inactive user cannot log in. Always true before Firebird 3.
+    /// An inactive user cannot log in. A user never given a state has none
+    /// stored, and is active. Always true before Firebird 3.
     pub active: bool,
     /// Holds RDB$ADMIN in the security database: may manage users.
     /// Unknown before Firebird 3.
@@ -29,7 +30,7 @@ pub struct User {
 /// The users this connection may see (Firebird 3 and later): all of them
 /// for an administrator, itself for anyone else
 pub fn users(conn: &Connection) -> Result<Vec<User>> {
-    let sql = "select sec$user_name, sec$first_name, sec$middle_name, sec$last_name, sec$active, sec$admin, \
+    let sql = "select sec$user_name, sec$first_name, sec$middle_name, sec$last_name, coalesce(sec$active, true), sec$admin, \
                sec$plugin, sec$description from sec$users order by sec$user_name, sec$plugin";
     Ok(rows(conn, sql, vec![])?
         .iter()

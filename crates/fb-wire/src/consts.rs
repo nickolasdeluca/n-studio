@@ -208,6 +208,9 @@ impl AuthPluginType {
     }
 }
 
+/// What [`gds_to_msg`] answers for a code it has no message for
+pub const UNKNOWN_MESSAGE: &str = "Error message not found";
+
 #[cfg(not(tarpaulin_include))]
 /// Converts a gds_code to a error message
 pub fn gds_to_msg(gds_code: u32) -> &'static str {
@@ -1650,7 +1653,7 @@ pub fn gds_to_msg(gds_code: u32) -> &'static str {
         337182758 => "mandatory parameter '@1' for switch '@2' is missing\n",
         337182759 => "parameter '@1' is incompatible with action '@2'\n",
         337182760 => "mandatory switch '@1' is missing\n",
-        _ => "Error message not found",
+        _ => UNKNOWN_MESSAGE,
     }
 }
 

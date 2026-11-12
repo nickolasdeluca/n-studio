@@ -91,4 +91,7 @@ in the workspace manifest.
   shares the database attach's reply loop (`finish_attach`), so every
   authentication the client knows works for services too. The caller builds
   the start blocks and reads the info buffers; this crate only carries them.
+- **Codes without a message.** The table of messages stops where upstream
+  left it; a newer code read as "Error message not found" and lost its
+  arguments. It now reads as `Server error <code>` followed by them.
 - **`trace()`**, gated behind `FBW_TRACE=1`, dumping wire packets.
