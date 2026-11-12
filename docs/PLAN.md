@@ -157,9 +157,32 @@ script in an order that runs (foreign keys after every table, views after the
 views they select from, triggers last). Routines are not ordered by what they
 call; that comes with the script executor in M4.
 
-### M4 — Metadata editing
-DDL generation and compile-back for tables, views, procedures, triggers, generators,
-domains, exceptions, roles, grants. Script executor with an error log.
+### M4 — Metadata editing — done
+Every change goes one way: the backend writes the script that makes it, a dialog
+shows the script, and it runs in one transaction, committed whole or rolled back
+with the server's errors beside the statements that raised them. What compiles over
+itself (views, procedures, functions, packages, triggers) is changed by editing its
+DDL tab; a description by editing its tab. The parts of the rest are changed by
+actions the backend names for each grid and row, each a form it describes: fields,
+constraints and indices of a table, triggers switched on and off, a domain, a
+generator's value, an exception's message. New objects start from a template in an
+editor; dropping one shows the statement first.
+
+Grants are read from the catalog and grouped back into the statements that gave
+them: a Grants tab on what can be granted on, members and privileges on a role,
+grant and revoke as actions, and the grants at the end of an object's DDL. Metadata
+extract now orders views and routines together by what they use, declaring routines
+that call each other with empty bodies before defining them.
+
+The script executor is the SQL editor's "Execute as Script": the statements run one
+after the other as isql would (`SET TERM`, `SET AUTODDL`, commits along the way),
+with progress, cancelling, stop-on-error and a log of what failed and where.
+
+A table's Data tab is edited in place: new values, deleted rows and new rows are
+kept beside the fetched ones and applied as a script like any other change. Rows are
+found by a primary key, or a unique one without nulls; a table without either stays
+read-only. Blobs are not edited in the grid. Result grids of the SQL editor stay
+read-only: a query does not say which table a row belongs to.
 
 ### M5 — Services + monitoring
 Backup / restore / validate / sweep / statistics, user manager, `MON$`-based
