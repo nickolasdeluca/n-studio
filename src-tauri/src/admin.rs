@@ -50,7 +50,7 @@ fn some(value: impl ToString) -> Option<String> {
 
 /// A flag column's cell: there when the flag is on
 fn mark(on: bool) -> Option<String> {
-    on.then(|| "yes".to_string())
+    on.then(|| "✓".to_string())
 }
 
 // ── The activity monitor ────────────────────────────────────────────────
@@ -339,7 +339,7 @@ fn user_fields(major: u32, user: Option<&User>) -> Vec<FormField> {
     fields.push(field("middle_name", "Middle name", Text).value(name(user.map(|u| &u.middle_name))));
     fields.push(field("last_name", "Last name", Text).value(name(user.map(|u| &u.last_name))));
     if major >= 3 {
-        fields.push(check("active", "Active", user.is_none_or(|u| u.active)).hint("An inactive user cannot connect."));
+        fields.push(check("active", "Active", user.is_none_or(|u| u.active)).hint("An inactive user cannot connect. Only the Srp plugin keeps this."));
         fields.push(
             check("admin", "Administrator", user.is_some_and(|u| u.admin))
                 .hint("Holds RDB$ADMIN in the security database: may manage users."),

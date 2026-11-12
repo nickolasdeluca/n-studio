@@ -618,7 +618,11 @@ fn users_are_created_changed_and_dropped() {
 
     let change = UserChange { last_name: Some("After".into()), active: Some(false), ..Default::default() };
     run(&[users::alter(name, &change, &ctx).unwrap()]);
-    assert_eq!(listed(), Some((Some("After".to_string()), ctx.major < 3)));
+    // Only Srp keeps a state: the legacy user manager takes INACTIVE and
+    // forgets it, as Firebird 2.5 has nothing to take it
+    let stateless = ctx.major < 3
+        || users::users(&conn).unwrap().iter().any(|u| u.name == name && u.plugin.as_deref() != Some("Srp"));
+    assert_eq!(listed(), Some((Some("After".to_string()), stateless)));
 
     run(&[users::drop(name, None, &ctx)]);
     assert_eq!(listed(), None);
