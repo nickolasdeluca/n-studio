@@ -66,6 +66,8 @@ fn main() {
             admin::service_cancel,
             tools::diagram,
             tools::write_text_file,
+            tools::data_compare,
+            tools::data_compare_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

@@ -4,6 +4,7 @@
 import { adminActions } from "./admin";
 import { api, errorText, type Action, type ObjectKind, type ObjectRef } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
+import { startComparison } from "./compare";
 import { openDiagram } from "./diagram";
 import { closePanel, openEditor, openObject } from "./dock";
 import { t } from "./i18n";
@@ -49,6 +50,12 @@ export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "se
       icon: "sql",
       disabled: objects.length === 0,
       onSelect: () => void extractMetadata(id, objects),
+    },
+    {
+      label: t("Compare Data…"),
+      icon: "copy",
+      disabled: one?.kind !== "table",
+      onSelect: () => one && startComparison(id, one.name),
     },
     {
       label: t("Diagram"),

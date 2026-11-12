@@ -281,6 +281,41 @@ export interface Diagram {
   all: string[];
 }
 
+export type DiffKind = "only_source" | "only_target" | "different";
+
+export interface DiffRow {
+  kind: DiffKind;
+  key: (string | null)[];
+  changes: { column: string; source: string | null; target: string | null }[];
+}
+
+/** Two tables' rows compared: counts of them all, and as many differences
+ *  as were kept */
+export interface Comparison {
+  key: string[];
+  columns: string[];
+  notes: string[];
+  sourceRows: number;
+  targetRows: number;
+  same: number;
+  onlySource: number;
+  onlyTarget: number;
+  different: number;
+  rows: DiffRow[];
+  truncated: boolean;
+  deletes: string;
+  updates: string;
+  inserts: string;
+  cancelled: boolean;
+}
+
+/** The `compare-progress` event */
+export interface CompareProgress {
+  run: number;
+  phase: string;
+  rows: number;
+}
+
 export type AdminView = "monitor" | "users";
 
 /** The `service-output` event */
@@ -514,6 +549,10 @@ export const api = {
    *  whole database's when none is named */
   diagram: (id: string, tables: string[], depth: number) => invoke<Diagram>("diagram", { id, tables, depth }),
   writeTextFile: (path: string, text: string) => invoke<null>("write_text_file", { path, text }),
+  /** Compares a table of the source registration with one of the target's */
+  dataCompare: (run: number, source: string, sourceTable: string, target: string, targetTable: string) =>
+    invoke<Comparison>("data_compare", { run, source, sourceTable, target, targetTable }),
+  dataCompareCancel: (run: number) => invoke<boolean>("data_compare_cancel", { run }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

@@ -670,3 +670,73 @@ fn the_fixture_diagram_has_its_keys() {
     let fk = d.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").unwrap();
     assert_eq!((fk.from.as_str(), fk.to.as_str(), fk.to_columns.as_slice()), ("PEDIDO_ITEM", "PEDIDO", &["ID".to_string()][..]));
 }
+
+/// Reads the two tables, and tries what it wrote in a transaction that is
+/// rolled back: the scripts make the target the source
+#[test]
+fn two_tables_are_compared_and_the_scripts_close_the_gap() {
+    use fb_core::{ExecuteOptions, TxEnd, TxOptions};
+    use fb_meta::compare::{compare, DiffKind};
+    use std::sync::atomic::AtomicBool;
+    let Some(conn) = fixture() else { return };
+    let never = AtomicBool::new(false);
+    let mut phases = Vec::new();
+    let c = compare(&conn, "CMP_SOURCE", &conn, "CMP_TARGET", 1000, &never, |p| phases.push(p.phase)).unwrap();
+    assert_eq!(c.key, ["ID"]);
+    assert_eq!(c.columns, ["NOME", "VALOR", "DIA", "HORA", "QUANDO"]);
+    assert_eq!(c.notes.len(), 3, "{:?}", c.notes);
+    assert_eq!((c.source_rows, c.target_rows), (5, 5));
+    assert_eq!((c.same, c.different, c.only_source, c.only_target), (2, 2, 1, 1));
+    assert!(!c.truncated && !c.cancelled);
+    assert_eq!(phases, ["details"]);
+
+    assert_eq!(c.deletes, "DELETE FROM CMP_TARGET WHERE ID = 9;\n");
+    assert_eq!(
+        c.updates,
+        "UPDATE CMP_TARGET SET NOME = 'it''s' WHERE ID = 2;\n\
+         UPDATE CMP_TARGET SET VALOR = NULL, DIA = '2024-03-01', HORA = '23:59:59', QUANDO = '2024-03-01 23:59:59.5' WHERE ID = 3;\n"
+    );
+    assert_eq!(
+        c.inserts,
+        "INSERT INTO CMP_TARGET (ID, NOME, VALOR, DIA, HORA, QUANDO) VALUES (4, 'novo', -1.25, '2024-04-04', '04:04:04', '2024-04-04 04:04:04');\n"
+    );
+    let kinds: Vec<_> = c.rows.iter().map(|r| (r.kind, r.key[0].clone().unwrap(), r.changes.len())).collect();
+    assert_eq!(
+        kinds,
+        [
+            (DiffKind::OnlyTarget, "9".to_string(), 0),
+            (DiffKind::Different, "2".to_string(), 1),
+            (DiffKind::Different, "3".to_string(), 4),
+            (DiffKind::OnlySource, "4".to_string(), 5)
+        ]
+    );
+    let valor = c.rows[2].changes.iter().find(|x| x.column == "VALOR").unwrap();
+    assert_eq!((valor.source.as_deref(), valor.target.as_deref()), (None, Some("3.00")));
+
+    let tx = conn.begin(TxOptions::default()).unwrap();
+    for statement in [&c.deletes, &c.updates, &c.inserts].iter().flat_map(|s| s.lines()) {
+        let sql = statement.trim_end_matches(';');
+        conn.execute(tx, sql, vec![], ExecuteOptions { plan: false, performance: false }).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+    let apart = "select count(*) from cmp_source s full join cmp_target t on t.id = s.id \
+                 where s.id is null or t.id is null or trim(s.nome) is distinct from t.nome \
+                    or s.valor is distinct from t.valor or s.dia is distinct from t.dia \
+                    or s.hora is distinct from t.hora or s.quando is distinct from t.quando";
+    let left = conn.execute(tx, apart, vec![], ExecuteOptions { plan: false, performance: false }).unwrap();
+    let rows = conn.fetch(left.cursor.unwrap(), 10).unwrap().rows;
+    conn.end(tx, TxEnd::Rollback).unwrap();
+    assert_eq!(rows[0][0].as_i64(), Some(0));
+
+    // Kept short, it says there is more, and still counts it all
+    let short = compare(&conn, "CMP_SOURCE", &conn, "CMP_TARGET", 1, &never, |_| {}).unwrap();
+    assert!(short.truncated);
+    assert_eq!((short.different, short.only_source, short.only_target, short.rows.len()), (2, 1, 1, 1));
+
+    // A table compared with itself has nothing to say
+    let own = compare(&conn, "CMP_SOURCE", &conn, "CMP_SOURCE", 1000, &never, |_| {}).unwrap();
+    assert_eq!((own.same, own.rows.len(), own.notes.len()), (5, 0, 1));
+
+    // Stopped, it says so
+    let stop = AtomicBool::new(true);
+    assert!(compare(&conn, "CMP_SOURCE", &conn, "CMP_TARGET", 1000, &stop, |_| {}).unwrap().cancelled);
+}

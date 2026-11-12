@@ -46,6 +46,13 @@ pub(crate) fn type_joins(collation: &str) -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Temporal {
+    Date,
+    Time,
+    Timestamp,
+}
+
 /// How a type's values are written into a statement
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Written {
@@ -133,6 +140,27 @@ impl DataType {
     /// Whether what is read of it may not be what is stored: a float
     pub fn is_approximate(&self) -> bool {
         matches!(self.code, code::FLOAT | code::D_FLOAT | code::DOUBLE)
+    }
+
+    /// A blob or an array: its values are not in the row, but behind it
+    pub fn is_stored_apart(&self) -> bool {
+        self.array > 0 || !self.dimensions.is_empty() || matches!(self.code, code::BLOB | code::QUAD)
+    }
+
+    /// A CHAR: read padded with spaces to its length
+    pub fn is_padded(&self) -> bool {
+        self.code == code::CHAR && self.charset.as_deref() != Some("OCTETS")
+    }
+
+    /// Which part of a point in time it holds, when it holds one without a
+    /// time zone: the driver reads all three as a date and a time
+    pub fn temporal(&self) -> Option<Temporal> {
+        match self.code {
+            code::DATE => Some(Temporal::Date),
+            code::TIME => Some(Temporal::Time),
+            code::TIMESTAMP => Some(Temporal::Timestamp),
+            _ => None,
+        }
     }
 
     /// Whether it has a character set

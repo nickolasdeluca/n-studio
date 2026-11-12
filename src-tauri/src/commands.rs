@@ -19,6 +19,7 @@ use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
 use crate::script::Scripts;
 use crate::secrets;
+use crate::tools::Comparisons;
 
 pub struct AppState {
     registry: Mutex<Registry>,
@@ -27,6 +28,7 @@ pub struct AppState {
     pub(crate) results: Results,
     pub(crate) scripts: Scripts,
     pub(crate) services: Services,
+    pub(crate) comparisons: Comparisons,
     /// What each open connection was made with, for the services manager:
     /// a connection of its own, to the same server as the same user. Kept
     /// only while connected, and only in memory.
@@ -41,6 +43,7 @@ impl AppState {
             results: Results::default(),
             scripts: Scripts::default(),
             services: Services::default(),
+            comparisons: Comparisons::default(),
             params: Mutex::default(),
         }
     }
