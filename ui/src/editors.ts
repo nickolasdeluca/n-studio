@@ -1,6 +1,7 @@
 // The SQL editors' view state: each tab's transaction, its last statement's
 // outcome and its message log. The text lives in the tab's CodeMirror view,
 // the rows in the backend.
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
   api,
@@ -11,10 +12,13 @@ import {
   type ExportOptions,
   type Isolation,
   type ResultView,
+  type ScriptProblem,
+  type ScriptProgress,
   type StatementRange,
   type TxEnd,
   type TxOptions,
 } from "./api";
+import { metadataChanged } from "./changes";
 import { t } from "./i18n";
 import { askParams, forgetParams, paramFields } from "./params";
 
@@ -50,6 +54,9 @@ export interface EditorTab {
   outcome: Outcome | null;
   messages: Message[];
   bottom: BottomTab;
+  /** The script it is running, and how far that is */
+  script: { run: number; at: number; statements: number; failed: number } | null;
+  scriptOptions: { stopOnError: boolean; autoDdl: boolean };
   /** Behind an object viewer's Data tab rather than an editor of the
    *  user's: read only, and ended without asking */
   viewer: boolean;
@@ -73,6 +80,10 @@ interface State {
   setTxOptions(id: string, options: Partial<TxOptions>): void;
   setBottom(id: string, bottom: BottomTab): void;
   run(id: string, mode: RunMode, input: RunInput, onError?: (range: { from: number; to: number }) => void): Promise<void>;
+  /** Runs the text (or its selection) as a script: every statement, in the
+   *  backend, with what fails logged and the rest carrying on or not */
+  runScript(id: string, input: RunInput, onError?: (range: { from: number; to: number }) => void): Promise<void>;
+  setScriptOptions(id: string, options: Partial<EditorTab["scriptOptions"]>): void;
   end(id: string, how: TxEnd): Promise<void>;
   fetchMore(id: string, max: number): Promise<void>;
   /** Sorts the last select's rows by a column: ascending, descending, then
@@ -94,6 +105,23 @@ export const isolations: { value: Isolation; label: string }[] = [
 ];
 
 let opened = 0;
+let scripts = 0;
+/** Of one script's statements, how many problems the log takes */
+const MAX_PROBLEMS = 500;
+
+/** What each running script does with its progress, by run */
+const progress = new Map<number, (event: ScriptProgress) => void>();
+let subscribed: Promise<unknown> | null = null;
+
+/** One listener for every script's progress, set up with the first script */
+function listening(): Promise<unknown> {
+  subscribed ??= listen<ScriptProgress>("script-progress", (event) => progress.get(event.payload.run)?.(event.payload)).catch(
+    () => {
+      // Outside Tauri there are no events: the script's end still tells all
+    },
+  );
+  return subscribed;
+}
 
 /** The text a new editor opens with, by tab, until its panel takes it */
 export const drafts = new Map<string, string>();
@@ -133,6 +161,8 @@ export const useEditors = create<State>()((set, get) => {
             outcome: null,
             messages: [],
             bottom: "results",
+            script: null,
+            scriptOptions: { stopOnError: false, autoDdl: true },
             viewer,
           },
         },
@@ -192,6 +222,77 @@ export const useEditors = create<State>()((set, get) => {
         log(id, "error", errorText(e));
       } finally {
         patch(id, { running: false });
+      }
+    },
+
+    setScriptOptions(id, options) {
+      patch(id, (tab) => ({ scriptOptions: { ...tab.scriptOptions, ...options } }));
+    },
+
+    async runScript(id, input, onError) {
+      const start = get().tabs[id];
+      if (!start || start.running) return;
+      const selected = input.from !== input.to;
+      const offset = selected ? input.from : 0;
+      const text = selected ? input.text.slice(input.from, input.to) : input.text;
+      if (!text.trim()) {
+        log(id, "info", t("Nothing to execute."));
+        return;
+      }
+      const run = ++scripts;
+      let shown = 0;
+      let first: { from: number; to: number } | null = null;
+      const report = (problems: ScriptProblem[]) => {
+        for (const p of problems) {
+          const range = { from: p.from + offset, to: p.to + offset };
+          const sql = summary(text.slice(p.from, p.to));
+          if (p.error !== null) first ??= range;
+          // A script with everything wrong must not bury the app in messages
+          shown += 1;
+          if (shown > MAX_PROBLEMS) continue;
+          if (p.error === null) log(id, "info", t("Skipped an isql command: {sql}", { sql }), range);
+          else log(id, "error", `${p.error}\n${t("Statement {n}: {sql}", { n: n(p.index + 1), sql })}`, range);
+        }
+      };
+      await listening();
+      progress.set(run, (event) => {
+        report(event.problems);
+        patch(id, { script: { run, at: event.at, statements: event.statements, failed: event.failed } });
+      });
+      patch(id, { running: true, script: { run, at: 0, statements: 0, failed: 0 } });
+      try {
+        const options = { ...start.scriptOptions, atomic: false };
+        const end = await api.scriptRun(start.registration, run, start.tx, start.txOptions, text, options);
+        report(end.problems);
+        if (shown > MAX_PROBLEMS) log(id, "info", t("{n} more message(s) not shown.", { n: n(shown - MAX_PROBLEMS) }));
+        const counts = t("{done} executed, {failed} failed, {skipped} skipped of {statements} statement(s) in {time}", {
+          done: n(end.done),
+          failed: n(end.failed),
+          skipped: n(end.skipped),
+          statements: n(end.statements),
+          time: ms(end.elapsedMs),
+        });
+        const how = end.cancelled ? t("Script stopped") : end.failed > 0 ? t("Script finished with errors") : t("Script finished");
+        log(id, end.failed > 0 ? "error" : "info", `${how}: ${counts}`);
+        if (end.tx !== null) log(id, "info", t("The transaction is still active: commit or roll back."));
+        patch(id, (tab) => ({
+          tx: end.tx,
+          bottom: "messages",
+          // The rows a transaction was showing end with it
+          outcome:
+            tab.outcome?.result && tab.tx !== end.tx
+              ? { ...tab.outcome, result: { ...tab.outcome.result, eof: true, endedEarly: !tab.outcome.result.eof } }
+              : tab.outcome,
+        }));
+        if (end.ddl > 0) metadataChanged(start.registration);
+        if (first) onError?.(first);
+      } catch (e) {
+        log(id, "error", errorText(e));
+        patch(id, { bottom: "messages" });
+        if (isAppError(e) && e.kind === "not_connected") patch(id, { tx: null });
+      } finally {
+        progress.delete(run);
+        patch(id, { running: false, script: null });
       }
     },
 
@@ -267,7 +368,8 @@ export const useEditors = create<State>()((set, get) => {
       const tab = get().tabs[id];
       if (!tab || !(tab.running || tab.fetching)) return;
       try {
-        if (await api.editorCancel(tab.registration)) log(id, "info", t("Cancelling…"));
+        const sent = tab.script ? api.scriptCancel(tab.registration, tab.script.run) : api.editorCancel(tab.registration);
+        if (await sent) log(id, "info", t("Cancelling…"));
       } catch (e) {
         log(id, "error", errorText(e));
       }

@@ -23,6 +23,7 @@ import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon } from "../icons";
 import { useStore } from "../store";
+import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
 import { Empty, Results } from "./Results";
 
@@ -30,7 +31,7 @@ import { Empty, Results } from "./Results";
 const saved = new Map<string, EditorState>();
 /** What the run keys call, by tab: the mounted panel's callbacks. Kept out
  *  of the saved state, which outlives a mount. */
-const runners = new Map<string, { run(mode: RunMode): boolean; end(how: TxEnd): boolean }>();
+const runners = new Map<string, { run(mode: RunMode | "script"): boolean; end(how: TxEnd): boolean }>();
 
 /** Esc stops what the tab runs; otherwise it is the editor's (closing a
  *  completion, the search panel) */
@@ -50,7 +51,7 @@ export function forgetEditor(id: string) {
 }
 
 function runKeys(id: string) {
-  const run = (mode: RunMode) => () => runners.get(id)?.run(mode) ?? false;
+  const run = (mode: RunMode | "script") => () => runners.get(id)?.run(mode) ?? false;
   const end = (how: TxEnd) => () => runners.get(id)?.end(how) ?? false;
   return Prec.highest(
     keymap.of([
@@ -60,6 +61,7 @@ function runKeys(id: string) {
       { key: "Mod-Shift-Enter", run: run("all") },
       { key: "Alt-F9", run: run("to_cursor") },
       { key: "Mod-Alt-Enter", run: run("to_cursor") },
+      { key: "Ctrl-F9", run: run("script") },
       { key: "Mod-Alt-c", run: end("commit") },
       { key: "Mod-Alt-r", run: end("rollback") },
       { key: "Escape", run: cancelKey(id) },
@@ -107,14 +109,15 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
   }, []);
 
   const run = useCallback(
-    (mode: RunMode) => {
+    (mode: RunMode | "script") => {
       const v = view.current;
       if (!v) return false;
       const sel = v.state.selection.main;
       v.dispatch({ effects: markError.of(null) });
-      void useEditors
-        .getState()
-        .run(id, mode, { text: v.state.doc.toString(), from: sel.from, to: sel.to }, (r) => select(r, true));
+      const input = { text: v.state.doc.toString(), from: sel.from, to: sel.to };
+      const editors = useEditors.getState();
+      if (mode === "script") void editors.runScript(id, input, (r) => select(r, true));
+      else void editors.run(id, mode, input, (r) => select(r, true));
       return true;
     },
     [id, select],
@@ -214,8 +217,19 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
   );
 }
 
-function EditorToolbar({ tab, run, end }: { tab: EditorTab; run(mode: RunMode): unknown; end(how: TxEnd): unknown }) {
+function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): unknown; end(how: TxEnd): unknown }) {
+  const { tab, run, end } = props;
+  const showMenu = useContextMenu((m) => m.show);
   const connected = useStore((s) => !!s.servers[tab.registration]);
+  const scriptMenu = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const { stopOnError, autoDdl } = tab.scriptOptions;
+    const set = useEditors.getState().setScriptOptions;
+    showMenu(rect.left, rect.bottom + 2, [
+      { label: t("Stop at the First Error"), icon: stopOnError ? "commit" : undefined, onSelect: () => set(tab.id, { stopOnError: !stopOnError }) },
+      { label: t("Commit After Each DDL Statement"), icon: autoDdl ? "commit" : undefined, onSelect: () => set(tab.id, { autoDdl: !autoDdl }) },
+    ]);
+  };
   const s = useEditors.getState();
   const busy = tab.running || !connected;
   const active = tab.tx !== null;
@@ -224,6 +238,15 @@ function EditorToolbar({ tab, run, end }: { tab: EditorTab; run(mode: RunMode): 
       <Tool icon="run" label={t("Execute (F9)")} disabled={busy} onClick={() => run("current")} accent />
       <Tool icon="run-cursor" label={t("Execute to Cursor (Alt+F9)")} disabled={busy} onClick={() => run("to_cursor")} />
       <Tool icon="run-all" label={t("Execute All (Shift+F9)")} disabled={busy} onClick={() => run("all")} />
+      <Tool icon="script" label={t("Execute as Script (Ctrl+F9): every statement, errors logged")} disabled={busy} onClick={() => run("script")} />
+      <button
+        title={t("Script Options")}
+        aria-label={t("Script Options")}
+        onClick={scriptMenu}
+        className="-ml-0.5 grid h-7 w-3.5 place-items-center rounded text-muted hover:bg-hover"
+      >
+        <Icon name="options" size={10} />
+      </button>
       <span className="mx-1 h-4 w-px bg-line" />
       <Tool icon="commit" label={t("Commit (Ctrl+Alt+C)")} disabled={busy || !active} onClick={() => end("commit")} />
       <Tool icon="rollback" label={t("Rollback (Ctrl+Alt+R)")} disabled={busy || !active} onClick={() => end("rollback")} />
@@ -265,7 +288,15 @@ function EditorToolbar({ tab, run, end }: { tab: EditorTab; run(mode: RunMode): 
       {(tab.running || tab.fetching) && (
         <span className="flex items-center gap-1.5 pr-1 text-muted" role="status">
           <span className="size-2 animate-pulse rounded-full bg-accent" />
-          {tab.running ? t("Running…") : t("Fetching…")}
+          {tab.script && tab.script.statements > 0
+            ? t("Statement {at} of {statements}{failed}", {
+                at: tab.script.at.toLocaleString(),
+                statements: tab.script.statements.toLocaleString(),
+                failed: tab.script.failed > 0 ? ` · ${t("{n} failed", { n: tab.script.failed.toLocaleString() })}` : "",
+              })
+            : tab.running
+              ? t("Running…")
+              : t("Fetching…")}
           <button
             onClick={() => void s.cancel(tab.id)}
             title={t("Stop (Esc)")}

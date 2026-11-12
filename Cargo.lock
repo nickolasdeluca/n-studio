@@ -1880,6 +1880,7 @@ name = "fb-core"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "fb-sql",
  "rsfbclient-core",
  "rsfbclient-rust",
  "serde",

@@ -3,8 +3,8 @@
 //! run against real databases.
 
 use fb_core::{
-    ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait, StatementType, TxEnd,
-    TxOptions, Value,
+    run_script, ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait,
+    ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
 };
 
 fn connect() -> Option<Connection> {
@@ -303,4 +303,72 @@ fn editor_cursors_leave_blobs_to_be_read_on_demand() {
 
     conn.end(tx, TxEnd::Rollback).unwrap();
     assert!(conn.read_blob(tx, *source, true, 10).is_err());
+}
+
+/// Writes, so only against the fixture database; what it creates it drops
+#[test]
+fn a_script_runs_past_its_errors_and_commits_its_ddl() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(conn) = connect() else { return };
+    let script = "\
+SET AUTODDL ON;
+CREATE TABLE SCRIPT_T (ID INTEGER NOT NULL PRIMARY KEY, NOME VARCHAR(20));
+INSERT INTO SCRIPT_T VALUES (1, 'a;b'); -- a terminator in a string
+INSERT INTO SCRIPT_T VALUES (1, 'again');
+INSERT INTO NO_SUCH_TABLE VALUES (1);
+SET TERM ^ ;
+CREATE PROCEDURE SCRIPT_P RETURNS (N INTEGER) AS BEGIN N = 1; SUSPEND; END^
+SET TERM ; ^
+SELECT * FROM SCRIPT_P;
+COMMIT;
+DROP PROCEDURE SCRIPT_P;
+DROP TABLE SCRIPT_T;
+";
+    let options = ScriptOptions { stop_on_error: false, auto_ddl: true, atomic: false };
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let mut steps = Vec::new();
+    let summary = run_script(&conn, None, TxOptions::default(), script, options, &never, |step, total| {
+        assert_eq!(total, 10);
+        steps.push(step.clone());
+    })
+    .unwrap();
+
+    let failed: Vec<&str> = steps
+        .iter()
+        .filter(|s| matches!(s.outcome, StepOutcome::Failed { .. }))
+        .map(|s| &script[s.range.clone()])
+        .collect();
+    assert_eq!(failed, ["INSERT INTO SCRIPT_T VALUES (1, 'again')", "INSERT INTO NO_SUCH_TABLE VALUES (1)"], "{steps:?}");
+    assert_eq!(steps[0].outcome, StepOutcome::Skipped, "{steps:?}");
+    assert_eq!(steps.iter().map(|s| s.index).collect::<Vec<_>>(), (0..10).collect::<Vec<_>>());
+    assert_eq!((summary.statements, summary.done, summary.failed, summary.skipped), (10, 7, 2, 1), "{steps:?}");
+    assert!(!summary.cancelled);
+    // The last statement was DDL, committed as it ran
+    assert_eq!(summary.tx, None);
+    let left = conn.query("select count(*) from rdb$relations where rdb$relation_name = 'SCRIPT_T'", vec![]).unwrap();
+    assert_eq!(left.rows[0][0], Value::Integer(0));
+}
+
+/// Writes nothing that lasts: the script fails, and all of it is undone
+#[test]
+fn an_atomic_script_that_fails_leaves_nothing() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(conn) = connect() else { return };
+    let script = "CREATE TABLE SCRIPT_A (ID INTEGER); INSERT INTO NO_SUCH_TABLE VALUES (1); CREATE TABLE SCRIPT_B (ID INTEGER);";
+    let options = ScriptOptions { stop_on_error: false, auto_ddl: true, atomic: true };
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let summary = run_script(&conn, None, TxOptions::default(), script, options, &never, |_, _| {}).unwrap();
+    assert_eq!((summary.statements, summary.done, summary.failed), (3, 1, 1));
+    assert_eq!((summary.tx, summary.ended), (None, Some(TxEnd::Rollback)));
+    let left = conn.query("select count(*) from rdb$relations where rdb$relation_name starting with 'SCRIPT_'", vec![]).unwrap();
+    assert_eq!(left.rows[0][0], Value::Integer(0));
+
+    // A script already cancelled runs nothing
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let summary = run_script(&conn, None, TxOptions::default(), script, options, &cancelled, |_, _| {}).unwrap();
+    assert_eq!((summary.done, summary.failed, summary.cancelled, summary.ended), (0, 0, true, None));
 }

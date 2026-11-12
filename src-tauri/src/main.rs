@@ -8,6 +8,7 @@ mod export;
 mod objects;
 mod registry;
 mod results;
+mod script;
 mod secrets;
 
 use tauri::Manager;
@@ -47,6 +48,8 @@ fn main() {
             editor::result_close,
             editor::sql_statements,
             editor::statement_parameters,
+            script::script_run,
+            script::script_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

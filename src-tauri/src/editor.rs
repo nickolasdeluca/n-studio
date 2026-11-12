@@ -100,7 +100,7 @@ impl Results {
     }
 
     /// Results of a transaction that ended keep their rows, and get no more
-    fn transaction_ended(&self, session: &str, tx: TxId) {
+    pub(crate) fn transaction_ended(&self, session: &str, tx: TxId) {
         for set in self.sets.lock().unwrap().values() {
             let mut set = set.lock().unwrap();
             if set.session == session && set.tx == tx {

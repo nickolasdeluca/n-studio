@@ -9,6 +9,7 @@ mod connection;
 mod editor;
 mod error;
 mod params;
+mod script;
 mod value;
 
 pub use connection::{Connection, QueryResult, ServerInfo};
@@ -17,6 +18,7 @@ pub use editor::{
     Performance, Records, StatementType, TablePerformance, TxEnd, TxId, TxOptions,
 };
 pub use error::{Error, Result};
+pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
 pub use params::{charset_names, AuthPlugin, ConnectParams, Dialect};
 pub use rsfbclient_core::Decimal;
 pub use value::Value;

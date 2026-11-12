@@ -12,6 +12,7 @@ import {
   type ServerInfo,
   type TreeKind,
 } from "./api";
+import { onMetadataChanged } from "./changes";
 import { useEditors } from "./editors";
 import { t } from "./i18n";
 import type { ParamRequest } from "./params";
@@ -253,3 +254,8 @@ async function loadTree(id: string) {
     useStore.setState((s) => ({ trees: { ...s.trees, [id]: { loading: false, error: errorText(e) } } }));
   }
 }
+
+// What changed the catalog says so; the tree and the lists read it again
+onMetadataChanged((id) => {
+  if (useStore.getState().servers[id]) void useStore.getState().refresh(id);
+});

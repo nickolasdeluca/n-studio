@@ -16,6 +16,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::editor::Results;
 use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
+use crate::script::Scripts;
 use crate::secrets;
 
 pub struct AppState {
@@ -23,11 +24,17 @@ pub struct AppState {
     /// Open connections, by registration id
     sessions: Mutex<HashMap<String, Arc<Connection>>>,
     pub(crate) results: Results,
+    pub(crate) scripts: Scripts,
 }
 
 impl AppState {
     pub fn new(registry: Registry) -> Self {
-        Self { registry: Mutex::new(registry), sessions: Mutex::default(), results: Results::default() }
+        Self {
+            registry: Mutex::new(registry),
+            sessions: Mutex::default(),
+            results: Results::default(),
+            scripts: Scripts::default(),
+        }
     }
 
     pub(crate) fn session(&self, id: &str) -> AppResult<Arc<Connection>> {

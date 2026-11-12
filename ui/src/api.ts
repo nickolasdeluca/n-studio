@@ -228,6 +228,51 @@ export interface StatementRange {
   unterminatedLiteral: boolean;
 }
 
+export interface ScriptOptions {
+  /** Stop at the first statement that fails */
+  stopOnError: boolean;
+  /** Commit after each DDL statement, until the script says otherwise */
+  autoDdl: boolean;
+  /** All or nothing, in a transaction of the script's own */
+  atomic: boolean;
+}
+
+/** A statement of a script that did not run to its end */
+export interface ScriptProblem {
+  index: number;
+  from: number;
+  to: number;
+  /** `null` for an isql command, passed over */
+  error: string | null;
+  sqlcode: number | null;
+}
+
+/** The `script-progress` event */
+export interface ScriptProgress {
+  run: number;
+  at: number;
+  statements: number;
+  failed: number;
+  problems: ScriptProblem[];
+}
+
+export interface ScriptEnd {
+  statements: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  /** DDL statements among those done */
+  ddl: number;
+  cancelled: boolean;
+  /** The transaction left active */
+  tx: number | null;
+  /** An atomic script's end */
+  ended: TxEnd | null;
+  elapsedMs: number;
+  /** Those no progress event carried */
+  problems: ScriptProblem[];
+}
+
 /** A statement with its `:name`s turned into `?`, and each `?`'s name */
 export interface Parameters {
   sql: string;
@@ -316,6 +361,9 @@ export const api = {
   resultSort: (result: number, sort: Sort | null) => invoke<ResultView>("result_sort", { result, sort }),
   resultExport: (result: number, path: string, options: ExportOptions) =>
     invoke<ExportSummary>("result_export", { result, path, options }),
+  scriptRun: (id: string, run: number, tx: number | null, txOptions: TxOptions, text: string, options: ScriptOptions) =>
+    invoke<ScriptEnd>("script_run", { id, run, tx, txOptions, text, options }),
+  scriptCancel: (id: string, run: number) => invoke<boolean>("script_cancel", { id, run }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

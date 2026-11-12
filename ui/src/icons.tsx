@@ -142,7 +142,9 @@ const glyphs: Record<string, ReactNode> = {
       <rect x="2.2" y="2.6" width="11.6" height="10.8" rx="1" />
       <path d="M6.2 2.6v10.8" />
     </>
-  ),  open: <path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v4h-9v-9h4" />,
+  ),  script: <path d="M3.5 2h6l3 3v9h-9zM9.5 2v3h3M6.4 7.6v4.2l3.4-2.1z" />,
+  options: <path d="m4.5 6.5 3.5 3.5 3.5-3.5" />,
+  open: <path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v4h-9v-9h4" />,
   copy: (
     <>
       <rect x="5.5" y="5.5" width="8" height="8" rx="1" />
