@@ -75,6 +75,7 @@ fn main() {
             commands::list_registrations,
             commands::save_registration,
             commands::delete_registration,
+            commands::move_folder,
             commands::test_connection,
             commands::connect,
             commands::disconnect,

@@ -648,6 +648,8 @@ export const api = {
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
   saveRegistration: (registration: Registration, password: string | null) =>
     invoke<Registration>("save_registration", { registration, password }),
+  /** Renames or moves an explorer folder: how many registrations went along */
+  moveFolder: (from: string[], to: string[]) => invoke<number>("move_folder", { from, to }),
   deleteRegistration: (id: string) => invoke<void>("delete_registration", { id }),
   testConnection: (registration: Registration, password: string | null) =>
     invoke<ServerInfo>("test_connection", { registration, password }),

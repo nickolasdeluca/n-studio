@@ -111,6 +111,8 @@ interface State {
   loadObjects(id: string, kind: ObjectKind): Promise<void>;
   saveRegistration(registration: Registration, password: string | null): Promise<Registration>;
   deleteRegistration(id: string): Promise<void>;
+  /** Renames or moves an explorer folder, with all that is under it */
+  moveFolder(from: string[], to: string[]): Promise<void>;
   openDialog(dialog: Dialog | null): void;
   setNotice(notice: string | null): void;
   setBusy(busy: string | null): void;
@@ -234,6 +236,11 @@ export const useStore = create<State>()((set, get) => ({
     const saved = await api.saveRegistration(registration, password);
     await refreshRegistrations();
     return saved;
+  },
+
+  async moveFolder(from, to) {
+    await api.moveFolder(from, to);
+    await refreshRegistrations();
   },
 
   async deleteRegistration(id) {

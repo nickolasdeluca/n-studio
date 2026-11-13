@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { kindActions, objectActions, registrationActions } from "../actions";
+import { folderActions, kindActions, objectActions, registrationActions } from "../actions";
 import { openObject } from "../dock";
 import { serverSummary, type ObjectKind, type RegistrationView } from "../api";
 import { t } from "../i18n";
@@ -20,8 +20,8 @@ interface Row {
   expandable: boolean;
   expanded: boolean;
   selection?: Selection;
-  /** A folder of registrations: opens and closes, and is not selected */
-  folder?: boolean;
+  /** A folder of registrations, by its path: opens and closes, and is not selected */
+  folder?: string[];
   /** Grey: a registration not connected, or a placeholder line */
   dim?: boolean;
   error?: boolean;
@@ -110,7 +110,7 @@ export function Explorer() {
           icon: "folder",
           expandable: true,
           expanded: open,
-          folder: true,
+          folder: item.path,
         });
         if (open) list(item);
       }
@@ -243,6 +243,7 @@ export function Explorer() {
               onDoubleClick={() => (row.folder ? open(row) : activate(row))}
               onContextMenu={(e) => {
                 e.preventDefault();
+                if (row.folder) showMenu(e.clientX, e.clientY, folderActions(row.folder));
                 if (!row.selection) return;
                 select(row.selection);
                 const { id, kind, object } = row.selection;

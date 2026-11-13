@@ -35,6 +35,44 @@ export function registrationActions(id: string): (MenuItem | "separator")[] {
   ];
 }
 
+/** What can be done to a folder of the explorer */
+export function folderActions(path: string[]): (MenuItem | "separator")[] {
+  const s = useStore.getState();
+  const text = path.join(" / ");
+  return [
+    {
+      label: t("Rename Folder…"),
+      icon: "edit",
+      onSelect: () =>
+        s.openDialog({
+          type: "form",
+          title: t("Rename Folder — {name}", { name: text }),
+          form: {
+            title: text,
+            fields: [
+              {
+                id: "folder",
+                label: "Folder",
+                kind: "text",
+                value: text,
+                options: [],
+                required: false,
+                hint: "A path moves it inside another: Customers / North. Empty takes its databases out of the folder.",
+              },
+            ],
+          },
+          note: t("Every database in it goes along."),
+          verb: t("Rename"),
+          submit: async (values) => {
+            const to = (values.folder ?? "").split("/").map((name) => name.trim()).filter(Boolean);
+            await useStore.getState().moveFolder(path, to);
+            useStore.getState().openDialog(null);
+          },
+        }),
+    },
+  ];
+}
+
 /** What can be done to the objects picked in the explorer or the object list */
 export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "separator")[] {
   const one = objects.length === 1 ? objects[0] : null;

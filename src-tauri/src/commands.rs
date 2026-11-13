@@ -156,6 +156,12 @@ pub async fn save_registration(
     .await
 }
 
+/// Renames or moves an explorer folder, with every registration under it
+#[tauri::command]
+pub async fn move_folder(app: AppHandle, from: Vec<String>, to: Vec<String>) -> AppResult<usize> {
+    blocking(app, move |state| state.registry.lock().unwrap().move_folder(&from, &to)).await
+}
+
 #[tauri::command]
 pub async fn delete_registration(app: AppHandle, id: String) -> AppResult<()> {
     blocking(app, move |state| {

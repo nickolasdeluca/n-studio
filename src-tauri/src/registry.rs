@@ -178,6 +178,25 @@ impl Registry {
         Ok(registration)
     }
 
+    /// Renames or moves a folder: every registration under `from`, however
+    /// deep, goes under `to` instead, in one write. An empty `to` takes
+    /// them to the top. Returns how many registrations it moved.
+    pub fn move_folder(&mut self, from: &[String], to: &[String]) -> AppResult<usize> {
+        let (from, to) = (folder_path(from), folder_path(to));
+        if from.is_empty() {
+            return Err(AppError::Invalid { message: "Name the folder to rename.".into() });
+        }
+        let mut moved = 0;
+        for registration in self.registrations.iter_mut().filter(|r| r.folder.starts_with(&from)) {
+            registration.folder.splice(..from.len(), to.iter().cloned());
+            moved += 1;
+        }
+        if moved > 0 && from != to {
+            self.write()?;
+        }
+        Ok(moved)
+    }
+
     pub fn remove(&mut self, id: &str) -> AppResult<()> {
         self.get(id)?;
         self.registrations.retain(|r| r.id != id);
@@ -262,6 +281,30 @@ mod tests {
             "host":"localhost","port":3050,"database":"employee","user":"SYSDBA","charset":"UTF8","dialect":"3"}]}"#;
         std::fs::write(dir.path().join("registrations.json"), old).unwrap();
         assert!(Registry::load(dir.path()).unwrap().get("a").unwrap().folder.is_empty());
+    }
+
+    #[test]
+    fn a_folder_is_renamed_for_everything_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::load(dir.path()).unwrap();
+        let path = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for folder in [path(&["Customers"]), path(&["Customers", "North"]), path(&["Customers 2"]), path(&[])] {
+            ids.push(registry.save(Registration { folder, ..sample() }).unwrap().id);
+        }
+        // A folder inside goes along; one that only starts alike stays
+        assert_eq!(registry.move_folder(&path(&["Customers"]), &path(&[" Clients "])).unwrap(), 2);
+        let reloaded = Registry::load(dir.path()).unwrap();
+        let folders: Vec<_> = ids.iter().map(|id| reloaded.get(id).unwrap().folder.join("/")).collect();
+        assert_eq!(folders, ["Clients", "Clients/North", "Customers 2", ""]);
+
+        // Into another folder, and out to the top
+        assert_eq!(registry.move_folder(&path(&["Clients", "North"]), &path(&["Regions", "North"])).unwrap(), 1);
+        assert_eq!(registry.get(&ids[1]).unwrap().folder, ["Regions", "North"]);
+        assert_eq!(registry.move_folder(&path(&["Regions"]), &[]).unwrap(), 1);
+        assert_eq!(registry.get(&ids[1]).unwrap().folder, ["North"]);
+        assert_eq!(registry.move_folder(&path(&["Nowhere"]), &path(&["X"])).unwrap(), 0);
+        assert!(registry.move_folder(&[], &path(&["X"])).is_err());
     }
 
     #[test]
