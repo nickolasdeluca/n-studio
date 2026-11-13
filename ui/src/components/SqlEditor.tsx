@@ -82,11 +82,27 @@ function runKeys(id: string) {
       { key: "Mod-Alt-r", run: end("rollback") },
       { key: "Mod-s", run: () => (void saveEditor(id), true) },
       { key: "Mod-Shift-s", run: () => (void saveEditor(id, true), true) },
-      // IBExpert's key, and the one editors elsewhere have
-      { key: "Alt-f", run: () => format(id) },
+      // The key editors elsewhere have; IBExpert's is `formatKey`
       { key: "Mod-Shift-f", run: () => format(id) },
       { key: "Escape", run: cancelKey(id) },
     ]),
+  );
+}
+
+/**
+ * Alt+F, IBExpert's key for the formatter, taken by the key pressed and not
+ * by the character it types: on a Mac, Option+F types "ƒ", and a keymap
+ * leaves Option alone with a letter to the typing.
+ */
+function formatKey(id: string) {
+  return Prec.highest(
+    EditorView.domEventHandlers({
+      keydown(event) {
+        if (event.code !== "KeyF" || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+        event.preventDefault();
+        return format(id);
+      },
+    }),
   );
 }
 
@@ -167,6 +183,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
         doc: drafts.get(id) ?? "",
         extensions: [
           runKeys(id),
+          formatKey(id),
           lineNumbers(),
           highlightActiveLineGutter(),
           highlightActiveLine(),
