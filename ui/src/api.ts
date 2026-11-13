@@ -359,7 +359,8 @@ export interface Word {
 export interface CatalogRelation extends Word {
   kind: "table" | "view" | "system";
   /** `type` as it would be declared: `VARCHAR(60)` */
-  columns: (Word & { type: string })[];
+  /** `key` is the key the column is part of, the primary one before a unique one */
+  columns: (Word & { type: string; key: "primary" | "unique" | null })[];
 }
 
 /** Every name an SQL editor completes */

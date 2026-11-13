@@ -116,7 +116,7 @@ fn the_completion_catalog_agrees_with_the_lists() {
 
 #[test]
 fn the_fixture_completes_its_names() {
-    use fb_meta::complete::{catalog, RelationKind};
+    use fb_meta::complete::{catalog, Key, RelationKind};
     let Some(conn) = fixture() else { return };
     let catalog = catalog(&conn).unwrap();
     let relation = |name: &str| catalog.relations.iter().find(|r| r.word.name == name).expect(name);
@@ -140,6 +140,13 @@ fn the_fixture_completes_its_names() {
     // A column's type as it would be declared, a domain's seen through
     let types = |name: &str| relation(name).columns.iter().map(|c| c.data_type.as_str()).collect::<Vec<_>>();
     assert_eq!(types("PEDIDO_ITEM")[1..3], ["SMALLINT", "NUMERIC(9,3)"]);
+    // The keys a column is part of, the primary one first
+    let keys = |name: &str| relation(name).columns.iter().map(|c| c.key).collect::<Vec<_>>();
+    let (primary, unique) = (Some(Key::Primary), Some(Key::Unique));
+    assert_eq!(keys("PEDIDO_ITEM"), [primary, primary, None, None, None, None]);
+    let pedido: Vec<_> = relation("PEDIDO").columns.iter().map(|c| (c.word.name.as_str(), c.key)).collect();
+    assert!(pedido.contains(&("ID", primary)) && pedido.contains(&("CLIENTE", unique)) && pedido.contains(&("EMISSAO", unique)));
+    assert!(keys("V_PEDIDO_TOTAL").iter().all(Option::is_none));
     // The foreign keys a join is written from
     let reference = catalog.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").expect("FK_ITEM_PEDIDO");
     assert_eq!((reference.from.as_str(), reference.to.as_str()), ("PEDIDO_ITEM", "PEDIDO"));

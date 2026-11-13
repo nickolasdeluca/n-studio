@@ -3,9 +3,19 @@
 // dot, the columns of what the statement already reads from, and after
 // JOIN the joins its foreign keys offer, written whole with an alias.
 // Keywords are the language's own source (firebird.ts).
-import { autocompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  completionStatus,
+  insertCompletionText,
+  pickedCompletion,
+  startCompletion,
+  type Completion,
+  type CompletionContext,
+  type CompletionResult,
+} from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { api, type CatalogRelation, type CompletionCatalog, type DiagramReference, type ObjectKind, type Word } from "./api";
 import { firebirdDialect } from "./firebird";
 import { t } from "./i18n";
@@ -16,7 +26,9 @@ interface Names {
   relations: Map<string, CatalogRelation>;
   /** Everything that completes where no relation is named before a dot */
   top: Completion[];
-  columns: Map<CatalogRelation, Completion[]>;
+  /** A relation's columns as they complete: as they are matched against
+   *  what is typed, and as they are listed before anything is */
+  columns: Map<CatalogRelation, { typed: Completion[]; listed: Completion[] }>;
   references: DiagramReference[];
 }
 
@@ -59,7 +71,21 @@ const relationBoost = {
   system: -20,
 };
 
-const word = (w: Word, rest: Partial<Completion>): Completion => ({ label: w.name, apply: w.sql, ...rest });
+/**
+ * Writes a completion over the whole name the cursor is in, and not only
+ * the part before it: picked in the middle of a name, it replaces the name.
+ */
+const whole = (text: string): Completion["apply"] => (view, completion, from, to) => {
+  const rest = /^[\w$]*/.exec(view.state.sliceDoc(to, Math.min(view.state.doc.length, to + 256)))?.[0].length ?? 0;
+  view.dispatch({ ...insertCompletionText(view.state, text, from, to + rest), annotations: pickedCompletion.of(completion) });
+};
+
+const word = (w: Word, rest: Partial<Completion>): Completion => ({ label: w.name, apply: whole(w.sql), ...rest });
+
+/** What a list of columns starts with before anything is typed: the
+ *  primary key, then the unique ones. Small, so that it only breaks ties. */
+const KEY_BOOST = { primary: 2, unique: 1 };
+const KEY_NAMES = { primary: "PK", unique: "UK" };
 
 function names(catalog: CompletionCatalog): Names {
   const relations = new Map(catalog.relations.map((r) => [r.name, r]));
@@ -88,24 +114,41 @@ export function prepareCompletion(registration: string): void {
   if (useStore.getState().servers[registration]) void namesOf(registration);
 }
 
-function columnsOf(all: Names, relation: CatalogRelation, boost = 0): Completion[] {
+/**
+ * A relation's columns. `keysFirst` is how they are listed before anything
+ * is typed: the keys ahead. Typed against, the nearest match leads and a
+ * key is a column like the others.
+ */
+function columnsOf(all: Names, relation: CatalogRelation, keysFirst: boolean, boost = 0): Completion[] {
   let columns = all.columns.get(relation);
   if (!columns) {
-    columns = relation.columns.map((c) => word(c, { type: "column", detail: `${c.type} · ${relation.name}` }));
+    const typed = relation.columns.map((c) =>
+      word(c, { type: "column", detail: `${c.key ? `${KEY_NAMES[c.key]} · ` : ""}${c.type} · ${relation.name}` }),
+    );
+    const listed = typed.map((option, i) => {
+      const key = relation.columns[i].key;
+      return key ? { ...option, boost: KEY_BOOST[key] } : option;
+    });
+    columns = { typed, listed };
     all.columns.set(relation, columns);
   }
-  return boost ? columns.map((c) => ({ ...c, boost })) : columns;
+  const options = keysFirst ? columns.listed : columns.typed;
+  return boost ? options.map((c) => ({ ...c, boost: boost + (c.boost ?? 0) })) : options;
 }
 
 /** How far around the cursor a statement is looked for */
 const REACH = 20_000;
-const WORD = /^[\w$]*$/;
+// A list made before anything was typed is made again at the first letter,
+// and one made for some letters when the last of them is deleted: the two
+// are not in the same order (`columnsOf`)
+const NOTHING = /^$/;
+const WORD = /^[\w$]+$/;
 const QUOTED = /^"[^"]*"?$/;
 
 /** What was begun with a quote is matched and written with its quotes */
 function inQuotes(option: Completion): Completion {
   const name = `"${option.label.replaceAll('"', '""')}"`;
-  return { ...option, label: name, apply: name };
+  return { ...option, label: name, apply: whole(name) };
 }
 
 async function complete(context: CompletionContext, registration: string | undefined): Promise<CompletionResult | null> {
@@ -133,14 +176,15 @@ async function complete(context: CompletionContext, registration: string | undef
 
   const start = Math.max(0, context.pos - REACH);
   const inReach = sources(doc.sliceString(start, Math.min(doc.length, context.pos + REACH)), context.pos - start);
+  const bare = from === context.pos;
   const result = (options: Completion[]): CompletionResult =>
-    quoted ? { from, to, options: options.map(inQuotes), validFor: QUOTED } : { from, options, validFor: WORD };
+    quoted ? { from, to, options: options.map(inQuotes), validFor: QUOTED } : { from, options, validFor: bare ? NOTHING : WORD };
 
   if (parent) {
     // An alias hides a relation of the same name
     const aliased = inReach.find((s) => s.alias === parent);
     const relation = all.relations.get(aliased ? aliased.relation : parent);
-    return relation ? result(columnsOf(all, relation)) : null;
+    return relation ? result(columnsOf(all, relation, bare)) : null;
   }
 
   const here: Completion[] = [];
@@ -148,10 +192,10 @@ async function complete(context: CompletionContext, registration: string | undef
   for (const source of inReach) {
     const relation = all.relations.get(source.relation);
     if (!relation) continue;
-    if (source.alias) here.push({ label: source.alias, apply: source.written, type: "alias", detail: relation.name, boost: 10 });
+    if (source.alias) here.push({ label: source.alias, apply: whole(source.written), type: "alias", detail: relation.name, boost: 10 });
     if (!seen.has(relation)) {
       seen.add(relation);
-      here.push(...columnsOf(all, relation, 5));
+      here.push(...columnsOf(all, relation, bare, 5));
     }
   }
   // After JOIN, what the foreign keys of the statement's tables lead to
@@ -181,14 +225,31 @@ function joins(all: Names, inStatement: ReturnType<typeof sources>): Completion[
     if (seen.has(text)) continue;
     seen.add(text);
     // Matched by the relation's name alone, and ahead of the bare name
-    options.push({ label: relation.name, displayLabel: text, apply: text, type: "join", boost: 99 });
+    options.push({ label: relation.name, displayLabel: text, apply: whole(text), type: "join", boost: 99 });
   }
   return options;
 }
 
+/**
+ * An open list follows the cursor along a name: each letter the cursor
+ * passes going right narrows the list to what starts the name up to there,
+ * and going left widens it again, as IBExpert's does. On its own a list
+ * closes when the cursor moves without typing.
+ */
+const followCursor = EditorView.updateListener.of((update) => {
+  if (update.docChanged || !update.selectionSet || !update.transactions.some((tr) => tr.isUserEvent("select"))) return;
+  if (completionStatus(update.startState) !== "active") return;
+  const before = update.startState.selection.main;
+  const now = update.state.selection.main;
+  if (!before.empty || !now.empty || before.head === now.head) return;
+  // Still in the name: past a dot or a space, the list was for something else
+  const passed = update.state.sliceDoc(Math.min(before.head, now.head), Math.max(before.head, now.head));
+  if (/^[\w$]+$/.test(passed)) startCompletion(update.view);
+});
+
 /** The list as this editor shows it: what each name is in a first column,
  *  then the name, then what is known of it */
-export const completionList: Extension = autocompletion({
+export const completionList: Extension = [followCursor, autocompletion({
   icons: false,
   addToOptions: [
     {
@@ -201,7 +262,7 @@ export const completionList: Extension = autocompletion({
       },
     },
   ],
-});
+})];
 
 /** Completes the names of the database `registration` says the editor is on */
 export function catalogCompletion(registration: () => string | undefined): Extension {

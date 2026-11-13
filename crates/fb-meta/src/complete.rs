@@ -51,6 +51,17 @@ pub struct Column {
     /// As it would be declared: `NUMERIC(18,4)`, `VARCHAR(60)`
     #[serde(rename = "type")]
     pub data_type: String,
+    /// The key it is part of, the primary one before a unique one: what a
+    /// row is usually looked up by, so what a list of columns starts with
+    pub key: Option<Key>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Key {
+    Primary,
+    /// A unique constraint, or a unique index without one
+    Unique,
 }
 
 /// Something that is not a relation but is named in statements
@@ -110,7 +121,35 @@ pub fn catalog(conn: &Connection) -> Result<Catalog> {
             relations.push(Relation { word: Word::new(relation, dialect), kind, columns: Vec::new() });
         }
         let data_type = DataType::read(&row, 4).name(dialect);
-        relations.last_mut().expect("just pushed").columns.push(Column { word: Word::new(column, dialect), data_type });
+        relations.last_mut().expect("just pushed").columns.push(Column {
+            word: Word::new(column, dialect),
+            data_type,
+            key: None,
+        });
+    }
+
+    // The columns of every unique index, a primary key's told apart
+    let keys = "select trim(i.rdb$relation_name), trim(s.rdb$field_name), \
+                       case when rc.rdb$constraint_type = 'PRIMARY KEY' then 1 else 0 end \
+                from rdb$indices i \
+                join rdb$index_segments s on s.rdb$index_name = i.rdb$index_name \
+                left join rdb$relation_constraints rc on rc.rdb$index_name = i.rdb$index_name \
+                where i.rdb$unique_flag = 1";
+    for row in rows(conn, keys, vec![])? {
+        let (Some(relation), Some(column), Some(primary)) = (row.text(0), row.text(1), row.int(2)) else {
+            continue;
+        };
+        // The relations are in the order of their names
+        let Ok(at) = relations.binary_search_by(|r| r.word.name.as_str().cmp(&relation)) else {
+            continue;
+        };
+        if let Some(column) = relations[at].columns.iter_mut().find(|c| c.word.name == column) {
+            if primary == 1 {
+                column.key = Some(Key::Primary);
+            } else if column.key.is_none() {
+                column.key = Some(Key::Unique);
+            }
+        }
     }
 
     let mut others = Vec::new();
