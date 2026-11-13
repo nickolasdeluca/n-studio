@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The app's mark: an N on the dark panel colour, in the UI's accent.
+       `tauri icon icons/icon.svg` writes every other file in this directory. -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="#1d2025"/>
+  <path d="M352 712V312h76l168 262V312h76v400h-76L428 450v262z" fill="#4c8dff"/>
+</svg>

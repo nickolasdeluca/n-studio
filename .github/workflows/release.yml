@@ -1,0 +1,109 @@
+name: Release
+
+# The installers. On a version tag they become a GitHub pre-release; run by hand
+# they are only built and kept as the run's artifacts, which is how a change to
+# the bundling is tried before anything is tagged.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      # The bundles are named after the workspace's version, so a tag that says
+      # another one would publish files that contradict it.
+      - id: read
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says $version"
+            exit 1
+          fi
+
+  bundle:
+    name: ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (universal)
+            os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin --bundles dmg
+          - name: Windows (x64)
+            os: windows-latest
+            args: --bundles nsis
+          # The oldest runner: an AppImage runs on the glibc it was built with
+          # and anything newer.
+          - name: Linux (x64)
+            os: ubuntu-22.04
+            args: --bundles deb,appimage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bundle
+      - name: Tauri's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf file xdg-utils
+      - run: npm ci
+        working-directory: ui
+      # `tauri build` builds the UI itself (beforeBuildCommand)
+      - run: npm run tauri -- build ${{ matrix.args }}
+        working-directory: ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: n-studio-${{ needs.version.outputs.version }}-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            target/**/release/bundle/dmg/*.dmg
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+
+  publish:
+    name: pre-release
+    if: github.ref_type == 'tag'
+    needs: [version, bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find dist -type f -print0 | xargs -0 gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "N Studio ${{ needs.version.outputs.version }}" \
+            --prerelease --generate-notes \
+            --notes "Unsigned builds: the README says how each system is told to open them."

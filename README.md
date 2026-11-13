@@ -34,6 +34,24 @@ docker/              Firebird 2.5/3.0/4.0/5.0 test matrix and fixture schema
 docs/                plan and spike findings
 ```
 
+## Installing
+
+Releases carry one installer per system, built by
+[the release workflow](.github/workflows/release.yml) from a `v…` tag. They are
+not signed, so each system has to be told once that the app may run:
+
+- **macOS** (`.dmg`, Intel and Apple Silicon in one): drag the app to
+  Applications and open it; after the refusal, *System Settings → Privacy &
+  Security → Open Anyway*. Or, in a terminal:
+  `xattr -dr com.apple.quarantine "/Applications/N Studio.app"`.
+- **Windows** (`…-setup.exe`): SmartScreen's *More info → Run anyway*. The
+  installer fetches the WebView2 runtime where Windows does not have it yet.
+- **Linux**: `sudo apt install ./n-studio_….deb`, or make the `.AppImage`
+  executable and run it. Saved passwords need a Secret Service keyring (GNOME
+  Keyring, KWallet).
+
+The status bar shows the version; name it when reporting something.
+
 ## Running the app
 
 ```sh

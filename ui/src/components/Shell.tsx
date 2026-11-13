@@ -7,7 +7,8 @@ import {
   type IDockviewPanelHeaderProps,
   type IDockviewPanelProps,
 } from "dockview-react";
-import { useEffect, useRef, type ReactNode } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { forgetService, useAdmin } from "../admin";
 import { serverSummary } from "../api";
 import { isDocument, openEditor, setDock } from "../dock";
@@ -263,6 +264,11 @@ function StatusBar() {
   const server = useStore((s) => (selection ? s.servers[selection.id] : undefined));
   const notice = useStore((s) => s.notice);
   const busy = useStore((s) => s.busy);
+  // The bundle's version, so a report can say which build it is about
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion().then(setVersion, () => {});
+  }, []);
 
   let left: ReactNode = t("No database selected");
   if (registration) {
@@ -298,6 +304,7 @@ function StatusBar() {
           </button>
         </span>
       )}
+      {version && <span className={`shrink-0 text-faint ${notice ? "" : "ml-auto"}`}>v{version}</span>}
     </div>
   );
 }
