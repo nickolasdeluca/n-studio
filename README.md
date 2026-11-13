@@ -1,61 +1,105 @@
+<div align="center">
+
+<img src="src-tauri/icons/icon.svg" alt="N Studio" width="112" height="112">
+
 # N Studio
 
-**N** — *Any database, One IDE.*
+**Any database, One IDE.**
 
-A cross-platform database IDE, native binaries for Linux, macOS and Windows.
+[![CI](https://github.com/nickolasdeluca/n-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/nickolasdeluca/n-studio/actions/workflows/ci.yml)
+![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-black)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Firebird first, modeled on IBExpert: dialects, PSQL, generators, domains, the
-services API and the `MON$` tables are first-class, not adapters over a generic
-SQL abstraction. PostgreSQL and other engines follow once the Firebird base is
-stable, each built to the same depth.
+**A native desktop database IDE for writing SQL, exploring schemas and managing
+Firebird servers. Built with Rust, Tauri and React.**
 
-**Status: alpha, 0.1.0.** Firebird 2.5, 3.0, 4.0 and 5.0, over the network; the
-driver is pure Rust, so there is no `fbclient` to install. See
-[docs/PLAN.md](docs/PLAN.md) for the plan and what each milestone built, and
-[docs/M0-FINDINGS.md](docs/M0-FINDINGS.md) for what the first spikes
-established.
+[Download](https://github.com/nickolasdeluca/n-studio/releases) ·
+[Features](#working-with-firebird) · [Building](#building) ·
+[Roadmap](docs/PLAN.md)
 
-## What the alpha does
+</div>
 
-- **Databases**: registered once, passwords in the system's keychain; the
-  explorer lists every kind of object with its count.
-- **SQL editor**: one transaction per tab, with its isolation chosen; execute a
-  statement, to the cursor, everything, or as a script (`SET TERM`, errors
-  logged, the rest carrying on); parameters asked for by name; results
-  streamed into a grid, sorted, exported to CSV; plan and performance
-  counters; cancel.
-- **Completion** of tables, views, routines and generators, and of columns
-  after a table's name or alias, each with what it is and a column's type.
-  After `join`, the joins the foreign keys offer, written whole:
-  `CLIENTE_PESSOA cp on cp.CLIENTE = c.ID`, alias included.
-- **A code formatter**: SQL and PSQL laid out by a style (case of keywords
-  and names, indentation, right margin, lists and conditions a line each or
-  wrapped), which changes white space and case and never a token. The style
-  is exported to a file and imported from one, for a team to format alike.
-- **Blobs** read on demand beside the grid: as text, a picture, indented JSON
-  or XML, or hex; saved to a file whole.
-- **Scripts as files**, read and written back in the encoding and line
-  endings they had (`WIN1252` with CR LF as readily as UTF-8). Open tabs come
-  back the next time the app opens.
-- **Query history** per database, searched from each editor's History tab.
-- **Objects**: viewers for every kind, with fields, constraints, indices,
-  dependencies, triggers, grants, DDL and data; changes made through forms or
-  by editing the DDL, each shown as the script that makes it before it runs;
-  a table's rows edited in the grid; metadata extract of a selection in an
-  order that runs.
-- **Server**: backup, restore, validation, sweep, statistics and the server
-  log; users; the activity monitor, with attachments disconnected and
-  statements cancelled.
-- **Tools**: a diagram of tables and their foreign keys, two tables' rows
-  compared and the script that makes one the other, a query builder, and a
-  PSQL debugger that steps through a procedure or function.
+Firebird first, with the depth of tools like IBExpert: dialects, PSQL,
+generators, domains, the services API and the `MON$` tables are first-class.
+The driver speaks the Firebird wire protocol in pure Rust — no `fbclient`
+to install.
 
-## What it does not, yet
+**Alpha · 0.1.0.** Connects to Firebird 2.5, 3.0, 4.0 and 5.0 over the network.
+PostgreSQL and other engines are planned once the Firebird base is stable,
+each built to the same depth.
+
+## Download
+
+[![Download N Studio](https://img.shields.io/badge/Download-N%20Studio-2f6fdf?style=for-the-badge)](https://github.com/nickolasdeluca/n-studio/releases)
+
+Choose the installer for your system on the releases page. The macOS build
+is signed and notarized; Windows and Linux builds are unsigned.
+
+- **macOS** (`.dmg`, Intel and Apple Silicon in one): drag the app to
+  Applications and open it.
+- **Windows** (`…-setup.exe`): SmartScreen's *More info → Run anyway*. The
+  installer fetches the WebView2 runtime where Windows does not have it yet.
+- **Linux**: `sudo apt install ./n-studio_….deb`, or make the `.AppImage`
+  executable and run it. Saved passwords need a Secret Service keyring (GNOME
+  Keyring, KWallet).
+
+The status bar shows the version; name it when reporting something.
+
+## Working with Firebird
+
+### Write and run SQL
+
+Each editor tab has its own transaction and isolation setting. Run one
+statement, everything up to the cursor, the whole editor, or a script with
+`SET TERM` support and an error log. Named parameters are prompted for before
+execution. Results stream into a sortable grid with CSV export; the plan,
+performance counters and cancellation stay close to the query.
+
+Completion knows tables, views, routines, generators and column types,
+including columns behind an alias. After `JOIN`, it can write the join
+condition from a foreign key, alias included. The formatter handles SQL and
+PSQL with a style you can export and share: keyword case, indentation,
+wrapping and list layout, without changing the tokens.
+
+### Keep your work
+
+Scripts retain their encoding and line endings when saved — `WIN1252` with
+CR LF as well as UTF-8. Open tabs return on the next launch, and each editor's
+History tab searches queries for that database.
+
+Blobs load on demand beside the grid as text, images, formatted JSON or XML,
+or hex. Save the full value to a file when you need it outside the app.
+
+### Explore and change a schema
+
+Register a database once; saved passwords go in the system keychain. The
+explorer lists object kinds with their counts, and object viewers expose
+fields, constraints, indices, dependencies, triggers, grants, DDL and data.
+
+Edit through a form or directly in DDL. Schema changes show the script before
+it runs. Table rows can be edited in the grid, and selected objects can be
+extracted as metadata in dependency order.
+
+### Manage the server
+
+Run backup, restore, validation, sweep and statistics, read the server log,
+and manage users. The activity monitor shows attachments and statements,
+with actions to disconnect an attachment or cancel a statement.
+
+### Work across tables and routines
+
+View tables and foreign keys in a diagram, assemble SQL with the query
+builder, or compare two tables' rows and generate a synchronization script.
+The PSQL debugger steps through a procedure or function; its emulation
+limits are listed below.
+
+## The alpha caveats
 
 - Embedded (serverless) databases, and engines other than Firebird.
 - A language other than English; adjustable fonts; remapping keys.
-- Signed installers and updates from inside the app: a new version is
-  downloaded and installed over the old one.
+- Windows and Linux installers are unsigned. There is no in-app updater;
+  download a new version and install it over the old one.
 - `nbackup`, shutting a database down, changing its header settings, trace
   sessions.
 - The debugger is an emulator and says what it does not follow: triggers,
@@ -63,7 +107,28 @@ established.
 - Closing a tab whose text was never saved to a file does not ask first.
   Quitting keeps every tab's text.
 
-## Layout
+## Building
+
+Install Rust and Node.js first, along with the platform dependencies used
+by [the release workflow](.github/workflows/release.yml). Then, from the
+repository root:
+
+```sh
+cd ui
+npm ci
+npm run tauri dev      # dev server + app, reloading on change
+npm run tauri build    # bundles for this platform
+```
+
+## Local storage
+
+The app keeps four files in its config directory: `registrations.json`,
+`session.json` (the open editors and their text), `history.db` (what was
+run, without parameter values and without statements that set a password)
+and `formatter.json` (the code formatter's style, once one is saved).
+Saved passwords live in the OS keychain, never in a file.
+
+## Architecture
 
 ```
 crates/fb-core       connection actor, transactions, cursors, type mapping
@@ -81,24 +146,24 @@ docker/              Firebird 2.5/3.0/4.0/5.0 test matrix and fixture schema
 docs/                plan and spike findings
 ```
 
-## Installing
+See [the roadmap](docs/PLAN.md) for milestones and
+[the initial findings](docs/M0-FINDINGS.md) for the driver and UI spikes.
 
-Releases carry one installer per system. The Windows and Linux ones are built
-by [the release workflow](.github/workflows/release.yml) from a `v…` tag and
-are not signed, so those systems have to be told once that the app may run;
-the macOS one is signed and notarized, and is added from a Mac (below).
+## Running the probe
 
-- **macOS** (`.dmg`, Intel and Apple Silicon in one): drag the app to
-  Applications and open it.
-- **Windows** (`…-setup.exe`): SmartScreen's *More info → Run anyway*. The
-  installer fetches the WebView2 runtime where Windows does not have it yet.
-- **Linux**: `sudo apt install ./n-studio_….deb`, or make the `.AppImage`
-  executable and run it. Saved passwords need a Secret Service keyring (GNOME
-  Keyring, KWallet).
+```sh
+FB_HOST=host FB_PORT=3050 FB_DB=/path/to.fdb FB_USER=SYSDBA FB_PASS=pw \
+  cargo run -p fb-probe -- --survey        # read-only recon of an existing database
 
-The status bar shows the version; name it when reporting something.
+cargo run -p fb-probe -- --perf "select …" # plan + IBExpert-style performance block
+cargo run -p fb-probe -- --matrix          # every server in docker/compose.yml
+cargo run -p fb-probe --bin handshake      # raw op_connect dump, for auth debugging
+```
 
-### Making a release
+`FB_AUTH=legacy` makes the tools lead with Legacy_Auth, for servers whose SRP
+user store is empty; in the app it is a per-registration setting. `FBW_TRACE=1` dumps wire packets.
+
+## Making a release
 
 The Developer ID certificate lives in a keychain, not in the repository, so
 the workflow cannot make the macOS installer: its own `.dmg` is signed ad hoc,
@@ -127,34 +192,6 @@ On Windows, `.\scripts\build-release.ps1` builds the setup the workflow builds
 and leaves it in `dist\`. It is not signed: there is no Authenticode
 certificate yet.
 
-## Running the app
-
-```sh
-cd ui && npm install
-npm run tauri dev      # dev server + app, reloading on change
-npm run tauri build    # bundles for this platform
-```
-
-The app keeps four files in its config directory: `registrations.json`,
-`session.json` (the open editors and their text), `history.db` (what was
-run, without parameter values and without statements that set a password)
-and `formatter.json` (the code formatter's style, once one is saved).
-Saved passwords live in the OS keychain, never in a file.
-
-## Running the probe
-
-```sh
-FB_HOST=host FB_PORT=3050 FB_DB=/path/to.fdb FB_USER=SYSDBA FB_PASS=pw \
-  cargo run -p fb-probe -- --survey        # read-only recon of an existing database
-
-cargo run -p fb-probe -- --perf "select …" # plan + IBExpert-style performance block
-cargo run -p fb-probe -- --matrix          # every server in docker/compose.yml
-cargo run -p fb-probe --bin handshake      # raw op_connect dump, for auth debugging
-```
-
-`FB_AUTH=legacy` makes the tools lead with Legacy_Auth, for servers whose SRP
-user store is empty; in the app it is a per-registration setting. `FBW_TRACE=1` dumps wire packets.
-
 ## License
 
-MIT
+[MIT](LICENSE)
