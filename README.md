@@ -28,6 +28,10 @@ established.
   after a table's name or alias, each with what it is and a column's type.
   After `join`, the joins the foreign keys offer, written whole:
   `CLIENTE_PESSOA cp on cp.CLIENTE = c.ID`, alias included.
+- **A code formatter**: SQL and PSQL laid out by a style (case of keywords
+  and names, indentation, right margin, lists and conditions a line each or
+  wrapped), which changes white space and case and never a token. The style
+  is exported to a file and imported from one, for a team to format alike.
 - **Blobs** read on demand beside the grid: as text, a picture, indented JSON
   or XML, or hex; saved to a file whole.
 - **Scripts as files**, read and written back in the encoding and line
@@ -131,9 +135,10 @@ npm run tauri dev      # dev server + app, reloading on change
 npm run tauri build    # bundles for this platform
 ```
 
-The app keeps three files in its config directory: `registrations.json`,
-`session.json` (the open editors and their text) and `history.db` (what was
-run, without parameter values and without statements that set a password).
+The app keeps four files in its config directory: `registrations.json`,
+`session.json` (the open editors and their text), `history.db` (what was
+run, without parameter values and without statements that set a password)
+and `formatter.json` (the code formatter's style, once one is saved).
 Saved passwords live in the OS keychain, never in a file.
 
 ## Running the probe

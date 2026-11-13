@@ -9,6 +9,7 @@ mod editor;
 mod error;
 mod export;
 mod files;
+mod formatter;
 mod history;
 mod objects;
 mod registry;
@@ -26,7 +27,12 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let registry = registry::Registry::load(&dir)?;
-            app.manage(commands::AppState::new(registry, session::SessionStore::new(&dir), history::History::open(&dir)));
+            app.manage(commands::AppState::new(
+                registry,
+                session::SessionStore::new(&dir),
+                history::History::open(&dir),
+                formatter::StyleStore::new(&dir),
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -75,6 +81,12 @@ fn main() {
             history::history_add,
             history::history_list,
             history::history_clear,
+            formatter::format_sql,
+            formatter::format_style_load,
+            formatter::format_style_default,
+            formatter::format_style_save,
+            formatter::format_style_export,
+            formatter::format_style_import,
             session::session_load,
             session::session_save,
             tools::diagram,

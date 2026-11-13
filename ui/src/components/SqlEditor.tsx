@@ -23,6 +23,7 @@ import { catalogCompletion, completionList, prepareCompletion } from "../complet
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon } from "../icons";
+import { formatEditor } from "../format";
 import { formatLabel, saveEditor } from "../scripts";
 import { sessionChanged } from "../session";
 import { useStore } from "../store";
@@ -48,6 +49,17 @@ function cancelKey(id: string) {
   };
 }
 
+/** The modifier a shortcut is said with */
+const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
+
+/** The mounted editors, by tab: what Format lays out */
+const views = new Map<string, EditorView>();
+const format = (id: string) => {
+  const view = views.get(id);
+  if (view) void formatEditor(view);
+  return !!view;
+};
+
 /** A closed editor's text goes with it */
 export function forgetEditor(id: string) {
   saved.delete(id);
@@ -70,6 +82,7 @@ function runKeys(id: string) {
       { key: "Mod-Alt-r", run: end("rollback") },
       { key: "Mod-s", run: () => (void saveEditor(id), true) },
       { key: "Mod-Shift-s", run: () => (void saveEditor(id, true), true) },
+      { key: "Mod-Shift-f", run: () => format(id) },
       { key: "Escape", run: cancelKey(id) },
     ]),
   );
@@ -190,11 +203,13 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
     readers.set(id, () => (view.current?.state ?? saved.get(id))?.doc.toString() ?? "");
     drafts.delete(id);
     view.current = v;
+    views.set(id, v);
     v.focus();
     return () => {
       saved.set(id, v.state);
       v.destroy();
       view.current = null;
+      views.delete(id);
     };
   }, [id, run, end]);
 
@@ -262,6 +277,13 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
       { label: t("Save As… (Ctrl+Shift+S)"), onSelect: () => void saveEditor(tab.id, true) },
     ]);
   };
+  const formatMenu = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    showMenu(rect.left, rect.bottom + 2, [
+      { label: t("Format"), icon: "format", onSelect: () => void format(tab.id) },
+      { label: t("Formatter Options…"), onSelect: () => useStore.getState().openDialog({ type: "formatter" }) },
+    ]);
+  };
   const s = useEditors.getState();
   const busy = tab.running || !connected;
   const active = tab.tx !== null;
@@ -285,6 +307,19 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
         title={t("Save Options")}
         aria-label={t("Save Options")}
         onClick={saveMenu}
+        className="-ml-0.5 grid h-7 w-3.5 place-items-center rounded text-muted hover:bg-hover"
+      >
+        <Icon name="options" size={10} />
+      </button>
+      <Tool
+        icon="format"
+        label={t("Format the selection, or all of the text ({key}+Shift+F)", { key: MOD })}
+        onClick={() => format(tab.id)}
+      />
+      <button
+        title={t("Formatter Options")}
+        aria-label={t("Formatter Options")}
+        onClick={formatMenu}
         className="-ml-0.5 grid h-7 w-3.5 place-items-center rounded text-muted hover:bg-hover"
       >
         <Icon name="options" size={10} />

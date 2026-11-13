@@ -46,6 +46,8 @@ export type Dialog =
   | { type: "params"; request: ParamRequest }
   /** Where and how to write an editor's rows */
   | { type: "export"; tab: string }
+  /** The code formatter's style */
+  | { type: "formatter" }
   /** A change to the catalog, as the script that makes it: shown, then run
    *  whole or not at all. `done` is called once it is committed.
    *  `back` is the dialog it came from, shown again if it is cancelled;

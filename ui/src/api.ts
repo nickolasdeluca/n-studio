@@ -221,6 +221,25 @@ export interface BlobView {
   complete: boolean;
 }
 
+export type FormatCase = "upper" | "lower" | "keep";
+export type FormatLists = "one_per_line" | "wrap";
+
+/** The code formatter's style: what `formatter.json` and a shared style
+ *  file hold */
+export interface FormatStyle {
+  keywords: FormatCase;
+  identifiers: FormatCase;
+  indent: number;
+  rightMargin: number;
+  selectList: FormatLists;
+  definitions: FormatLists;
+  breakConditions: boolean;
+  breakJoinOn: boolean;
+  spaceAfterComma: boolean;
+  spaceInsideBrackets: boolean;
+  inlineSubquery: number;
+}
+
 export interface StatementRange {
   from: number;
   to: number;
@@ -677,6 +696,14 @@ export const api = {
   /** Writes the cell's whole blob to a file; the bytes written come back */
   resultBlobSave: (result: number, row: number, col: number, path: string) =>
     invoke<number>("result_blob_save", { result, row, col, path }),
+  /** `text` laid out by `style`; the text itself when it cannot be followed */
+  formatSql: (text: string, style: FormatStyle) => invoke<string>("format_sql", { text, style }),
+  formatStyleLoad: () => invoke<FormatStyle>("format_style_load"),
+  /** The style a new installation formats by */
+  formatStyleDefault: () => invoke<FormatStyle>("format_style_default"),
+  formatStyleSave: (style: FormatStyle) => invoke<void>("format_style_save", { style }),
+  formatStyleExport: (path: string, style: FormatStyle) => invoke<void>("format_style_export", { path, style }),
+  formatStyleImport: (path: string) => invoke<FormatStyle>("format_style_import", { path }),
   resultClose: (result: number) => invoke<void>("result_close", { result }),
   resultSort: (result: number, sort: Sort | null) => invoke<ResultView>("result_sort", { result, sort }),
   resultExport: (result: number, path: string, options: ExportOptions) =>

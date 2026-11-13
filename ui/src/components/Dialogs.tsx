@@ -10,6 +10,7 @@ import { saveEditor } from "../scripts";
 import { useStore } from "../store";
 import { CompileDialog, DiscardDialog } from "./CompileDialog";
 import { FormDialog } from "./FormDialog";
+import { FormatterDialog } from "./FormatterDialog";
 import { Button, Field, inputClass, Modal } from "./Modal";
 import { RegistrationDialog } from "./RegistrationDialog";
 
@@ -32,6 +33,8 @@ export function Dialogs() {
       return <ParamsDialog request={dialog.request} />;
     case "export":
       return <ExportDialog tab={dialog.tab} />;
+    case "formatter":
+      return <FormatterDialog />;
     case "compile":
       // Another change is another dialog: its outcome is not the last one's
       return <CompileDialog key={dialog.script} dialog={dialog} />;

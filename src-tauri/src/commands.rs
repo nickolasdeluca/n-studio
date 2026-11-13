@@ -21,6 +21,7 @@ use crate::script::Scripts;
 use crate::history::History;
 use crate::secrets;
 use crate::session::SessionStore;
+use crate::formatter::StyleStore;
 use crate::debugger::Debuggers;
 use crate::tools::Comparisons;
 
@@ -39,10 +40,11 @@ pub struct AppState {
     params: Mutex<HashMap<String, ConnectParams>>,
     pub(crate) session_store: SessionStore,
     pub(crate) history: History,
+    pub(crate) style_store: StyleStore,
 }
 
 impl AppState {
-    pub fn new(registry: Registry, session_store: SessionStore, history: History) -> Self {
+    pub fn new(registry: Registry, session_store: SessionStore, history: History, style_store: StyleStore) -> Self {
         Self {
             registry: Mutex::new(registry),
             sessions: Mutex::default(),
@@ -54,6 +56,7 @@ impl AppState {
             params: Mutex::default(),
             session_store,
             history,
+            style_store,
         }
     }
 

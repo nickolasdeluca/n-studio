@@ -5,6 +5,7 @@
 //! comments; `SET TERM` changes the terminator, which is how a script holds
 //! PSQL bodies full of `;`. Ranges are byte offsets into the text.
 
+pub mod format;
 pub mod lexer;
 pub mod psql;
 
