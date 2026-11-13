@@ -305,8 +305,8 @@ descriptions alike); and asked for: the blob viewer's views, the completion
 list saying what each name is, joins completed from the foreign keys with
 an alias, and a code formatter (`fb-sql`'s `format`: token for token the
 text it was given, laid out by a style that is exported to a file and
-imported from one, so a team formats alike). A dialect 1 database and a `WIN1252` default are still to come, and
-with them the first tag.
+imported from one, so a team formats alike). With that the first tag, `v0.1.0`, is cut. A dialect 1 database and a
+`WIN1252` default are still to be run by hand.
 
 Exit criterion: a tester installs a released bundle, registers a database of
 their own and works a day in it without the source tree.
