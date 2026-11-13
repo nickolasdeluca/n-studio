@@ -258,6 +258,38 @@ parameter left empty is NULL, its default not applied; BLOB variables are not
 carried. In an expression a bare name is a variable unless it is inside a
 subquery, where only `:NAME` is.
 
+### M7 — Alpha
+M1 to M6 built what the tool does. This one is what stands between that and
+handing it to someone who uses IBExpert all day: something to install, and the
+parts of the editor's daily loop the feature milestones walked past.
+
+1. **Release bundles.** A workflow that builds the installers for macOS, Windows
+   and Linux and attaches them to a GitHub pre-release. On a version tag and by
+   hand, not on every commit as §8 first said: three platforms a push is a cost
+   nobody reads the result of. Unsigned still; the README says how each system
+   is talked into opening it. One version number, the workspace's, starting at
+   `0.1.0`, shown in the app so a report can name it.
+2. **Completion.** Keywords, and the catalog `fb-meta` already reads: tables,
+   views, routines, generators, and a table's columns after its name or alias.
+3. **Scripts as files.** Open a `.sql` into a tab, save a tab to a file, and say
+   so before closing one that has unsaved text. Tabs and their text come back
+   when the app is opened again.
+4. **Query history.** What was run, where, when, how long it took and whether it
+   failed, kept per registration in SQLite as §1 planned, and brought back into
+   an editor.
+5. **A field run.** The app against real databases, read-only as `AGENTS.md`
+   has it: `WIN1252`, dialect 1, catalogs of a thousand tables and more. What it
+   finds is fixed here or written down as known.
+6. **The README** says what the alpha does, what it does not, and how to
+   install it.
+
+Exit criterion: a tester installs a released bundle, registers a database of
+their own and works a day in it without the source tree.
+
+Not in the alpha, and said to be: the keymap editor and adjustable font sizes
+(§7), languages other than English, signing and an updater, what M5 left out,
+and the debugger's limits as M6 lists them.
+
 ---
 
 ## 5. Testing
@@ -333,7 +365,8 @@ INSERT/UPDATE/DELETE from the grid move to M4 alongside the rest of the write pa
 where update-statement generation and dirty-row tracking already have to exist.
 
 **Distribution: unsigned CI artifacts until the tool is worth installing.**
-GitHub Actions builds macOS/Windows/Linux bundles per commit. No Developer ID,
+GitHub Actions builds macOS/Windows/Linux bundles per release (M7; first planned
+per commit). No Developer ID,
 no Windows cert, no updater plugin before M2 ships. macOS users right-click-open;
 Windows shows SmartScreen. Signing and package-manager presence get revisited once
 there is something to distribute.

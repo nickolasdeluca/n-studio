@@ -9,8 +9,11 @@ services API and the `MON$` tables are first-class, not adapters over a generic
 SQL abstraction. PostgreSQL and other engines follow once the Firebird base is
 stable, each built to the same depth.
 
-**Status: pre-alpha.** M0 (driver and grid spikes), M1 (connect + explorer) and
-M2 (the SQL editor) are done; M3 (read-only object viewers) is next — see [docs/PLAN.md](docs/PLAN.md) for the implementation plan and
+**Status: pre-alpha.** M0 to M6 are done: connecting and the explorer, the SQL
+editor, object viewers, metadata and data editing, services and monitoring, and
+the diagram, data comparer, query builder and PSQL debugger. M7, the alpha
+(installers, completion, scripts as files, query history), is under way — see
+[docs/PLAN.md](docs/PLAN.md) for the implementation plan and
 [docs/M0-FINDINGS.md](docs/M0-FINDINGS.md) for what the spikes established.
 
 ## Layout
@@ -18,6 +21,7 @@ M2 (the SQL editor) are done; M3 (read-only object viewers) is next — see [doc
 ```
 crates/fb-core       connection actor, transactions, cursors, type mapping
 crates/fb-meta       version-aware catalog: object kinds, counts, lists
+crates/fb-sql        lexer, statement splitter, PSQL parser for the debugger
 src-tauri/           the app's backend: registrations, keychain, commands
 ui/                  the app's interface: React, dockview, Tailwind, Zustand
 crates/fb-wire       vendored pure-Rust Firebird wire protocol, extended
