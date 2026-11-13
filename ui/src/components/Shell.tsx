@@ -87,8 +87,10 @@ export function Shell() {
   // F12, as in IBExpert: an SQL editor on the selected database
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Ctrl+O, or Cmd+O: a script into an editor on the selected database
-      const script = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "o";
+      // Ctrl+O, Cmd+O on a Mac (where Ctrl+O is the editor's own, splitting
+      // a line): a script into an editor on the selected database
+      const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      const script = mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "o";
       if (e.key !== "F12" && !script) return;
       const id = useStore.getState().selection?.id;
       if (!id) return;
