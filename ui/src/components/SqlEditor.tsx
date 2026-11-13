@@ -68,7 +68,6 @@ export function forgetEditor(id: string) {
 
 function runKeys(id: string) {
   const run = (mode: RunMode | "script") => () => runners.get(id)?.run(mode) ?? false;
-  const end = (how: TxEnd) => () => runners.get(id)?.end(how) ?? false;
   return Prec.highest(
     keymap.of([
       { key: "F9", run: run("current") },
@@ -78,8 +77,6 @@ function runKeys(id: string) {
       { key: "Alt-F9", run: run("to_cursor") },
       { key: "Mod-Alt-Enter", run: run("to_cursor") },
       { key: "Ctrl-F9", run: run("script") },
-      { key: "Mod-Alt-c", run: end("commit") },
-      { key: "Mod-Alt-r", run: end("rollback") },
       { key: "Mod-s", run: () => (void saveEditor(id), true) },
       { key: "Mod-Shift-s", run: () => (void saveEditor(id, true), true) },
       // The key editors elsewhere have; IBExpert's is `formatKey`
@@ -255,8 +252,21 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
     window.addEventListener("mouseup", onUp);
   };
 
+  // IBExpert's Ctrl+Alt+C and Ctrl+Alt+R, wherever in the tab the keyboard
+  // is, the grid too. By the key pressed and not the character it types:
+  // on Windows Ctrl+Alt is AltGr, and AltGr+C types "₢" on a Brazilian
+  // keyboard, which a keymap would take for some other key.
+  const endKeys = (e: React.KeyboardEvent) => {
+    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+    const how = e.code === "KeyC" ? "commit" : e.code === "KeyR" ? "rollback" : null;
+    if (!how) return;
+    e.preventDefault();
+    e.stopPropagation();
+    end(how);
+  };
+
   return (
-    <div className="flex h-full flex-col bg-panel">
+    <div className="flex h-full flex-col bg-panel" onKeyDownCapture={endKeys}>
       <EditorToolbar tab={tab} run={run} end={end} />
       <div ref={body} className="flex min-h-0 flex-1 flex-col">
         <div ref={host} className="min-h-0 overflow-hidden" style={{ height: `${split * 100}%` }} />
