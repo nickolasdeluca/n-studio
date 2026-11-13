@@ -28,8 +28,10 @@ export function Modal(props: {
     props.onSubmit();
   };
 
+  // Above the editor's own layers: CodeMirror puts its panels at 300 and its
+  // tooltips at 500
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/25 p-4" onMouseDown={props.onCancel}>
+    <div className="fixed inset-0 z-[1000] grid place-items-center bg-black/25 p-4" onMouseDown={props.onCancel}>
       <form
         ref={ref}
         role="dialog"

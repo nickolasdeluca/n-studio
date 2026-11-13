@@ -50,7 +50,7 @@ function cancelKey(id: string) {
 }
 
 /** The modifier a shortcut is said with */
-const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
+const ALT = /Mac|iPhone|iPad/.test(navigator.platform) ? "Option" : "Alt";
 
 /** The mounted editors, by tab: what Format lays out */
 const views = new Map<string, EditorView>();
@@ -82,6 +82,8 @@ function runKeys(id: string) {
       { key: "Mod-Alt-r", run: end("rollback") },
       { key: "Mod-s", run: () => (void saveEditor(id), true) },
       { key: "Mod-Shift-s", run: () => (void saveEditor(id, true), true) },
+      // IBExpert's key, and the one editors elsewhere have
+      { key: "Alt-f", run: () => format(id) },
       { key: "Mod-Shift-f", run: () => format(id) },
       { key: "Escape", run: cancelKey(id) },
     ]),
@@ -280,7 +282,7 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
   const formatMenu = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     showMenu(rect.left, rect.bottom + 2, [
-      { label: t("Format"), icon: "format", onSelect: () => void format(tab.id) },
+      { label: t("Format ({key}+F)", { key: ALT }), icon: "format", onSelect: () => void format(tab.id) },
       { label: t("Formatter Options…"), onSelect: () => useStore.getState().openDialog({ type: "formatter" }) },
     ]);
   };
@@ -313,7 +315,7 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
       </button>
       <Tool
         icon="format"
-        label={t("Format the selection, or all of the text ({key}+Shift+F)", { key: MOD })}
+        label={t("Format the selection, or all of the text ({key}+F)", { key: ALT })}
         onClick={() => format(tab.id)}
       />
       <button

@@ -63,7 +63,7 @@ export function ContextMenuHost() {
   };
 
   return (
-    <div className="fixed inset-0 z-50" onMouseDown={close} onContextMenu={(e) => (e.preventDefault(), close())}>
+    <div className="fixed inset-0 z-[1100]" onMouseDown={close} onContextMenu={(e) => (e.preventDefault(), close())}>
       <div
         ref={ref}
         role="menu"
