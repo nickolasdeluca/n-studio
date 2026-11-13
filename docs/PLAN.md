@@ -55,7 +55,7 @@ n-studio/
 │  │                 the services manager (backup/restore/validate/sweep/stats)
 │  ├─ fb-meta/       version-aware RDB$ introspection, DDL generation, dependency graph,
 │  │                 MON$ activity (attachments, transactions, statements), users
-│  └─ fb-sql/        lexer, statement splitter (SET TERM aware), completion context
+│  └─ fb-sql/        lexer, statement splitter (SET TERM aware), PSQL parser for the debugger
 ├─ src-tauri/        commands, app state, cursor registry, config, keychain
 └─ ui/               React + TS: explorer, editor, grid, object editors
 ```
@@ -212,10 +212,51 @@ Left out: `nbackup`, shutting a database down and bringing it online, changing
 its header settings (sweep interval, forced writes), mending a corrupt database,
 trace sessions, and non-ASCII paths in service arguments.
 
-### M6 — Stretch
+### M6 — Stretch — done
 PSQL debugger (IBExpert's is an *emulator*: it parses the procedure body and executes
 statements individually against a private transaction — worth studying before promising),
 data comparer, query builder, ER diagrams.
+
+Done, each as a tab of its own.
+
+**Diagram.** Tables and the foreign keys between them, from one table and what it
+is related to or of the whole database, laid out once and then dragged; exported
+as SVG. Positions live only as long as the tab, and a whole database's diagram
+stops at 250 tables.
+
+**Data comparer.** Two tables' rows, of one database or of two connected ones,
+matched by the target's primary key (or a unique key of NOT NULL columns). It
+counts every difference, keeps 20,000 in detail, and writes the DELETE, UPDATE
+and INSERT statements that make the target the source into an SQL editor; it
+changes nothing itself. Blobs, arrays and computed columns are left out and said
+to be.
+
+**Query builder.** Tables and views picked by name, joined by their foreign keys
+when they first enter, columns ticked, renamed, totalled, sorted and filtered. The
+backend writes the SELECT, which goes to an SQL editor. It builds one SELECT:
+no unions, subqueries, expressions as columns, or OR between filters.
+
+**PSQL debugger.** The server has no debugging interface, so this is an emulator
+as IBExpert's is: `fb-sql` takes a procedure's or function's source apart into
+statements, `fb-meta` follows the flow, and every expression and SQL statement is
+sent to the server in the run's own transaction, with the variables it names as
+parameters. Stepping, breakpoints, variables as they change, the rows suspended;
+a finished run's transaction is committed or rolled back by whoever debugs, a
+failed or stopped one is rolled back.
+
+What that means, said plainly: it runs the source read again, not the compiled
+routine, so it shows what the routine does and not what it costs. Routines called
+from the debugged one run on the server, and are not stepped into. It refuses, at
+the statement, what it does not follow: cursors opened and fetched by hand, `FOR
+… AS CURSOR`, `FOR EXECUTE STATEMENT`, `EXECUTE STATEMENT` with parameters or
+options, `IN AUTONOMOUS TRANSACTION`, exceptions raised with `USING`; a routine
+declaring sub-routines is not opened at all. Triggers (NEW and OLD) and packaged
+routines are not debugged. `WHEN ANY` and `WHEN EXCEPTION` handlers work, undoing
+their block to a savepoint; `WHEN SQLCODE` / `GDSCODE` / `SQLSTATE` never match,
+and the `SQLCODE` and `GDSCODE` variables are not there (`ROW_COUNT` is). A
+parameter left empty is NULL, its default not applied; BLOB variables are not
+carried. In an expression a bare name is a variable unless it is inside a
+subquery, where only `:NAME` is.
 
 ---
 
