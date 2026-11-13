@@ -18,6 +18,7 @@ use crate::editor::Results;
 use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
 use crate::script::Scripts;
+use crate::history::History;
 use crate::secrets;
 use crate::session::SessionStore;
 use crate::debugger::Debuggers;
@@ -37,10 +38,11 @@ pub struct AppState {
     /// only while connected, and only in memory.
     params: Mutex<HashMap<String, ConnectParams>>,
     pub(crate) session_store: SessionStore,
+    pub(crate) history: History,
 }
 
 impl AppState {
-    pub fn new(registry: Registry, session_store: SessionStore) -> Self {
+    pub fn new(registry: Registry, session_store: SessionStore, history: History) -> Self {
         Self {
             registry: Mutex::new(registry),
             sessions: Mutex::default(),
@@ -51,6 +53,7 @@ impl AppState {
             debuggers: Debuggers::default(),
             params: Mutex::default(),
             session_store,
+            history,
         }
     }
 
@@ -155,6 +158,8 @@ pub async fn delete_registration(app: AppHandle, id: String) -> AppResult<()> {
     blocking(app, move |state| {
         state.forget(&id);
         state.registry.lock().unwrap().remove(&id)?;
+        // What it ran goes with it
+        state.history.clear(&id)?;
         secrets::delete(&id)
     })
     .await

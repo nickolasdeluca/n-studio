@@ -278,9 +278,12 @@ parts of the editor's daily loop the feature milestones walked past.
    is opened again, so quitting asks nothing about them; closing one tab asks
    only when it is a file's and has unsaved changes. Text that was never a
    file is a scratch pad's, and closes without a question.
-4. **Query history.** What was run, where, when, how long it took and whether it
-   failed, kept per registration in SQLite as §1 planned, and brought back into
-   an editor.
+4. **Query history.** What each editor ran, where, when, how long it took and
+   what it failed with, kept per registration in SQLite as §1 planned (the
+   latest 2,000), searched and put back into an editor from its History tab.
+   A statement is kept as typed, with its parameters' names and not their
+   values; a script run is one entry. A statement that sets a password is
+   never written, nor one too long to have been typed.
 5. **A field run.** The app against real databases, read-only as `AGENTS.md`
    has it: `WIN1252`, dialect 1, catalogs of a thousand tables and more. What it
    finds is fixed here or written down as known.

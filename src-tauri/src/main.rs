@@ -9,6 +9,7 @@ mod editor;
 mod error;
 mod export;
 mod files;
+mod history;
 mod objects;
 mod registry;
 mod results;
@@ -25,7 +26,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let registry = registry::Registry::load(&dir)?;
-            app.manage(commands::AppState::new(registry, session::SessionStore::new(&dir)));
+            app.manage(commands::AppState::new(registry, session::SessionStore::new(&dir), history::History::open(&dir)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -70,6 +71,9 @@ fn main() {
             admin::service_cancel,
             files::script_read,
             files::script_write,
+            history::history_add,
+            history::history_list,
+            history::history_clear,
             session::session_load,
             session::session_save,
             tools::diagram,

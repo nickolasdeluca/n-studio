@@ -18,6 +18,7 @@ import {
   type TxOptions,
 } from "./api";
 import { metadataChanged } from "./changes";
+import { record } from "./history";
 import { t } from "./i18n";
 import { newRun, runScript } from "./script";
 import { askParams, forgetParams, paramFields } from "./params";
@@ -25,7 +26,7 @@ import { askParams, forgetParams, paramFields } from "./params";
 /** Rows fetched with the execute, and per page as the grid scrolls */
 export const PAGE = 200;
 
-export type BottomTab = "results" | "messages" | "columns" | "plan" | "performance";
+export type BottomTab = "results" | "messages" | "history" | "columns" | "plan" | "performance";
 
 export interface Message {
   at: number;
@@ -296,6 +297,8 @@ export const useEditors = create<State>()((set, get) => {
           time: ms(end.elapsedMs),
         });
         const how = end.cancelled ? t("Script stopped") : end.failed > 0 ? t("Script finished with errors") : t("Script finished");
+        // A script is one line of history, not one for each of its statements
+        record(start.registration, text, end.elapsedMs, end.failed > 0 ? `${how}: ${counts}` : null);
         log(id, end.failed > 0 ? "error" : "info", `${how}: ${counts}`);
         if (end.tx !== null) log(id, "info", t("The transaction is still active: commit or roll back."));
         patch(id, (tab) => ({
@@ -439,6 +442,8 @@ export const useEditors = create<State>()((set, get) => {
   ): Promise<"ok" | "failed" | "cancelled"> {
     let tab = get().tabs[id];
     if (!tab) return "failed";
+    // When the statement went to the server, if it got that far
+    let sent: number | null = null;
     try {
       if (tab.tx === null) {
         const tx = await api.editorBegin(tab.registration, tab.txOptions);
@@ -458,6 +463,7 @@ export const useEditors = create<State>()((set, get) => {
         }
         params = values;
       }
+      sent = performance.now();
       const executed = await api.editorExecute(
         tab.registration,
         tab.tx!,
@@ -467,6 +473,8 @@ export const useEditors = create<State>()((set, get) => {
         PAGE,
       );
       log(id, "info", executedText(executed), range);
+      // As typed, with its parameters' names: their values are not kept
+      if (!tab.viewer) record(tab.registration, sql, executed.prepareMs + executed.executeMs, null);
       if (executed.ended === "commit" || executed.ended === "rollback") patch(id, { tx: null });
       // Only a statement with something to show replaces the last outcome
       if (executed.result || executed.columns.length > 0 || detailed) {
@@ -480,6 +488,7 @@ export const useEditors = create<State>()((set, get) => {
     } catch (e) {
       const where = summary(sql);
       log(id, "error", `${errorText(e)}\n${t("Statement: {sql}", { sql: where })}`, range);
+      if (sent !== null && !tab.viewer) record(tab.registration, sql, performance.now() - sent, errorText(e));
       patch(id, { bottom: "messages" });
       if (isAppError(e) && e.kind === "not_connected") patch(id, { tx: null });
       return "failed";

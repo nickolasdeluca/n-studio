@@ -28,6 +28,7 @@ import { sessionChanged } from "../session";
 import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
+import { HistoryPane } from "./HistoryPane";
 import { Empty, Results } from "./Results";
 
 /** Editor states by tab, so a panel that remounts keeps its text and undo */
@@ -110,6 +111,13 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
       selection: { anchor: r.from, head: r.to },
       effects: [markError.of(error ? r : null), EditorView.scrollIntoView(r.from, { y: "center" })],
     });
+    v.focus();
+  }, []);
+
+  const insert = useCallback((text: string) => {
+    const v = view.current;
+    if (!v) return;
+    v.dispatch({ ...v.state.replaceSelection(text), scrollIntoView: true, userEvent: "input.paste" });
     v.focus();
   }, []);
 
@@ -224,7 +232,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
           role="separator"
           aria-orientation="horizontal"
         />
-        <Bottom tab={tab} cursor={cursor} setCursor={setCursor} select={select} />
+        <Bottom tab={tab} cursor={cursor} setCursor={setCursor} select={select} insert={insert} />
       </div>
       <EditorStatus tab={tab} pos={pos} />
     </div>
@@ -364,6 +372,7 @@ function Tool(props: { icon: string; label: string; disabled?: boolean; accent?:
 const bottomTabs: { id: BottomTab; label: string }[] = [
   { id: "results", label: "Results" },
   { id: "messages", label: "Messages" },
+  { id: "history", label: "History" },
   { id: "columns", label: "Query Columns" },
   { id: "plan", label: "Plan" },
   { id: "performance", label: "Performance Analysis" },
@@ -374,6 +383,8 @@ function Bottom(props: {
   cursor: GridCursor;
   setCursor(c: GridCursor): void;
   select(range: { from: number; to: number }, error?: boolean): void;
+  /** Puts text where the editor's cursor or selection is */
+  insert(text: string): void;
 }) {
   const { tab } = props;
   const errors = tab.messages.filter((m) => m.level === "error").length;
@@ -384,6 +395,9 @@ function Bottom(props: {
       break;
     case "messages":
       pane = <Messages tab={tab} select={props.select} />;
+      break;
+    case "history":
+      pane = <HistoryPane registration={tab.registration} insert={props.insert} />;
       break;
     case "columns":
       pane = <Columns tab={tab} />;

@@ -274,6 +274,19 @@ export interface DiagramReference {
   toColumns: string[];
 }
 
+/** A statement an editor ran */
+export interface HistoryEntry {
+  id: number;
+  /** Milliseconds since 1970, when it last ran */
+  at: number;
+  sql: string;
+  elapsedMs: number;
+  /** What the server said, when it failed */
+  error: string | null;
+  /** Times in a row it was run */
+  runs: number;
+}
+
 /** How a script's file holds its text */
 export interface FileFormat {
   encoding: "utf8" | "utf8_bom" | "utf16_le" | "utf16_be" | "win1252";
@@ -608,6 +621,12 @@ export const api = {
   scriptRead: (path: string) => invoke<ScriptFile>("script_read", { path }),
   /** Answers the format written: UTF-8 where the one asked for lacks a character */
   scriptWrite: (path: string, text: string, format: FileFormat) => invoke<FileFormat>("script_write", { path, text, format }),
+  /** False when the statement is not one that is kept */
+  historyAdd: (id: string, sql: string, elapsedMs: number, error: string | null) =>
+    invoke<boolean>("history_add", { id, sql, elapsedMs, error }),
+  /** The latest first; those with `search` in them when it says anything */
+  historyList: (id: string, search: string, limit: number) => invoke<HistoryEntry[]>("history_list", { id, search, limit }),
+  historyClear: (id: string) => invoke<null>("history_clear", { id }),
   sessionLoad: () => invoke<Session>("session_load"),
   sessionSave: (session: Session) => invoke<null>("session_save", { session }),
   completionCatalog: (id: string) => invoke<CompletionCatalog>("completion_catalog", { id }),
