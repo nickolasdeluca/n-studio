@@ -323,6 +323,32 @@ fn editor_cursors_leave_blobs_to_be_read_on_demand() {
     assert!(conn.read_blob(tx, *source, true, 10).is_err());
 }
 
+/// A blob longer than one reply holds, and than Firebird 2.5 can say the
+/// length of: its replies count their bytes in a signed 16 bits
+#[test]
+fn a_blob_of_many_replies_reads_whole() {
+    let Some(conn) = connect() else { return };
+    let tx = conn.begin(read_only()).unwrap();
+    let parts = ["A", "B", "C", "D", "E"];
+    let sql = format!(
+        "select cast(rpad('', 30000, 'A') as blob sub_type 0) || {} from rdb$database",
+        parts[1..].iter().map(|c| format!("rpad('', 30000, '{c}')")).collect::<Vec<_>>().join(" || ")
+    );
+    let executed = conn.execute(tx, &sql, vec![], ExecuteOptions { plan: false, performance: false }).unwrap();
+    let page = conn.fetch(executed.cursor.unwrap(), 1).unwrap();
+    let Value::BlobRef { id, .. } = page.rows[0][0] else { panic!("expected an unread blob") };
+
+    let whole = conn.read_blob(tx, id, false, 1 << 20).unwrap();
+    assert!(whole.complete);
+    assert_eq!(whole.bytes.len(), 150_000);
+    for (i, part) in parts.iter().enumerate() {
+        assert!(whole.bytes[i * 30_000..(i + 1) * 30_000].iter().all(|b| *b == part.as_bytes()[0]), "part {part}");
+    }
+    let cut = conn.read_blob(tx, id, false, 100_000).unwrap();
+    assert_eq!((cut.bytes.len(), cut.complete), (100_000, false));
+    conn.end(tx, TxEnd::Rollback).unwrap();
+}
+
 /// Writes, so only against the fixture database; what it creates it drops
 #[test]
 fn a_script_runs_past_its_errors_and_commits_its_ddl() {
