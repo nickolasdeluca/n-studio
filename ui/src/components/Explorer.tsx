@@ -20,7 +20,8 @@ interface Row {
   expandable: boolean;
   expanded: boolean;
   selection?: Selection;
-  /** A folder of registrations, by its path: opens and closes, and is not selected */
+  /** A folder of registrations, by its path: the keyboard stops on it, and
+   *  nothing is selected while it does */
   folder?: string[];
   /** Grey: a registration not connected, or a placeholder line */
   dim?: boolean;
@@ -36,6 +37,12 @@ export function Explorer() {
   const { toggle, select, connect } = useStore.getState();
   const showMenu = useContextMenu((m) => m.show);
   const [focused, setFocused] = useState(false);
+  // The folder the keyboard is on: a folder is not a selection, which is
+  // a database or something of it
+  const [onFolder, setOnFolder] = useState<NodeKey | null>(null);
+  useEffect(() => {
+    if (selection) setOnFolder(null);
+  }, [selection]);
   const scroller = useRef<HTMLDivElement>(null);
 
   const rows = useMemo(() => {
@@ -119,7 +126,7 @@ export function Explorer() {
     return rows;
   }, [registrations, servers, connecting, trees, objects, expanded]);
 
-  const selectedKey = selection ? keyOf(selection) : null;
+  const selectedKey = selection ? keyOf(selection) : onFolder;
   const selectedIndex = rows.findIndex((r) => r.key === selectedKey);
 
   const virtualizer = useVirtualizer({
@@ -151,9 +158,17 @@ export function Explorer() {
     else if (row.expandable) open(row);
   };
 
+  const pick = (row: Row) => {
+    if (row.selection) select(row.selection);
+    else if (row.folder) {
+      select(null);
+      setOnFolder(row.key);
+    }
+  };
+
   const moveTo = (index: number) => {
     const row = rows[Math.max(0, Math.min(rows.length - 1, index))];
-    if (row?.selection) select(row.selection);
+    if (row) pick(row);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -174,7 +189,7 @@ export function Explorer() {
       case "ArrowRight":
         if (row?.expandable && !row.expanded) open(row, true);
         else if (row?.expanded) moveTo(selectedIndex + 1);
-        else if (row && !row.selection?.kind) activate(row);
+        else if (row && !row.folder && !row.selection?.kind) activate(row);
         break;
       case "ArrowLeft":
         if (row?.expanded) open(row, false);
@@ -183,7 +198,8 @@ export function Explorer() {
         }
         break;
       case "Enter":
-        if (row) activate(row);
+        if (row?.folder) open(row);
+        else if (row) activate(row);
         break;
       default:
         return;
@@ -239,7 +255,7 @@ export function Explorer() {
                 selected ? (focused ? "bg-selected" : "bg-selected-inactive") : "hover:bg-hover"
               } ${row.error ? "text-danger" : row.dim ? "text-muted" : ""}`}
               style={{ top: v.start, height: ROW, paddingLeft: 4 + row.depth * INDENT }}
-              onMouseDown={() => row.selection && select(row.selection)}
+              onMouseDown={() => pick(row)}
               onDoubleClick={() => (row.folder ? open(row) : activate(row))}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -328,6 +344,6 @@ function keyOf(s: Selection): NodeKey {
 }
 
 function nextSelectable(rows: Row[], from: number, step: 1 | -1): number {
-  for (let i = from + step; i >= 0 && i < rows.length; i += step) if (rows[i].selection) return i;
+  for (let i = from + step; i >= 0 && i < rows.length; i += step) if (rows[i].selection || rows[i].folder) return i;
   return from;
 }

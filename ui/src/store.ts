@@ -118,6 +118,27 @@ interface State {
   setBusy(busy: string | null): void;
 }
 
+/** The folders closed in the explorer, kept between runs like the layout */
+const CLOSED_FOLDERS = "n-studio.folders.closed.v1";
+
+function closedFolders(): Record<NodeKey, boolean> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(CLOSED_FOLDERS) ?? "[]");
+    return Array.isArray(saved) ? Object.fromEntries(saved.filter((k) => typeof k === "string").map((k) => [k, false])) : {};
+  } catch {
+    return {};
+  }
+}
+
+function keepClosedFolders(expanded: Record<NodeKey, boolean>) {
+  try {
+    const closed = Object.keys(expanded).filter((key) => key.startsWith("f:") && expanded[key] === false);
+    localStorage.setItem(CLOSED_FOLDERS, JSON.stringify(closed));
+  } catch {
+    // Not kept: the folders are open next time
+  }
+}
+
 const objectsKey = (id: string, kind: ObjectKind) => `${id}:${kind}`;
 
 /** Everything cached for a registration's connection, dropped on disconnect */
@@ -132,7 +153,7 @@ export const useStore = create<State>()((set, get) => ({
   connecting: {},
   trees: {},
   objects: {},
-  expanded: {},
+  expanded: closedFolders(),
   selection: null,
   dialog: null,
   notice: null,
@@ -158,6 +179,7 @@ export const useStore = create<State>()((set, get) => ({
 
   toggle(key, open) {
     set((s) => ({ expanded: { ...s.expanded, [key]: open ?? !s.expanded[key] } }));
+    if (key.startsWith("f:")) keepClosedFolders(get().expanded);
   },
 
   async connect(id, password, remember = false) {
