@@ -237,7 +237,13 @@ impl Plan<'_> {
             .zip(row)
             .map(|(name, value)| {
                 let column = self.target.columns.iter().find(|c| &c.name == name).expect("a column of the plan");
-                lit(column, value)
+                // Padded on either side, the spaces at the end say nothing:
+                // a CHAR read into a VARCHAR would differ from it for ever
+                let padded = self.source.columns.iter().any(|c| &c.name == name && c.data_type.is_padded());
+                match value {
+                    Value::Text(s) if padded => lit(column, &Value::Text(s.trim_end_matches(' ').to_string())),
+                    _ => lit(column, value),
+                }
             })
             .collect()
     }

@@ -54,7 +54,7 @@ fn the_fixture_lists_what_it_seeded() {
     let list = |kind| objects(&conn, kind).unwrap();
 
     assert_eq!(names(&list(ObjectKind::Domain)), ["D_FLAG", "D_ID", "D_MONEY"]);
-    let mut tables = vec!["BULK_ROWS", "PEDIDO", "PEDIDO_ITEM", "TIPOS"];
+    let mut tables = vec!["BULK_ROWS", "CMP_SOURCE", "CMP_TARGET", "PEDIDO", "PEDIDO_ITEM", "TIPOS"];
     if major >= 3 {
         tables.push("TIPOS_FB3");
     }
