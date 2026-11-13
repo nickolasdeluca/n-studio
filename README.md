@@ -106,6 +106,10 @@ builds the universal `.dmg`, signs it and the app with the Developer ID, has
 Apple notarize it and staples the answer, and leaves it in `dist/`. That one
 opens without the detour above.
 
+On Windows, `.\scripts\build-release.ps1` builds the setup the workflow builds
+and leaves it in `dist\`. It is not signed: there is no Authenticode
+certificate yet.
+
 ## Running the app
 
 ```sh
