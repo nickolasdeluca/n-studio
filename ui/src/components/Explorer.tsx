@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { kindActions, objectActions, registrationActions } from "../actions";
 import { openObject } from "../dock";
-import { serverSummary, type ObjectKind } from "../api";
+import { serverSummary, type ObjectKind, type RegistrationView } from "../api";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { keys, useStore, type NodeKey, type Selection } from "../store";
@@ -20,6 +20,8 @@ interface Row {
   expandable: boolean;
   expanded: boolean;
   selection?: Selection;
+  /** A folder of registrations: opens and closes, and is not selected */
+  folder?: boolean;
   /** Grey: a registration not connected, or a placeholder line */
   dim?: boolean;
   error?: boolean;
@@ -38,13 +40,13 @@ export function Explorer() {
 
   const rows = useMemo(() => {
     const rows: Row[] = [];
-    for (const r of registrations) {
+    const add = (r: RegistrationView, depth: number) => {
       const server = servers[r.id];
       const key = keys.registration(r.id);
       const open = !!server && !!expanded[key];
       rows.push({
         key,
-        depth: 0,
+        depth,
         label: r.name,
         icon: "database",
         title: `${r.host}:${r.port} · ${r.database}${server ? `\n${serverSummary(server)}` : ""}`,
@@ -54,16 +56,16 @@ export function Explorer() {
         dim: !server,
         busy: connecting[r.id],
       });
-      if (!open) continue;
+      if (!open) return;
       const tree = trees[r.id];
-      if (tree?.error) rows.push(placeholder(`${key}/e`, 1, tree.error, true));
-      else if (!tree?.data) rows.push(placeholder(`${key}/l`, 1, t("Loading…")));
+      if (tree?.error) rows.push(placeholder(`${key}/e`, depth + 1, tree.error, true));
+      else if (!tree?.data) rows.push(placeholder(`${key}/l`, depth + 1, t("Loading…")));
       for (const k of tree?.data ?? []) {
         const kindKey = keys.kind(r.id, k.kind);
         const kindOpen = k.count > 0 && !!expanded[kindKey];
         rows.push({
           key: kindKey,
-          depth: 1,
+          depth: depth + 1,
           label: t(k.label),
           detail: `(${k.count.toLocaleString()})`,
           icon: k.kind,
@@ -74,12 +76,12 @@ export function Explorer() {
         });
         if (!kindOpen) continue;
         const list = objects[`${r.id}:${k.kind}`];
-        if (list?.error) rows.push(placeholder(`${kindKey}/e`, 2, list.error, true));
-        else if (!list?.data) rows.push(placeholder(`${kindKey}/l`, 2, t("Loading…")));
+        if (list?.error) rows.push(placeholder(`${kindKey}/e`, depth + 2, list.error, true));
+        else if (!list?.data) rows.push(placeholder(`${kindKey}/l`, depth + 2, t("Loading…")));
         for (const o of list?.data ?? []) {
           rows.push({
             key: keys.object(r.id, k.kind, o.name),
-            depth: 2,
+            depth: depth + 2,
             label: o.name,
             detail: o.parent ?? undefined,
             title: o.description ?? undefined,
@@ -90,7 +92,30 @@ export function Explorer() {
           });
         }
       }
-    }
+    };
+    const list = (folder: Folder) => {
+      for (const item of folder.items) {
+        if (!("items" in item)) {
+          add(item, folder.path.length);
+          continue;
+        }
+        const key = keys.folder(item.path);
+        // Open until it is closed: a folder hides what the explorer is for
+        const open = expanded[key] !== false;
+        rows.push({
+          key,
+          depth: folder.path.length,
+          label: item.path[item.path.length - 1],
+          detail: open ? undefined : `(${count(item)})`,
+          icon: "folder",
+          expandable: true,
+          expanded: open,
+          folder: true,
+        });
+        if (open) list(item);
+      }
+    };
+    list(folders(registrations));
     return rows;
   }, [registrations, servers, connecting, trees, objects, expanded]);
 
@@ -215,7 +240,7 @@ export function Explorer() {
               } ${row.error ? "text-danger" : row.dim ? "text-muted" : ""}`}
               style={{ top: v.start, height: ROW, paddingLeft: 4 + row.depth * INDENT }}
               onMouseDown={() => row.selection && select(row.selection)}
-              onDoubleClick={() => activate(row)}
+              onDoubleClick={() => (row.folder ? open(row) : activate(row))}
               onContextMenu={(e) => {
                 e.preventDefault();
                 if (!row.selection) return;
@@ -243,7 +268,7 @@ export function Explorer() {
               {row.icon && (
                 <Icon
                   name={row.icon}
-                  className={`shrink-0 ${row.dim && row.depth === 0 ? "text-faint" : (kindColor[row.icon] ?? "")} ${
+                  className={`shrink-0 ${row.folder || (row.dim && row.icon === "database") ? "text-faint" : (kindColor[row.icon] ?? "")} ${
                     row.busy ? "animate-pulse" : ""
                   }`}
                 />
@@ -256,6 +281,39 @@ export function Explorer() {
       </div>
     </div>
   );
+}
+
+/** A folder of the explorer: registrations, and folders inside it */
+interface Folder {
+  path: string[];
+  items: (Folder | RegistrationView)[];
+}
+
+/** The registrations as a tree. A folder comes where its first registration is. */
+function folders(registrations: RegistrationView[]): Folder {
+  const root: Folder = { path: [], items: [] };
+  const byKey = new Map<string, Folder>();
+  for (const r of registrations) {
+    let folder = root;
+    for (let depth = 1; depth <= r.folder.length; depth++) {
+      const path = r.folder.slice(0, depth);
+      const key = keys.folder(path);
+      let inner = byKey.get(key);
+      if (!inner) {
+        inner = { path, items: [] };
+        byKey.set(key, inner);
+        folder.items.push(inner);
+      }
+      folder = inner;
+    }
+    folder.items.push(r);
+  }
+  return root;
+}
+
+/** The registrations under a folder, however deep */
+function count(folder: Folder): number {
+  return folder.items.reduce((n, item) => n + ("items" in item ? count(item) : 1), 0);
 }
 
 function placeholder(key: string, depth: number, label: string, error = false): Row {

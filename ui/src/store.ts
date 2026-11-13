@@ -30,6 +30,8 @@ export type NodeKey = string;
 
 export const keys = {
   registration: (id: string) => `r:${id}`,
+  /** A folder of registrations, by its path. Open unless it was closed. */
+  folder: (path: string[]) => `f:${path.join("\u0001")}`,
   kind: (id: string, kind: ObjectKind) => `k:${id}:${kind}`,
   object: (id: string, kind: ObjectKind, name: string) => `o:${id}:${kind}:${name}`,
 };

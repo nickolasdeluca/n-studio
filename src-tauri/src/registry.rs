@@ -17,6 +17,10 @@ pub struct Registration {
     pub id: String,
     /// What the explorer shows: an alias the user picks
     pub name: String,
+    /// The explorer's folders it is under, outermost first; none is the
+    /// top. A folder is there while a registration names it.
+    #[serde(default)]
+    pub folder: Vec<String>,
     /// Whether the password lives in the OS keychain, or is asked on connect
     pub save_password: bool,
     #[serde(flatten)]
@@ -101,6 +105,11 @@ impl Registration {
     }
 }
 
+/// A folder path as it is kept: each name trimmed, the empty ones gone
+fn folder_path(folder: &[String]) -> Vec<String> {
+    folder.iter().map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect()
+}
+
 /// The registrations file. Every change is written through at once.
 pub struct Registry {
     path: PathBuf,
@@ -153,6 +162,7 @@ impl Registry {
     pub fn save(&mut self, mut registration: Registration) -> AppResult<Registration> {
         registration.validate()?;
         registration.name = registration.name.trim().to_string();
+        registration.folder = folder_path(&registration.folder);
         if registration.id.is_empty() {
             registration.id = uuid::Uuid::new_v4().to_string();
             self.registrations.push(registration.clone());
@@ -189,6 +199,7 @@ mod tests {
         Registration {
             id: String::new(),
             name: " Local ".into(),
+            folder: Vec::new(),
             save_password: true,
             engine: Engine::Firebird(FirebirdSettings {
                 host: "localhost".into(),
@@ -234,6 +245,23 @@ mod tests {
         assert!(text.contains(r#""engine": "firebird""#), "{text}");
         assert!(text.contains(r#""dialect": "3""#), "{text}");
         assert!(!text.contains(r#""password""#), "{text}");
+    }
+
+    #[test]
+    fn a_folder_is_kept_trimmed_and_a_file_without_one_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::load(dir.path()).unwrap();
+        let mut r = sample();
+        r.folder = vec![" Customers ".into(), "".into(), "North".into()];
+        let saved = registry.save(r).unwrap();
+        assert_eq!(saved.folder, ["Customers", "North"]);
+        assert_eq!(Registry::load(dir.path()).unwrap().get(&saved.id).unwrap().folder, ["Customers", "North"]);
+
+        // Written before there were folders
+        let old = r#"{"version":1,"registrations":[{"id":"a","name":"Old","savePassword":false,"engine":"firebird",
+            "host":"localhost","port":3050,"database":"employee","user":"SYSDBA","charset":"UTF8","dialect":"3"}]}"#;
+        std::fs::write(dir.path().join("registrations.json"), old).unwrap();
+        assert!(Registry::load(dir.path()).unwrap().get("a").unwrap().folder.is_empty());
     }
 
     #[test]

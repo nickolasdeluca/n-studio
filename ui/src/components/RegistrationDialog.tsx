@@ -8,6 +8,7 @@ const blank: Registration = {
   engine: "firebird",
   id: "",
   name: "",
+  folder: [],
   savePassword: true,
   host: "localhost",
   port: 3050,
@@ -25,8 +26,11 @@ type Test = { state: "idle" } | { state: "running" } | { state: "ok"; text: stri
 /** Register a database, or edit a registration */
 export function RegistrationDialog({ registration }: { registration: Registration | null }) {
   const charsets = useStore((s) => s.charsets);
+  const registrations = useStore((s) => s.registrations);
   const editing = !!registration;
   const [r, setR] = useState<Registration>(registration ?? blank);
+  // As typed: "Customers / North". It is a path once saved.
+  const [folder, setFolder] = useState((registration?.folder ?? []).join(" / "));
   const [password, setPassword] = useState("");
   // Until the user edits the name, it follows the database file name
   const [nameTouched, setNameTouched] = useState(editing);
@@ -57,7 +61,8 @@ export function RegistrationDialog({ registration }: { registration: Registratio
     setSaving(true);
     try {
       // An empty field saves nothing: the password is asked on connect
-      const saved = await useStore.getState().saveRegistration(r, r.savePassword && password ? password : null);
+      const placed = { ...r, folder: folder.split("/").map((name) => name.trim()).filter(Boolean) };
+      const saved = await useStore.getState().saveRegistration(placed, r.savePassword && password ? password : null);
       close();
       useStore.getState().select({ id: saved.id });
     } catch (e) {
@@ -122,7 +127,7 @@ export function RegistrationDialog({ registration }: { registration: Registratio
             }}
           />
         </Field>
-        <Field label={t("Name in the explorer")} className="col-span-6">
+        <Field label={t("Name in the explorer")} className="col-span-3">
           <input
             className={inputClass}
             value={r.name}
@@ -132,6 +137,21 @@ export function RegistrationDialog({ registration }: { registration: Registratio
               update({ name: e.target.value });
             }}
           />
+        </Field>
+
+        <Field label={t("Folder")} hint={t("One inside another: Customers / North")} className="col-span-3">
+          <input
+            className={inputClass}
+            value={folder}
+            placeholder={t("none")}
+            list="registration-folders"
+            onChange={(e) => setFolder(e.target.value)}
+          />
+          <datalist id="registration-folders">
+            {[...new Set(registrations.filter((x) => x.folder.length > 0).map((x) => x.folder.join(" / ")))].map((path) => (
+              <option key={path} value={path} />
+            ))}
+          </datalist>
         </Field>
 
         <div className="col-span-6 mt-1 border-t border-line" />

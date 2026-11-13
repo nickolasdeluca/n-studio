@@ -13,6 +13,7 @@ const blank: Registration = {
   engine: "firebird",
   id: "",
   name: "IBExpert",
+  folder: [],
   savePassword: false,
   host: "localhost",
   port: 3050,
@@ -199,7 +200,9 @@ export function IbexpertDialog() {
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline gap-2">
                         <span className="font-medium">{d.registration.name}</span>
-                        {d.folder && <span className="truncate text-[11.5px] text-faint">{d.folder}</span>}
+                        {d.registration.folder.length > 0 && (
+                          <span className="truncate text-[11.5px] text-faint">{d.registration.folder.join(" / ")}</span>
+                        )}
                         {d.registered && <span className="ml-auto shrink-0 text-[11.5px] text-muted">{t("already registered")}</span>}
                       </span>
                       <span className="block truncate font-mono text-[11.5px] text-muted">

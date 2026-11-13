@@ -10,6 +10,8 @@ export interface FirebirdRegistration {
   /** Empty until saved */
   id: string;
   name: string;
+  /** The explorer's folders it is under, outermost first; none is the top */
+  folder: string[];
   savePassword: boolean;
   host: string;
   port: number;
@@ -243,9 +245,7 @@ export interface FormatStyle {
 /** What an IBExpert User Database has to bring over */
 export interface IbexpertFound {
   databases: {
-    /** The folders it is under in IBExpert's explorer: "Customers / North" */
-    folder: string;
-    /** Not saved yet */
+    /** Not saved yet, under the folders IBExpert's explorer has it in */
     registration: Registration;
     /** The same server, port and database are registered here already */
     registered: boolean;

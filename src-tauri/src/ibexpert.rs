@@ -35,9 +35,7 @@ pub struct Found {
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FoundDatabase {
-    /// The folders it is under, outermost first: "Customers / North"
-    pub folder: String,
-    /// Not saved yet: without an id
+    /// Not saved yet: without an id, under the folders IBExpert has it in
     pub registration: Registration,
     /// The same server, port and database are registered here already
     pub registered: bool,
@@ -108,6 +106,7 @@ fn registration(text: &str) -> Option<(Registration, Option<String>)> {
     let registration = Registration {
         id: String::new(),
         name,
+        folder: Vec::new(),
         save_password: false,
         engine: Engine::Firebird(FirebirdSettings {
             host,
@@ -148,9 +147,9 @@ fn databases(rows: &[Row], existing: &[Registration]) -> Vec<FoundDatabase> {
                     inner.push(caption);
                 }
                 walk(rows, row.id, &inner, depth + 1, existing, out);
-            } else if let Some((registration, charset_replaced)) = registration(&row.props) {
+            } else if let Some((mut registration, charset_replaced)) = registration(&row.props) {
+                registration.folder = path.iter().map(|name| name.to_string()).collect();
                 out.push(FoundDatabase {
-                    folder: path.join(" / "),
                     registered: existing.iter().any(|e| same_database(e, &registration)),
                     registration,
                     charset_replaced,
@@ -346,8 +345,13 @@ mod tests {
         ];
         let (registered, _) = registration("DBName=A.FDB\nSrvName=LOCALHOST\n").unwrap();
         let found = databases(&rows, &[registered]);
-        let listed: Vec<_> = found.iter().map(|d| (d.registration.name.as_str(), d.folder.as_str(), d.registered)).collect();
-        assert_eq!(listed, [("First", "", false), ("A", "Customers / North", true), ("B", "Customers / North", false)]);
+        let listed: Vec<_> =
+            found.iter().map(|d| (d.registration.name.as_str(), d.registration.folder.join(" / "), d.registered)).collect();
+        let under = |name, folder: &str, registered| (name, folder.to_string(), registered);
+        assert_eq!(
+            listed,
+            [under("First", "", false), under("A", "Customers / North", true), under("B", "Customers / North", false)]
+        );
     }
 
     #[test]
