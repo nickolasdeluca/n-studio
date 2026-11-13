@@ -14,7 +14,7 @@ members = [
 [workspace.package]
 # The app's version: tauri.conf.json names none, so the bundles take this one,
 # and a release tag is this with a `v` before it.
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/nickolasdeluca/n-studio"
