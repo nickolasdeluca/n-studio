@@ -1,8 +1,12 @@
 name: Release
 
-# The installers. On a version tag they become a GitHub pre-release; run by hand
-# they are only built and kept as the run's artifacts, which is how a change to
-# the bundling is tried before anything is tagged.
+# The installers. On a version tag the Windows and Linux ones become a draft
+# pre-release on GitHub, which waits for the one file this workflow cannot
+# make: the macOS installer signed with a Developer ID and notarized, built
+# on a Mac that has the certificate (`scripts/build-release.sh --release`
+# uploads it and publishes the release). Run by hand, the installers are
+# only built and kept as the run's artifacts, which is how a change to the
+# bundling is tried before anything is tagged.
 on:
   push:
     tags: ["v*"]
@@ -42,6 +46,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Signed ad hoc, and so never published: it is built to know that
+          # the bundle still builds, and kept as the run's artifact
           - name: macOS (universal)
             os: macos-latest
             targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -94,7 +100,7 @@ jobs:
             target/release/bundle/appimage/*.AppImage
 
   publish:
-    name: pre-release
+    name: draft pre-release
     if: github.ref_type == 'tag'
     needs: [version, bundle]
     runs-on: ubuntu-latest
@@ -105,11 +111,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Everything but the ad hoc .dmg. A draft: it is published from the Mac
+      # that adds the notarized one, so no release is ever seen without it.
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          find dist -type f -print0 | xargs -0 gh release create "$GITHUB_REF_NAME" \
+          find dist -type f ! -name '*.dmg' -print0 | xargs -0 gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "N Studio ${{ needs.version.outputs.version }}" \
-            --prerelease --generate-notes \
-            --notes "Unsigned builds: the README says how each system is told to open them."
+            --draft --prerelease --generate-notes \
+            --notes "macOS: signed and notarized. Windows and Linux: unsigned builds; the README says how each system is told to open them."

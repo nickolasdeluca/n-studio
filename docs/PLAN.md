@@ -383,9 +383,10 @@ where update-statement generation and dirty-row tracking already have to exist.
 
 **Distribution: unsigned CI artifacts until the tool is worth installing.**
 GitHub Actions builds macOS/Windows/Linux bundles per release (M7; first planned
-per commit). No Developer ID,
-no Windows cert, no updater plugin before M2 ships. macOS users right-click-open;
-Windows shows SmartScreen. Signing and package-manager presence get revisited once
+per commit). No Windows cert and no updater plugin yet: Windows shows
+SmartScreen. The macOS installer is the exception since the alpha: signed with
+a Developer ID and notarized on a Mac, and added to the release the workflow
+drafts with the other two (the README says how). Signing and package-manager presence get revisited once
 there is something to distribute.
 
 **Engines: Firebird now, an engine boundary from M1.**

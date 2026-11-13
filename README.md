@@ -75,15 +75,13 @@ docs/                plan and spike findings
 
 ## Installing
 
-Releases carry one installer per system, built by
-[the release workflow](.github/workflows/release.yml) from a `v…` tag. They are
-not signed, so each system has to be told once that the app may run:
+Releases carry one installer per system. The Windows and Linux ones are built
+by [the release workflow](.github/workflows/release.yml) from a `v…` tag and
+are not signed, so those systems have to be told once that the app may run;
+the macOS one is signed and notarized, and is added from a Mac (below).
 
 - **macOS** (`.dmg`, Intel and Apple Silicon in one): drag the app to
-  Applications and open it; unless it is the notarized build (below), after
-  the refusal, *System Settings → Privacy &
-  Security → Open Anyway*. Or, in a terminal:
-  `xattr -dr com.apple.quarantine "/Applications/N Studio.app"`.
+  Applications and open it.
 - **Windows** (`…-setup.exe`): SmartScreen's *More info → Run anyway*. The
   installer fetches the WebView2 runtime where Windows does not have it yet.
 - **Linux**: `sudo apt install ./n-studio_….deb`, or make the `.AppImage`
@@ -92,19 +90,30 @@ not signed, so each system has to be told once that the app may run:
 
 The status bar shows the version; name it when reporting something.
 
-### A signed macOS installer
+### Making a release
 
-The workflow's `.dmg` is signed ad hoc: the Developer ID certificate lives in a
-keychain, not in the repository. On a Mac that has it,
+The Developer ID certificate lives in a keychain, not in the repository, so
+the workflow cannot make the macOS installer: its own `.dmg` is signed ad hoc,
+built only to know that the bundle builds, and never published. A release is
+made in two steps:
 
 ```sh
-cp scripts/build-release.env.example scripts/build-release.env   # once; fill it in
-scripts/build-release.sh
+git tag v0.1.0 && git push origin v0.1.0    # the version in Cargo.toml
+scripts/build-release.sh --release          # on a Mac with the certificate
 ```
 
-builds the universal `.dmg`, signs it and the app with the Developer ID, has
-Apple notarize it and staples the answer, and leaves it in `dist/`. That one
-opens without the detour above.
+The tag has the workflow build the Windows and Linux installers into a
+**draft** pre-release. The script builds the universal `.dmg`, signs it and
+the app with the Developer ID, has Apple notarize it and staples the answer;
+then it adds the `.dmg` to that draft and publishes it. It refuses a commit
+that is not the tagged one, an installer Apple has not notarized, and a draft
+the Windows installer has not reached, so a release is never seen with a
+system missing. `--release-only` adds the `.dmg` already in `dist/`, for when
+the workflow was still running.
+
+Without arguments the script only builds, signs and notarizes, into `dist/`
+(`cp scripts/build-release.env.example scripts/build-release.env` once, and
+fill it in).
 
 On Windows, `.\scripts\build-release.ps1` builds the setup the workflow builds
 and leaves it in `dist\`. It is not signed: there is no Authenticode
