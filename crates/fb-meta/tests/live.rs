@@ -82,6 +82,37 @@ fn the_fixture_lists_what_it_seeded() {
 }
 
 #[test]
+fn the_completion_catalog_agrees_with_the_lists() {
+    use fb_meta::complete::{catalog, RelationKind};
+    let Some(conn) = connect() else { return };
+    let started = std::time::Instant::now();
+    let catalog = catalog(&conn).unwrap();
+    let columns: usize = catalog.relations.iter().map(|r| r.columns.len()).sum();
+    eprintln!(
+        "catalog: {} relations, {columns} columns, {} other names in {:?}",
+        catalog.relations.len(),
+        catalog.others.len(),
+        started.elapsed()
+    );
+
+    let of = |kind: RelationKind| {
+        catalog.relations.iter().filter(|r| r.kind == kind).map(|r| r.word.name.as_str()).collect::<Vec<_>>()
+    };
+    let tables = objects(&conn, ObjectKind::Table).unwrap();
+    let views = objects(&conn, ObjectKind::View).unwrap();
+    assert_eq!(of(RelationKind::Table), names(&tables));
+    assert_eq!(of(RelationKind::View), names(&views));
+    assert!(catalog.relations.iter().all(|r| !r.columns.is_empty()));
+    // A name is written bare or in quotes, and never changed
+    for word in catalog.relations.iter().flat_map(|r| std::iter::once(&r.word).chain(&r.columns)) {
+        assert!(word.sql == word.name || word.sql == format!("\"{}\"", word.name.replace('"', "\"\"")));
+    }
+    let procedures = objects(&conn, ObjectKind::Procedure).unwrap();
+    let listed = catalog.others.iter().filter(|o| o.kind == ObjectKind::Procedure).count();
+    assert_eq!(listed, procedures.len());
+}
+
+#[test]
 fn the_fixture_completes_its_names() {
     use fb_meta::complete::{catalog, RelationKind};
     let Some(conn) = fixture() else { return };

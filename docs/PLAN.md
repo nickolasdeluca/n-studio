@@ -290,6 +290,14 @@ parts of the editor's daily loop the feature milestones walked past.
 6. **The README** says what the alpha does, what it does not, and how to
    install it.
 
+Where it stands: 1 to 4 and 6 are in place. Of 5, the backend's part: the live
+suites of `fb-core` and `fb-meta`, read-only, against a production ERP
+database (Firebird 4.0.4, dialect 3, default character set `NONE`, 1,322
+tables, 1,549 procedures) pass, and the completion catalog reads its 1,380
+relations and 20,714 columns in under a second over a link of some 95 ms a
+round trip. The app's own window in a tester's hands, a dialect 1 database and
+a `WIN1252` default are still to come, and with them the first tag.
+
 Exit criterion: a tester installs a released bundle, registers a database of
 their own and works a day in it without the source tree.
 
