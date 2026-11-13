@@ -274,6 +274,23 @@ export interface DiagramReference {
   toColumns: string[];
 }
 
+/** A name, and how SQL writes it in its database */
+export interface Word {
+  name: string;
+  sql: string;
+}
+
+export interface CatalogRelation extends Word {
+  kind: "table" | "view" | "system";
+  columns: Word[];
+}
+
+/** Every name an SQL editor completes */
+export interface CompletionCatalog {
+  relations: CatalogRelation[];
+  others: (Word & { kind: ObjectKind })[];
+}
+
 export interface Diagram {
   tables: DiagramTable[];
   references: DiagramReference[];
@@ -560,6 +577,7 @@ export const api = {
   disconnect: (id: string) => invoke<void>("disconnect", { id }),
   explorerTree: (id: string) => invoke<TreeKind[]>("explorer_tree", { id }),
   objectList: (id: string, kind: ObjectKind) => invoke<DbObject[]>("object_list", { id, kind }),
+  completionCatalog: (id: string) => invoke<CompletionCatalog>("completion_catalog", { id }),
   objectTabs: (kind: ObjectKind) => invoke<TabInfo[]>("object_tabs", { kind }),
   objectTab: (id: string, kind: ObjectKind, name: string, tab: string) =>
     invoke<TabContent>("object_tab", { id, kind, name, tab }),

@@ -81,6 +81,34 @@ fn the_fixture_lists_what_it_seeded() {
     }
 }
 
+#[test]
+fn the_fixture_completes_its_names() {
+    use fb_meta::complete::{catalog, RelationKind};
+    let Some(conn) = fixture() else { return };
+    let catalog = catalog(&conn).unwrap();
+    let relation = |name: &str| catalog.relations.iter().find(|r| r.word.name == name).expect(name);
+    let columns = |name: &str| relation(name).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+
+    // Columns in declared order, computed ones among them
+    assert_eq!(columns("PEDIDO_ITEM"), ["PEDIDO", "ITEM", "QTD", "PRECO", "TOTAL", "PAGO"]);
+    assert_eq!(relation("PEDIDO_ITEM").kind, RelationKind::Table);
+    assert_eq!(columns("V_PEDIDO_TOTAL"), ["PEDIDO", "TOTAL"]);
+    assert_eq!(relation("V_PEDIDO_TOTAL").kind, RelationKind::View);
+    assert_eq!(relation("RDB$DATABASE").kind, RelationKind::System);
+    assert!(columns("RDB$RELATIONS").contains(&"RDB$RELATION_NAME"));
+    // Each relation once, by name
+    assert!(catalog.relations.windows(2).all(|w| w[0].word.name < w[1].word.name));
+
+    let other = |name: &str| catalog.others.iter().find(|o| o.word.name == name).map(|o| o.kind);
+    assert_eq!(other("P_FIXTURE"), Some(ObjectKind::Procedure));
+    assert_eq!(other("GEN_TIPOS_ID"), Some(ObjectKind::Generator));
+    assert_eq!(other("E_FIXTURE"), Some(ObjectKind::Exception));
+    assert_eq!(other("D_MONEY"), Some(ObjectKind::Domain));
+    // Not a relation, and not something a statement names
+    assert_eq!(other("PEDIDO"), None);
+    assert_eq!(other("TIPOS_BI"), None);
+}
+
 fn fixture() -> Option<Connection> {
     if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
         return None;

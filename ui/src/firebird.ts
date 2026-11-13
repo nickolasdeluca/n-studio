@@ -1,8 +1,9 @@
 // Firebird SQL for CodeMirror: the keywords of Firebird 5 (reserved and not),
 // its types and built-in functions, PSQL included, and the editor's look in
 // the app's tokens.
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { SQLDialect, sql } from "@codemirror/lang-sql";
+import type { CompletionContext } from "@codemirror/autocomplete";
+import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
+import { SQLDialect, keywordCompletionSource } from "@codemirror/lang-sql";
 import { EditorView } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 
@@ -81,7 +82,19 @@ export const firebirdDialect = SQLDialect.define({
   plsqlQuotingMechanism: true,
 });
 
-export const firebirdSql = sql({ dialect: firebirdDialect, upperCaseKeywords: true });
+const keywordSource = keywordCompletionSource(firebirdDialect, true);
+
+/** Keywords complete where a keyword can be: not after a dot, where only a
+ *  column follows, and not inside a quoted name */
+function keywordCompletion(context: CompletionContext) {
+  const word = context.matchBefore(/[\w$]*/);
+  const before = context.state.sliceDoc(Math.max(0, (word ? word.from : context.pos) - 1), word ? word.from : context.pos);
+  return before === "." || before === '"' ? null : keywordSource(context);
+}
+
+export const firebirdSql = new LanguageSupport(firebirdDialect.language, [
+  firebirdDialect.language.data.of({ autocomplete: keywordCompletion }),
+]);
 
 const highlight = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--sql-keyword)", fontWeight: "600" },

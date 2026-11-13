@@ -269,8 +269,9 @@ parts of the editor's daily loop the feature milestones walked past.
    nobody reads the result of. Unsigned still; the README says how each system
    is talked into opening it. One version number, the workspace's, starting at
    `0.1.0`, shown in the app so a report can name it.
-2. **Completion.** Keywords, and the catalog `fb-meta` already reads: tables,
-   views, routines, generators, and a table's columns after its name or alias.
+2. **Completion.** The editor completes keywords and nothing else. It gets the
+   catalog `fb-meta` already reads: tables, views, routines, generators, and a
+   table's columns after its name or alias.
 3. **Scripts as files.** Open a `.sql` into a tab, save a tab to a file, and say
    so before closing one that has unsaved text. Tabs and their text come back
    when the app is opened again.

@@ -36,6 +36,7 @@ fn main() {
             commands::disconnect,
             commands::explorer_tree,
             commands::object_list,
+            commands::completion_catalog,
             objects::object_tabs,
             objects::object_tab,
             objects::extract_metadata,

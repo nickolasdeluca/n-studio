@@ -19,6 +19,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { TxEnd } from "../api";
 import { drafts, isolations, ms, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
+import { catalogCompletion, prepareCompletion } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon } from "../icons";
@@ -151,6 +152,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
           highlightSelectionMatches(),
           errorField,
           firebirdSql,
+          catalogCompletion(() => useEditors.getState().tabs[id]?.registration),
           editorLook,
           EditorState.tabSize.of(2),
           keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
@@ -221,6 +223,9 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
   const { tab, run, end } = props;
   const showMenu = useContextMenu((m) => m.show);
   const connected = useStore((s) => !!s.servers[tab.registration]);
+  useEffect(() => {
+    if (connected) prepareCompletion(tab.registration);
+  }, [connected, tab.registration]);
   const scriptMenu = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const { stopOnError, autoDdl } = tab.scriptOptions;

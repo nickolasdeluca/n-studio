@@ -246,6 +246,16 @@ pub async fn object_list(app: AppHandle, id: String, kind: ObjectKind) -> AppRes
     .await
 }
 
+/// Every name the SQL editor completes on this registration
+#[tauri::command]
+pub async fn completion_catalog(app: AppHandle, id: String) -> AppResult<fb_meta::complete::Catalog> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        Ok(fb_meta::complete::catalog(&conn)?)
+    })
+    .await
+}
+
 fn open(registration: &Registration, password: String) -> AppResult<Connection> {
     match &registration.engine {
         Engine::Firebird(settings) => Ok(Connection::open(&settings.connect_params(password))?),

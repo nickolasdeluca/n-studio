@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod change;
 pub mod compare;
+pub mod complete;
 pub mod data;
 pub mod debug;
 pub mod ddl;

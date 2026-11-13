@@ -1,7 +1,7 @@
 // An object's viewer: a row of tabs the backend names, each drawn by its
 // shape. Nothing here knows what a Firebird table is made of; a row that
 // stands for another object opens that object's viewer.
-import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -13,6 +13,7 @@ import { api, errorText, type Action, type CellKind, type GridRow, type GridSect
 import { extractMetadata, startAction } from "../actions";
 import { openEditor, openObject } from "../dock";
 import { useEditors } from "../editors";
+import { catalogCompletion } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
@@ -323,6 +324,8 @@ function SqlText({ viewer, text, editable }: { viewer: Viewer; text: string; edi
           indentOnInput(),
           bracketMatching(),
           closeBrackets(),
+          autocompletion(),
+          catalogCompletion(() => viewer.registration),
           highlightSelectionMatches(),
           EditorState.tabSize.of(2),
           Prec.highest(
@@ -336,7 +339,7 @@ function SqlText({ viewer, text, editable }: { viewer: Viewer; text: string; edi
               })),
             ),
           ),
-          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, indentWithTab]),
+          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged) return;
             const doc = update.state.doc.toString();

@@ -1,0 +1,121 @@
+//! The names an SQL editor completes: every relation with its columns, and
+//! what else a statement can name. Read whole, in a few queries, so that
+//! completing costs the editor no round trip.
+
+use fb_core::{Connection, Error, Result, Value};
+use serde::Serialize;
+
+use crate::ident::quote;
+use crate::{objects, ObjectKind};
+
+/// A name, and how SQL writes it in this database: in double quotes when it
+/// would not read back bare
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Word {
+    pub name: String,
+    pub sql: String,
+}
+
+impl Word {
+    fn new(name: String, dialect: u32) -> Self {
+        Word { sql: quote(&name, dialect), name }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationKind {
+    Table,
+    View,
+    /// The catalog's own: `RDB$`, `MON$`, `SEC$`
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Relation {
+    #[serde(flatten)]
+    pub word: Word,
+    pub kind: RelationKind,
+    /// In the order the relation declares them
+    pub columns: Vec<Word>,
+}
+
+/// Something that is not a relation but is named in statements
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Named {
+    #[serde(flatten)]
+    pub word: Word,
+    pub kind: ObjectKind,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Catalog {
+    /// By name
+    pub relations: Vec<Relation>,
+    pub others: Vec<Named>,
+}
+
+/// The kinds besides relations that statements name
+const OTHERS: [ObjectKind; 6] = [
+    ObjectKind::Procedure,
+    ObjectKind::Function,
+    ObjectKind::Package,
+    ObjectKind::Generator,
+    ObjectKind::Exception,
+    ObjectKind::Domain,
+];
+
+pub fn catalog(conn: &Connection) -> Result<Catalog> {
+    let dialect = conn.info().dialect;
+    let rows = conn
+        .query(
+            "select trim(rf.rdb$relation_name), trim(rf.rdb$field_name), \
+                    coalesce(r.rdb$system_flag, 0), \
+                    case when r.rdb$view_blr is null then 0 else 1 end \
+             from rdb$relation_fields rf \
+             join rdb$relations r on r.rdb$relation_name = rf.rdb$relation_name \
+             order by 1, rf.rdb$field_position",
+            vec![],
+        )?
+        .rows;
+
+    let mut relations: Vec<Relation> = Vec::new();
+    for row in rows {
+        let text = |i: usize| row.get(i).and_then(Value::as_str).map(str::to_owned);
+        let int = |i: usize| row.get(i).and_then(Value::as_i64);
+        let (Some(relation), Some(column), Some(system), Some(view)) = (text(0), text(1), int(2), int(3)) else {
+            return Err(Error::Client { message: format!("unexpected column row {row:?}") });
+        };
+        if relations.last().is_none_or(|r| r.word.name != relation) {
+            let kind = match (system, view) {
+                (0, 0) => RelationKind::Table,
+                (0, _) => RelationKind::View,
+                _ => RelationKind::System,
+            };
+            relations.push(Relation { word: Word::new(relation, dialect), kind, columns: Vec::new() });
+        }
+        relations.last_mut().expect("just pushed").columns.push(Word::new(column, dialect));
+    }
+
+    let mut others = Vec::new();
+    for kind in OTHERS {
+        // Empty for a kind this server does not have
+        for object in objects(conn, kind)? {
+            others.push(Named { word: Word::new(object.name, dialect), kind });
+        }
+    }
+    Ok(Catalog { relations, others })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_word_is_quoted_only_where_it_must_be() {
+        assert_eq!(Word::new("PRODUTO".into(), 3).sql, "PRODUTO");
+        assert_eq!(Word::new("Produto".into(), 3).sql, "\"Produto\"");
+        assert_eq!(Word::new("VALUE".into(), 3).sql, "\"VALUE\"");
+        assert_eq!(Word::new("VALUE".into(), 1).sql, "VALUE");
+    }
+}
