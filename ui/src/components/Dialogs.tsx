@@ -11,6 +11,7 @@ import { useStore } from "../store";
 import { CompileDialog, DiscardDialog } from "./CompileDialog";
 import { FormDialog } from "./FormDialog";
 import { FormatterDialog } from "./FormatterDialog";
+import { IbexpertDialog } from "./IbexpertDialog";
 import { Button, Field, inputClass, Modal } from "./Modal";
 import { RegistrationDialog } from "./RegistrationDialog";
 
@@ -35,6 +36,8 @@ export function Dialogs() {
       return <ExportDialog tab={dialog.tab} />;
     case "formatter":
       return <FormatterDialog />;
+    case "ibexpert":
+      return <IbexpertDialog />;
     case "compile":
       // Another change is another dialog: its outcome is not the last one's
       return <CompileDialog key={dialog.script} dialog={dialog} />;

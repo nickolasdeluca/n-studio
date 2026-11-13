@@ -48,6 +48,8 @@ export type Dialog =
   | { type: "export"; tab: string }
   /** The code formatter's style */
   | { type: "formatter" }
+  /** IBExpert's registered databases and formatter options, brought over */
+  | { type: "ibexpert" }
   /** A change to the catalog, as the script that makes it: shown, then run
    *  whole or not at all. `done` is called once it is committed.
    *  `back` is the dialog it came from, shown again if it is cancelled;

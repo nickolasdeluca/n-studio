@@ -26,7 +26,7 @@ use crate::debugger::Debuggers;
 use crate::tools::Comparisons;
 
 pub struct AppState {
-    registry: Mutex<Registry>,
+    pub(crate) registry: Mutex<Registry>,
     /// Open connections, by registration id
     sessions: Mutex<HashMap<String, Arc<Connection>>>,
     pub(crate) results: Results,
@@ -267,7 +267,7 @@ pub async fn completion_catalog(app: AppHandle, id: String) -> AppResult<fb_meta
     .await
 }
 
-fn open(registration: &Registration, password: String) -> AppResult<Connection> {
+pub(crate) fn open(registration: &Registration, password: String) -> AppResult<Connection> {
     match &registration.engine {
         Engine::Firebird(settings) => Ok(Connection::open(&settings.connect_params(password))?),
     }

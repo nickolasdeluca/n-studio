@@ -11,6 +11,7 @@ mod export;
 mod files;
 mod formatter;
 mod history;
+mod ibexpert;
 mod objects;
 mod registry;
 mod results;
@@ -121,6 +122,7 @@ fn main() {
             formatter::format_style_save,
             formatter::format_style_export,
             formatter::format_style_import,
+            ibexpert::ibexpert_scan,
             session::session_load,
             session::session_save,
             tools::diagram,

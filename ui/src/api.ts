@@ -240,6 +240,22 @@ export interface FormatStyle {
   inlineSubquery: number;
 }
 
+/** What an IBExpert User Database has to bring over */
+export interface IbexpertFound {
+  databases: {
+    /** The folders it is under in IBExpert's explorer: "Customers / North" */
+    folder: string;
+    /** Not saved yet */
+    registration: Registration;
+    /** The same server, port and database are registered here already */
+    registered: boolean;
+    /** IBExpert's character set, when this app cannot connect with it */
+    charsetReplaced: string | null;
+  }[];
+  /** IBExpert's formatter options, the ones this formatter has too */
+  style: FormatStyle | null;
+}
+
 export interface StatementRange {
   from: number;
   to: number;
@@ -698,6 +714,7 @@ export const api = {
     invoke<number>("result_blob_save", { result, row, col, path }),
   /** `text` laid out by `style`; the text itself when it cannot be followed */
   formatSql: (text: string, style: FormatStyle) => invoke<string>("format_sql", { text, style }),
+  ibexpertScan: (source: Registration, password: string) => invoke<IbexpertFound>("ibexpert_scan", { source, password }),
   formatStyleLoad: () => invoke<FormatStyle>("format_style_load"),
   /** The style a new installation formats by */
   formatStyleDefault: () => invoke<FormatStyle>("format_style_default"),

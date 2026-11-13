@@ -230,6 +230,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
         N
       </span>
       <ToolButton icon="plus" label={t("Register Database…")} onClick={() => s.openDialog({ type: "registration", registration: null })} />
+      <ToolButton icon="import" label={t("Import from IBExpert…")} onClick={() => s.openDialog({ type: "ibexpert" })} />
       <Separator />
       <ToolButton icon="plug" label={t("Connect")} disabled={!id || connected || connecting} onClick={() => id && void s.connect(id)} />
       <ToolButton icon="unplug" label={t("Disconnect")} disabled={!connected} onClick={() => id && void s.disconnect(id)} />

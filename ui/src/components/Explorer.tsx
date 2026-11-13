@@ -177,6 +177,12 @@ export function Explorer() {
         >
           {t("Register Database…")}
         </button>
+        <button
+          className="text-accent hover:underline"
+          onClick={() => useStore.getState().openDialog({ type: "ibexpert" })}
+        >
+          {t("Import from IBExpert…")}
+        </button>
       </div>
     );
   }
