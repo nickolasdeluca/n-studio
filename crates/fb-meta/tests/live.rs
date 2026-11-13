@@ -89,11 +89,13 @@ fn the_completion_catalog_agrees_with_the_lists() {
     let catalog = catalog(&conn).unwrap();
     let columns: usize = catalog.relations.iter().map(|r| r.columns.len()).sum();
     eprintln!(
-        "catalog: {} relations, {columns} columns, {} other names in {:?}",
+        "catalog: {} relations, {columns} columns, {} other names, {} foreign keys in {:?}",
         catalog.relations.len(),
         catalog.others.len(),
+        catalog.references.len(),
         started.elapsed()
     );
+    assert!(catalog.relations.iter().flat_map(|r| &r.columns).all(|c| !c.data_type.is_empty()));
 
     let of = |kind: RelationKind| {
         catalog.relations.iter().filter(|r| r.kind == kind).map(|r| r.word.name.as_str()).collect::<Vec<_>>()
@@ -104,7 +106,7 @@ fn the_completion_catalog_agrees_with_the_lists() {
     assert_eq!(of(RelationKind::View), names(&views));
     assert!(catalog.relations.iter().all(|r| !r.columns.is_empty()));
     // A name is written bare or in quotes, and never changed
-    for word in catalog.relations.iter().flat_map(|r| std::iter::once(&r.word).chain(&r.columns)) {
+    for word in catalog.relations.iter().flat_map(|r| std::iter::once(&r.word).chain(r.columns.iter().map(|c| &c.word))) {
         assert!(word.sql == word.name || word.sql == format!("\"{}\"", word.name.replace('"', "\"\"")));
     }
     let procedures = objects(&conn, ObjectKind::Procedure).unwrap();
@@ -118,7 +120,7 @@ fn the_fixture_completes_its_names() {
     let Some(conn) = fixture() else { return };
     let catalog = catalog(&conn).unwrap();
     let relation = |name: &str| catalog.relations.iter().find(|r| r.word.name == name).expect(name);
-    let columns = |name: &str| relation(name).columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>();
+    let columns = |name: &str| relation(name).columns.iter().map(|c| c.word.name.as_str()).collect::<Vec<_>>();
 
     // Columns in declared order, computed ones among them
     assert_eq!(columns("PEDIDO_ITEM"), ["PEDIDO", "ITEM", "QTD", "PRECO", "TOTAL", "PAGO"]);
@@ -135,6 +137,13 @@ fn the_fixture_completes_its_names() {
     assert_eq!(other("GEN_TIPOS_ID"), Some(ObjectKind::Generator));
     assert_eq!(other("E_FIXTURE"), Some(ObjectKind::Exception));
     assert_eq!(other("D_MONEY"), Some(ObjectKind::Domain));
+    // A column's type as it would be declared, a domain's seen through
+    let types = |name: &str| relation(name).columns.iter().map(|c| c.data_type.as_str()).collect::<Vec<_>>();
+    assert_eq!(types("PEDIDO_ITEM")[1..3], ["SMALLINT", "NUMERIC(9,3)"]);
+    // The foreign keys a join is written from
+    let reference = catalog.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").expect("FK_ITEM_PEDIDO");
+    assert_eq!((reference.from.as_str(), reference.to.as_str()), ("PEDIDO_ITEM", "PEDIDO"));
+    assert_eq!((&reference.from_columns, &reference.to_columns), (&vec!["PEDIDO".to_string()], &vec!["ID".to_string()]));
     // Not a relation, and not something a statement names
     assert_eq!(other("PEDIDO"), None);
     assert_eq!(other("TIPOS_BI"), None);

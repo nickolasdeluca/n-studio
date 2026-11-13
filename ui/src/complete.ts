@@ -1,14 +1,15 @@
 // Completion of a database's own names in SQL: relations and what else a
 // statement names, a relation's columns after its name or its alias and a
-// dot, and the columns of what the statement already reads from. Keywords
-// are the language's own source (firebird.ts).
-import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+// dot, the columns of what the statement already reads from, and after
+// JOIN the joins its foreign keys offer, written whole with an alias.
+// Keywords are the language's own source (firebird.ts).
+import { autocompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
-import { api, type CatalogRelation, type CompletionCatalog, type ObjectKind, type Word } from "./api";
+import { api, type CatalogRelation, type CompletionCatalog, type DiagramReference, type ObjectKind, type Word } from "./api";
 import { firebirdDialect } from "./firebird";
 import { t } from "./i18n";
-import { qualifier, sources } from "./sqlScope";
+import { joinsFor, qualifier, sources } from "./sqlScope";
 import { useStore } from "./store";
 
 interface Names {
@@ -16,6 +17,7 @@ interface Names {
   /** Everything that completes where no relation is named before a dot */
   top: Completion[];
   columns: Map<CatalogRelation, Completion[]>;
+  references: DiagramReference[];
 }
 
 /** By registration. Read when an editor first asks, and again after the
@@ -29,20 +31,32 @@ useStore.subscribe((state, before) => {
   }
 });
 
-const otherKinds: Partial<Record<ObjectKind, { type: string; detail: string }>> = {
-  procedure: { type: "function", detail: t("procedure") },
-  function: { type: "function", detail: t("function") },
-  package: { type: "namespace", detail: t("package") },
-  generator: { type: "constant", detail: t("generator") },
-  exception: { type: "enum", detail: t("exception") },
-  domain: { type: "type", detail: t("domain") },
+/** What a completion is, said in the list's first column. The language's
+ *  own source calls a keyword "keyword", a type "type" and a built-in
+ *  function "variable". */
+const KINDS: Record<string, string> = {
+  table: t("Table"),
+  view: t("View"),
+  system: t("System"),
+  column: t("Column"),
+  alias: t("Alias"),
+  join: t("Join"),
+  procedure: t("Procedure"),
+  function: t("Function"),
+  package: t("Package"),
+  generator: t("Generator"),
+  exception: t("Exception"),
+  domain: t("Domain"),
+  keyword: t("Keyword"),
+  type: t("Type"),
+  variable: t("Built-in"),
 };
 
-const relationKinds = {
-  table: { type: "class", detail: t("table"), boost: 0 },
-  view: { type: "interface", detail: t("view"), boost: 0 },
+const relationBoost = {
+  table: 0,
+  view: 0,
   // Rarely what is meant, and there are many of them
-  system: { type: "class", detail: t("system table"), boost: -20 },
+  system: -20,
 };
 
 const word = (w: Word, rest: Partial<Completion>): Completion => ({ label: w.name, apply: w.sql, ...rest });
@@ -50,10 +64,10 @@ const word = (w: Word, rest: Partial<Completion>): Completion => ({ label: w.nam
 function names(catalog: CompletionCatalog): Names {
   const relations = new Map(catalog.relations.map((r) => [r.name, r]));
   const top = [
-    ...catalog.relations.map((r) => word(r, relationKinds[r.kind])),
-    ...catalog.others.map((o) => word(o, { ...otherKinds[o.kind], boost: -1 })),
+    ...catalog.relations.map((r) => word(r, { type: r.kind, boost: relationBoost[r.kind] })),
+    ...catalog.others.map((o) => word(o, { type: o.kind satisfies ObjectKind, boost: -1 })),
   ];
-  return { relations, top, columns: new Map() };
+  return { relations, top, columns: new Map(), references: catalog.references };
 }
 
 function namesOf(registration: string): Promise<Names | null> {
@@ -77,7 +91,7 @@ export function prepareCompletion(registration: string): void {
 function columnsOf(all: Names, relation: CatalogRelation, boost = 0): Completion[] {
   let columns = all.columns.get(relation);
   if (!columns) {
-    columns = relation.columns.map((c) => word(c, { type: "property", detail: relation.name }));
+    columns = relation.columns.map((c) => word(c, { type: "column", detail: `${c.type} · ${relation.name}` }));
     all.columns.set(relation, columns);
   }
   return boost ? columns.map((c) => ({ ...c, boost })) : columns;
@@ -134,14 +148,60 @@ async function complete(context: CompletionContext, registration: string | undef
   for (const source of inReach) {
     const relation = all.relations.get(source.relation);
     if (!relation) continue;
-    if (source.alias) here.push({ label: source.alias, type: "variable", detail: relation.name, boost: 10 });
+    if (source.alias) here.push({ label: source.alias, apply: source.written, type: "alias", detail: relation.name, boost: 10 });
     if (!seen.has(relation)) {
       seen.add(relation);
       here.push(...columnsOf(all, relation, 5));
     }
   }
+  // After JOIN, what the foreign keys of the statement's tables lead to
+  // comes first, written with its alias and its condition
+  if (!quoted && /\bjoin\s+$/i.test(doc.sliceString(Math.max(start, from - 200), from))) {
+    const others = sources(doc.sliceString(start, from) + doc.sliceString(context.pos, Math.min(doc.length, context.pos + REACH)), from - start);
+    here.unshift(...joins(all, others));
+  }
   return result(here.length ? [...here, ...all.top] : all.top);
 }
+
+/** The joins the foreign keys offer, each as the text that writes it */
+function joins(all: Names, inStatement: ReturnType<typeof sources>): Completion[] {
+  const options: Completion[] = [];
+  const seen = new Set<string>();
+  for (const join of joinsFor(inStatement, all.references)) {
+    const relation = all.relations.get(join.relation);
+    const other = all.relations.get(join.with.relation);
+    if (!relation || !other) continue;
+    const sql = (r: CatalogRelation, column: string) => r.columns.find((c) => c.name === column)?.sql ?? column;
+    // Its keywords in the capitals the statement is written in
+    const upper = /[A-Z]/.test(join.alias);
+    const on = join.on
+      .map(([own, theirs]) => `${join.alias}.${sql(relation, own)} = ${join.with.written}.${sql(other, theirs)}`)
+      .join(upper ? " AND " : " and ");
+    const text = `${relation.sql} ${join.alias} ${upper ? "ON" : "on"} ${on}`;
+    if (seen.has(text)) continue;
+    seen.add(text);
+    // Matched by the relation's name alone, and ahead of the bare name
+    options.push({ label: relation.name, displayLabel: text, apply: text, type: "join", boost: 99 });
+  }
+  return options;
+}
+
+/** The list as this editor shows it: what each name is in a first column,
+ *  then the name, then what is known of it */
+export const completionList: Extension = autocompletion({
+  icons: false,
+  addToOptions: [
+    {
+      position: 20,
+      render(completion) {
+        const kind = document.createElement("span");
+        kind.className = `cm-completionKind cm-completionKind-${completion.type ?? "none"}`;
+        kind.textContent = KINDS[completion.type ?? ""] ?? "";
+        return kind;
+      },
+    },
+  ],
+});
 
 /** Completes the names of the database `registration` says the editor is on */
 export function catalogCompletion(registration: () => string | undefined): Extension {

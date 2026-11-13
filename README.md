@@ -25,7 +25,11 @@ established.
   streamed into a grid, sorted, exported to CSV; plan and performance
   counters; cancel.
 - **Completion** of tables, views, routines and generators, and of columns
-  after a table's name or alias.
+  after a table's name or alias, each with what it is and a column's type.
+  After `join`, the joins the foreign keys offer, written whole:
+  `CLIENTE_PESSOA cp on cp.CLIENTE = c.ID`, alias included.
+- **Blobs** read on demand beside the grid: as text, a picture, indented JSON
+  or XML, or hex; saved to a file whole.
 - **Scripts as files**, read and written back in the encoding and line
   endings they had (`WIN1252` with CR LF as readily as UTF-8). Open tabs come
   back the next time the app opens.

@@ -9,6 +9,8 @@ export interface Source {
   /** As the catalog stores it */
   relation: string;
   alias?: string;
+  /** What the statement calls it, as it wrote it: the alias, else the name */
+  written: string;
 }
 
 const NAME = String.raw`"(?:[^"]|"")+"|[A-Za-z_][\w$]*`;
@@ -74,15 +76,16 @@ export function sources(text: string, pos: number): Source[] {
       if (paren.test(statement)) {
         at = closing(statement, paren.lastIndex - 1);
         if (at < 0) {
-          found.push({ relation: stored(item[1]) });
+          found.push({ relation: stored(item[1]), written: item[1] });
           break;
         }
       }
-      const source: Source = { relation: stored(item[1]) };
+      const source: Source = { relation: stored(item[1]), written: item[1] };
       ALIAS.lastIndex = at;
       const alias = ALIAS.exec(statement);
       if (alias && !NOT_A_NAME.has(alias[1].toLowerCase())) {
         source.alias = stored(alias[1]);
+        source.written = alias[1];
         at = ALIAS.lastIndex;
       }
       found.push(source);
@@ -100,4 +103,78 @@ export function sources(text: string, pos: number): Source[] {
 export function qualifier(before: string): string | null {
   const m = new RegExp(String.raw`(${NAME})\s*\.\s*$`).exec(before);
   return m ? stored(m[1]) : null;
+}
+
+/** A foreign key: `from` holds it, `to` has the key it points at */
+export interface Reference {
+  from: string;
+  fromColumns: string[];
+  to: string;
+  toColumns: string[];
+}
+
+/** A join a foreign key offers to a statement */
+export interface Join {
+  /** The relation it brings in, as the catalog stores it */
+  relation: string;
+  /** The alias it is given, which no source of the statement has */
+  alias: string;
+  /** Column pairs: the new relation's, then the one of `with` */
+  on: [string, string][];
+  /** The source it joins to */
+  with: Source;
+}
+
+/** Short words an alias must not be: they would read as SQL */
+const NOT_AN_ALIAS = new Set("as at by do if in is no of on or to".split(" "));
+
+/**
+ * An alias for a relation: the initials of its words (`CLIENTE_PESSOA` is
+ * `cp`), numbered when a source of the statement already answers to it. In
+ * capitals when `upper`.
+ */
+export function aliasFor(relation: string, taken: Iterable<string>, upper = false): string {
+  const used = new Set([...taken].map((name) => name.toUpperCase()));
+  const initials = relation
+    .split(/[^A-Za-z0-9]+/)
+    .filter((part) => /^[A-Za-z]/.test(part))
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 4)
+    .toLowerCase();
+  const base = initials || "t";
+  let alias = base;
+  for (let n = 2; used.has(alias.toUpperCase()) || NOT_AN_ALIAS.has(alias); n++) alias = `${base}${n}`;
+  return upper ? alias.toUpperCase() : alias;
+}
+
+/**
+ * The joins the foreign keys offer to what a statement already reads: for
+ * each of its sources, the tables that reference it and the ones it
+ * references. A table two keys lead to is offered once per key.
+ */
+export function joinsFor(inStatement: Source[], references: Reference[]): Join[] {
+  const taken = inStatement.map((s) => s.alias ?? s.relation);
+  // Written like the statement: capitals when all it wrote is in capitals
+  const letters = inStatement.map((s) => s.written).filter((w) => /[A-Za-z]/.test(w) && !w.startsWith('"'));
+  const upper = letters.length > 0 && letters.every((w) => w === w.toUpperCase());
+  const joins: Join[] = [];
+  const seen = new Set<string>();
+  for (const source of inStatement) {
+    const key = source.alias ?? source.relation;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    for (const r of references) {
+      const offer = (relation: string, own: string[], theirs: string[]) =>
+        joins.push({
+          relation,
+          alias: aliasFor(relation, taken, upper),
+          on: own.map((column, i): [string, string] => [column, theirs[i]]),
+          with: source,
+        });
+      if (r.to === source.relation) offer(r.from, r.fromColumns, r.toColumns);
+      if (r.from === source.relation && r.to !== r.from) offer(r.to, r.toColumns, r.fromColumns);
+    }
+  }
+  return joins;
 }

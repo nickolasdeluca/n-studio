@@ -1,6 +1,6 @@
 // The SQL editor: one tab per editor, each with its own transaction.
 // The text on top, what the last statement did below.
-import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -19,7 +19,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { TxEnd } from "../api";
 import { drafts, isolations, ms, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
-import { catalogCompletion, prepareCompletion } from "../complete";
+import { catalogCompletion, completionList, prepareCompletion } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon } from "../icons";
@@ -160,7 +160,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
           indentOnInput(),
           bracketMatching(),
           closeBrackets(),
-          autocompletion(),
+          completionList,
           highlightSelectionMatches(),
           errorField,
           // Typing makes the text other than its file's, and the session's

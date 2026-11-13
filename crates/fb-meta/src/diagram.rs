@@ -64,7 +64,8 @@ pub struct Diagram {
 /// and laying it out takes long
 pub const MOST: usize = 250;
 
-fn references(conn: &Connection) -> Result<Vec<DiagramReference>> {
+/// Every foreign key of the database, by the table that holds it
+pub(crate) fn references(conn: &Connection) -> Result<Vec<DiagramReference>> {
     let sql = "select trim(rc.rdb$constraint_name), trim(rc.rdb$relation_name), trim(s.rdb$field_name), \
                       trim(pk.rdb$relation_name), trim(ps.rdb$field_name) \
                from rdb$relation_constraints rc \

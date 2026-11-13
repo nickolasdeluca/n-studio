@@ -1,12 +1,14 @@
 // Run by `npm test`: Node's own runner, reading the TypeScript as it is.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { blanked, qualifier, sources, statementAt, stored } from "./sqlScope.ts";
+import { aliasFor, blanked, joinsFor, qualifier, sources, statementAt, stored } from "./sqlScope.ts";
 
-const at = (sql) => {
+const written = (sql) => {
   const pos = sql.indexOf("|");
   return sources(sql.replace("|", ""), pos < 0 ? sql.length : pos);
 };
+// What each source is, without how it was written
+const at = (sql) => written(sql).map(({ written: _, ...source }) => source);
 
 test("a bare name is stored in upper case, a quoted one as written", () => {
   assert.equal(stored("produto"), "PRODUTO");
@@ -82,4 +84,37 @@ test("the name before a dot", () => {
   assert.equal(qualifier("select rdb$relations."), "RDB$RELATIONS");
   assert.equal(qualifier("select p"), null);
   assert.equal(qualifier("select 1."), null);
+});
+
+test("an alias is a relation's initials, and no name the statement has", () => {
+  assert.equal(aliasFor("CLIENTE_PESSOA", []), "cp");
+  assert.equal(aliasFor("PEDIDO", ["C"]), "p");
+  assert.equal(aliasFor("PEDIDO", ["P", "p2"]), "p3");
+  assert.equal(aliasFor("ORDEM_NOTA", []), "on2", "ON would read as SQL");
+  assert.equal(aliasFor("RDB$RELATION_FIELDS", [], true), "RRF");
+  assert.equal(aliasFor("_1", []), "t");
+});
+
+test("foreign keys offer joins both ways, on every column of the key", () => {
+  const references = [
+    { from: "PEDIDO_ITEM", fromColumns: ["PEDIDO"], to: "PEDIDO", toColumns: ["ID"] },
+    { from: "PEDIDO", fromColumns: ["CLIENTE", "FILIAL"], to: "CLIENTE", toColumns: ["ID", "FILIAL"] },
+    { from: "OUTRA", fromColumns: ["X"], to: "MAIS_UMA", toColumns: ["ID"] },
+  ];
+  const joins = joinsFor(written("select * from pedido p join |"), references);
+  assert.deepEqual(
+    joins.map((j) => [j.relation, j.alias, j.on, j.with.written]),
+    [
+      ["PEDIDO_ITEM", "pi", [["PEDIDO", "ID"]], "p"],
+      ["CLIENTE", "c", [["ID", "CLIENTE"], ["FILIAL", "FILIAL"]], "p"],
+    ],
+  );
+  // No alias: the table's name as it was written, and capitals as it writes
+  const bare = joinsFor(written("SELECT * FROM PEDIDO_ITEM JOIN |"), references);
+  assert.deepEqual(bare.map((j) => [j.relation, j.alias, j.with.written]), [["PEDIDO", "P", "PEDIDO_ITEM"]]);
+  assert.deepEqual(joinsFor(written("select * from nada n join |"), references), []);
+});
+
+test("a source keeps what the statement wrote for it", () => {
+  assert.deepEqual(written('select * from Pedido P join "Item" on 1 = 1').map((s) => s.written), ["P", '"Item"']);
 });

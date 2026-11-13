@@ -323,13 +323,16 @@ export interface Word {
 
 export interface CatalogRelation extends Word {
   kind: "table" | "view" | "system";
-  columns: Word[];
+  /** `type` as it would be declared: `VARCHAR(60)` */
+  columns: (Word & { type: string })[];
 }
 
 /** Every name an SQL editor completes */
 export interface CompletionCatalog {
   relations: CatalogRelation[];
   others: (Word & { kind: ObjectKind })[];
+  /** Every foreign key: what a join is written from */
+  references: DiagramReference[];
 }
 
 export interface Diagram {

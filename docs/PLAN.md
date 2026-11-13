@@ -296,9 +296,16 @@ Where it stands: 1 to 4 and 6 are in place. Of 5, the backend's part: the live
 suites of `fb-core` and `fb-meta`, read-only, against a production ERP
 database (Firebird 4.0.4, dialect 3, default character set `NONE`, 1,322
 tables, 1,549 procedures) pass, and the completion catalog reads its 1,380
-relations and 20,714 columns in under a second over a link of some 95 ms a
-round trip. The app's own window in a tester's hands, a dialect 1 database and
-a `WIN1252` default are still to come, and with them the first tag.
+relations, 20,714 columns with their types and 3,062 foreign keys in a little
+over a second, over a link of some 95 ms a round trip. The app's own window is
+in a tester's hands, on a Firebird 2.5 server too. What that run has found so
+far is fixed: a blob over 32 KiB never finished reading on 2.5 (the reply
+length overflow of 16 signed bits, now kept under for segments and statement
+descriptions alike); and asked for: the blob viewer's views, the completion
+list saying what each name is, and joins completed from the foreign keys with
+an alias. A code formatter with a shareable style is asked for and not yet
+there. A dialect 1 database and a `WIN1252` default are still to come, and
+with them the first tag.
 
 Exit criterion: a tester installs a released bundle, registers a database of
 their own and works a day in it without the source tree.

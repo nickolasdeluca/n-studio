@@ -1,11 +1,15 @@
-//! The names an SQL editor completes: every relation with its columns, and
-//! what else a statement can name. Read whole, in a few queries, so that
-//! completing costs the editor no round trip.
+//! The names an SQL editor completes: every relation with its columns, what
+//! else a statement can name, and the foreign keys a join is written from.
+//! Read whole, in a few queries, so that completing costs the editor no
+//! round trip.
 
-use fb_core::{Connection, Error, Result, Value};
+use fb_core::{Connection, Error, Result};
 use serde::Serialize;
 
+use crate::diagram::{references, DiagramReference};
 use crate::ident::quote;
+use crate::row::rows;
+use crate::types::{type_joins, DataType, TYPE_COLUMNS};
 use crate::{objects, ObjectKind};
 
 /// A name, and how SQL writes it in this database: in double quotes when it
@@ -37,7 +41,16 @@ pub struct Relation {
     pub word: Word,
     pub kind: RelationKind,
     /// In the order the relation declares them
-    pub columns: Vec<Word>,
+    pub columns: Vec<Column>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Column {
+    #[serde(flatten)]
+    pub word: Word,
+    /// As it would be declared: `NUMERIC(18,4)`, `VARCHAR(60)`
+    #[serde(rename = "type")]
+    pub data_type: String,
 }
 
 /// Something that is not a relation but is named in statements
@@ -53,6 +66,8 @@ pub struct Catalog {
     /// By name
     pub relations: Vec<Relation>,
     pub others: Vec<Named>,
+    /// Every foreign key: what a join between two relations is on
+    pub references: Vec<DiagramReference>,
 }
 
 /// The kinds besides relations that statements name
@@ -67,24 +82,24 @@ const OTHERS: [ObjectKind; 6] = [
 
 pub fn catalog(conn: &Connection) -> Result<Catalog> {
     let dialect = conn.info().dialect;
-    let rows = conn
-        .query(
-            "select trim(rf.rdb$relation_name), trim(rf.rdb$field_name), \
-                    coalesce(r.rdb$system_flag, 0), \
-                    case when r.rdb$view_blr is null then 0 else 1 end \
-             from rdb$relation_fields rf \
-             join rdb$relations r on r.rdb$relation_name = rf.rdb$relation_name \
-             order by 1, rf.rdb$field_position",
-            vec![],
-        )?
-        .rows;
+    let sql = format!(
+        "select trim(rf.rdb$relation_name), trim(rf.rdb$field_name), \
+                coalesce(r.rdb$system_flag, 0), \
+                case when r.rdb$view_blr is null then 0 else 1 end, \
+                {TYPE_COLUMNS} \
+         from rdb$relation_fields rf \
+         join rdb$relations r on r.rdb$relation_name = rf.rdb$relation_name \
+         join rdb$fields f on f.rdb$field_name = rf.rdb$field_source \
+         {} \
+         order by 1, rf.rdb$field_position",
+        type_joins("coalesce(rf.rdb$collation_id, f.rdb$collation_id)")
+    );
 
     let mut relations: Vec<Relation> = Vec::new();
-    for row in rows {
-        let text = |i: usize| row.get(i).and_then(Value::as_str).map(str::to_owned);
-        let int = |i: usize| row.get(i).and_then(Value::as_i64);
-        let (Some(relation), Some(column), Some(system), Some(view)) = (text(0), text(1), int(2), int(3)) else {
-            return Err(Error::Client { message: format!("unexpected column row {row:?}") });
+    for row in rows(conn, &sql, vec![])? {
+        let (Some(relation), Some(column), Some(system), Some(view)) = (row.text(0), row.text(1), row.int(2), row.int(3))
+        else {
+            return Err(Error::Client { message: "unexpected column row in the completion catalog".into() });
         };
         if relations.last().is_none_or(|r| r.word.name != relation) {
             let kind = match (system, view) {
@@ -94,7 +109,8 @@ pub fn catalog(conn: &Connection) -> Result<Catalog> {
             };
             relations.push(Relation { word: Word::new(relation, dialect), kind, columns: Vec::new() });
         }
-        relations.last_mut().expect("just pushed").columns.push(Word::new(column, dialect));
+        let data_type = DataType::read(&row, 4).name(dialect);
+        relations.last_mut().expect("just pushed").columns.push(Column { word: Word::new(column, dialect), data_type });
     }
 
     let mut others = Vec::new();
@@ -104,7 +120,7 @@ pub fn catalog(conn: &Connection) -> Result<Catalog> {
             others.push(Named { word: Word::new(object.name, dialect), kind });
         }
     }
-    Ok(Catalog { relations, others })
+    Ok(Catalog { relations, others, references: references(conn)? })
 }
 
 #[cfg(test)]
