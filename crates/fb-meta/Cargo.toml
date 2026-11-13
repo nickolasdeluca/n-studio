@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 fb-core = { workspace = true }
+fb-sql = { workspace = true }
 serde = { workspace = true }
 
-[dev-dependencies]
-fb-sql = { workspace = true }

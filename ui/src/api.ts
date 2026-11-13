@@ -318,6 +318,45 @@ export interface QuerySpec {
   first: number | null;
 }
 
+export interface DebugVar {
+  name: string;
+  kind: "input" | "output" | "local";
+  typeName: string;
+  /** `null` is NULL */
+  value: string | null;
+}
+
+export interface DebugNote {
+  line: number;
+  what: string;
+}
+
+/** A routine opened to debug */
+export interface DebugTarget {
+  source: string;
+  inputs: DebugVar[];
+  outputs: string[];
+  /** The statements the debugger will refuse to run */
+  notes: DebugNote[];
+}
+
+/** Where a debugged run is. `finished` waits for its transaction to be
+ *  ended; `stopped` and `failed` have rolled it back. */
+export interface DebugState {
+  run: number;
+  state: "paused" | "finished" | "ended" | "stopped" | "failed";
+  line: number | null;
+  endLine: number | null;
+  variables: DebugVar[];
+  /** The rows suspended since the last event */
+  rows: (string | null)[][];
+  rowCount: number;
+  notes: DebugNote[];
+  error: string | null;
+}
+
+export type DebugCommand = "step" | "continue" | "stop" | "commit" | "rollback" | "";
+
 export type DiffKind = "only_source" | "only_target" | "different";
 
 export interface DiffRow {
@@ -595,6 +634,12 @@ export const api = {
   querySources: (id: string, names: string[]) => invoke<Diagram>("query_sources", { id, names }),
   /** The SELECT the parts make */
   queryBuild: (id: string, spec: QuerySpec) => invoke<string>("query_build", { id, spec }),
+  debugOpen: (id: string, kind: ObjectKind, name: string) => invoke<DebugTarget>("debug_open", { id, kind, name }),
+  /** Starts a run; what it does arrives as `debug-state` events */
+  debugStart: (id: string, run: number, kind: ObjectKind, name: string, inputs: (string | null)[], breakpoints: number[], step: boolean) =>
+    invoke<null>("debug_start", { id, run, kind, name, inputs, breakpoints, step }),
+  debugCommand: (run: number, command: DebugCommand, breakpoints: number[] | null) =>
+    invoke<boolean>("debug_command", { run, command, breakpoints }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

@@ -4,6 +4,7 @@
 mod admin;
 mod changes;
 mod commands;
+mod debugger;
 mod editor;
 mod error;
 mod export;
@@ -70,6 +71,9 @@ fn main() {
             tools::data_compare_cancel,
             tools::query_build,
             tools::query_sources,
+            debugger::debug_open,
+            debugger::debug_start,
+            debugger::debug_command,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

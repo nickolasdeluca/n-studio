@@ -809,3 +809,178 @@ fn a_built_query_runs_on_the_fixture() {
     let plain = select(&QuerySpec { tables: vec![table("V_PEDIDO_TOTAL", "V_PEDIDO_TOTAL")], ..Default::default() }, 3);
     conn.query(&plain, vec![]).unwrap();
 }
+
+/// What a debugged run was seen to do
+#[derive(Default)]
+struct Seen {
+    /// The line of each statement it was about to run
+    lines: Vec<usize>,
+    rows: Vec<Vec<Option<String>>>,
+    skipped: usize,
+    /// Stops the run before this many statements
+    stop_at: Option<usize>,
+    source: String,
+}
+
+impl fb_meta::debug::Watch for Seen {
+    fn before(&mut self, at: &std::ops::Range<usize>, _vars: &[fb_meta::debug::Var]) -> bool {
+        if self.stop_at == Some(self.lines.len()) {
+            return false;
+        }
+        self.lines.push(self.source[..at.start].matches('\n').count() + 1);
+        true
+    }
+    fn row(&mut self, values: Vec<fb_core::Value>) {
+        self.rows.push(values.iter().map(fb_meta::debug::shown).collect());
+    }
+    fn skipped(&mut self, _at: &std::ops::Range<usize>, _why: &str) {
+        self.skipped += 1;
+    }
+}
+
+/// Runs a body that only reads, in a read-only transaction
+fn debugged(conn: &Connection, source: &str, input: Option<&str>, stop_at: Option<usize>) -> (Seen, Vec<fb_meta::debug::Var>, Result<fb_meta::debug::Outcome, fb_meta::debug::Failure>) {
+    use fb_core::{Isolation, TxEnd, TxOptions};
+    use fb_meta::debug::{input as typed, run, Var, VarKind};
+    let body = fb_sql::psql::parse(source).unwrap();
+    let tx = conn.begin(TxOptions { isolation: Isolation::Snapshot, read_only: true, ..Default::default() }).unwrap();
+    let var = |name: &str, kind, type_text: &str, value| Var { name: name.into(), kind, type_text: type_text.into(), value };
+    let vars = vec![
+        var("P_IN", VarKind::Input, "VARCHAR(10)", typed(conn, tx, "VARCHAR(10)", input.map(str::to_string)).unwrap()),
+        var("R_N", VarKind::Output, "INTEGER", fb_core::Value::Null),
+        var("R_T", VarKind::Output, "VARCHAR(100)", fb_core::Value::Null),
+    ];
+    let mut seen = Seen { source: source.to_string(), stop_at, ..Default::default() };
+    let (vars, outcome) = run(conn, tx, source, &body, vars, &mut seen);
+    conn.end(tx, TxEnd::Rollback).unwrap();
+    (seen, vars, outcome)
+}
+
+/// The emulator follows a routine's flow and leaves every value to the
+/// server: loops, branches, a cursor, a handler, dynamic SQL
+#[test]
+fn a_routine_is_debugged_statement_by_statement() {
+    use fb_meta::debug::{shown, Outcome};
+    let Some(conn) = connect() else { return };
+    let source = "declare variable i integer = 0;\n\
+declare total double precision = 0;\n\
+declare nome varchar(40);\n\
+declare d timestamp;\n\
+begin\n\
+  d = cast('2024-02-29 10:00:00' as timestamp) + 1;\n\
+  while (i < 9) do\n\
+  begin\n\
+    i = i + 1;\n\
+    if (mod(i, 2) = 0) then continue;\n\
+    total = total + i * 1.5; -- a comment the server must not swallow the rest for\n\
+    if (i = 5) then leave;\n\
+  end\n\
+  for select first 3 r.rdb$relation_id, trim(r.rdb$relation_name) from rdb$relations r\n\
+      where r.rdb$relation_id < :i + 10 order by 1 into :i, :nome do\n\
+  begin\n\
+    r_n = i;\n\
+    r_t = nome || '!';\n\
+    suspend;\n\
+  end\n\
+  select count(*) from rdb$database where 1 = :i - :i + 1 into :i;\n\
+  begin\n\
+    execute statement 'select 1 from rdb$no_such_table' into :i;\n\
+    r_t = 'not here';\n\
+  when any do\n\
+    r_t = 'caught';\n\
+  end\n\
+  execute statement 'select 7 from rdb$database' into :r_n;\n\
+  post_event 'nobody listens';\n\
+  r_t = r_t || ' ' || row_count || ' ' || coalesce(p_in, '?') || (select count(*) from rdb$database where 7 = :r_n);\n\
+  suspend;\n\
+  exit;\n\
+  r_n = -1;\n\
+end";
+    let (seen, vars, outcome) = debugged(&conn, source, Some("in"), None);
+    assert_eq!(outcome, Ok(Outcome::Finished), "{:?}", seen.lines);
+    let value = |name: &str| shown(&vars.iter().find(|v| v.name == name).unwrap().value);
+    assert_eq!(value("TOTAL").unwrap().parse::<f64>().unwrap(), 13.5);
+    assert_eq!(value("I").as_deref(), Some("1"));
+    assert!(value("D").unwrap().starts_with("2024-03-01 10:00:00"), "{:?}", value("D"));
+    assert_eq!(value("R_N").as_deref(), Some("7"));
+    assert_eq!(seen.rows.len(), 4);
+    let ids: Vec<i64> = seen.rows[..3].iter().map(|r| r[0].as_ref().unwrap().parse().unwrap()).collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
+    assert!(seen.rows[..3].iter().all(|r| r[1].as_ref().is_some_and(|t| t.ends_with('!') && t.len() > 1)));
+    assert_eq!(seen.rows[3], [Some("7".to_string()), Some("caught 1 in1".to_string())]);
+    assert_eq!(seen.skipped, 1);
+    // The loop's head is seen each turn; what is after EXIT never is
+    assert_eq!(seen.lines.iter().filter(|&&l| l == 7).count(), 5);
+    assert!(seen.lines.contains(&26) && !seen.lines.contains(&24) && !seen.lines.contains(&33));
+
+    // Stopped, it says so, and has done only what came before
+    let (seen, vars, outcome) = debugged(&conn, source, None, Some(3));
+    assert_eq!(outcome, Ok(Outcome::Stopped));
+    assert_eq!(seen.lines, [6, 7, 9]);
+    assert_eq!(shown(&vars.iter().find(|v| v.name == "I").unwrap().value).as_deref(), Some("1"));
+    assert_eq!(shown(&vars.iter().find(|v| v.name == "TOTAL").unwrap().value).unwrap().parse::<f64>().unwrap(), 0.0);
+
+    // What fails says where, and what cannot be run says so
+    let (_, _, outcome) = debugged(&conn, "begin\n  r_n = 1;\n  r_n = 1 / (r_n - 1);\nend", None, None);
+    let failure = outcome.unwrap_err();
+    assert_eq!(failure.at, 19..39, "{}", failure.message);
+    let (_, _, outcome) = debugged(&conn, "begin\n  begin\n    exception no_such_exception;\n  when exception other do r_n = 1;\n  end\nend", None, None);
+    assert!(outcome.unwrap_err().message.contains("NO_SUCH_EXCEPTION"));
+    let (_, vars, outcome) = debugged(&conn, "begin\n  r_n = 1;\n  open c;\nend", None, None);
+    assert!(outcome.unwrap_err().message.contains("cannot run"));
+    assert_eq!(shown(&vars[1].value).as_deref(), Some("1"));
+    let (seen, _, outcome) = debugged(&conn, "begin\n  select rdb$relation_id from rdb$relations into :r_n;\nend", None, None);
+    assert_eq!(outcome.unwrap_err().message, "multiple rows in singleton select", "{:?}", seen.lines);
+}
+
+/// The fixture's routines debugged give what the server gives running
+/// them, and a run that writes can be undone to a handler's savepoint
+#[test]
+fn the_fixtures_routines_debug_to_what_they_return() {
+    use fb_core::{TxEnd, TxOptions};
+    use fb_meta::debug::{input, run, shown, target, Outcome, VarKind};
+    let Some(conn) = fixture() else { return };
+    let debug = |kind, name: &str, inputs: &[Option<&str>]| {
+        let mut routine = target(&conn, kind, name).unwrap();
+        let body = fb_sql::psql::parse(&routine.source).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert!(body.unsupported().is_empty());
+        let tx = conn.begin(TxOptions::default()).unwrap();
+        for (var, text) in routine.vars.iter_mut().filter(|v| v.kind == VarKind::Input).zip(inputs) {
+            var.value = input(&conn, tx, &var.type_text, text.map(str::to_string)).unwrap();
+        }
+        let mut seen = Seen { source: routine.source.clone(), ..Default::default() };
+        let (_, outcome) = run(&conn, tx, &routine.source, &body, routine.vars, &mut seen);
+        conn.end(tx, TxEnd::Rollback).unwrap();
+        (seen.rows, outcome)
+    };
+    let served = |sql: &str| -> Vec<Vec<Option<String>>> {
+        conn.query(sql, vec![]).unwrap().rows.iter().map(|r| r.iter().map(shown).collect()).collect()
+    };
+
+    let (rows, outcome) = debug(ObjectKind::Procedure, "P_FIXTURE", &[Some("5")]);
+    assert_eq!(outcome, Ok(Outcome::Finished));
+    assert_eq!(rows, served("select r_id, r_txt from p_fixture(5)"));
+    // Which calls P_EVEN, which calls it back: those run on the server
+    let (rows, _) = debug(ObjectKind::Procedure, "P_ODD", &[Some("3")]);
+    assert_eq!(rows, served("select r from p_odd(3)"));
+    let (rows, outcome) = debug(ObjectKind::Procedure, "P_PEDIDO_TOTAL", &[Some("-1"), Some("0")]);
+    assert_eq!((rows, outcome), (vec![vec![None]], Ok(Outcome::Finished)));
+    assert!(target(&conn, ObjectKind::Table, "PEDIDO").is_err());
+
+    // A handler undoes its block, and only its block
+    let source = "declare n integer;\nbegin\n  insert into cmp_target (id, nome) values (7001, 'kept') returning id into :n;\n  \
+                  update cmp_target set nome = 'kept too' where id = :n;\n  n = row_count;\n  begin\n    insert into cmp_target (id, nome) values (7002, 'undone');\n    \
+                  insert into cmp_target (id) values (7001);\n  when any do\n    n = n + 10;\n  end\n  \
+                  for select id, nome from cmp_target where id >= 7001 order by id into :r_id, :r_txt do suspend;\n  r_id = n;\n  suspend;\nend";
+    let mut routine = target(&conn, ObjectKind::Procedure, "P_FIXTURE").unwrap();
+    routine.vars.retain(|v| v.kind == VarKind::Output);
+    let body = fb_sql::psql::parse(source).unwrap();
+    let tx = conn.begin(TxOptions::default()).unwrap();
+    let mut seen = Seen { source: source.to_string(), ..Default::default() };
+    let (_, outcome) = run(&conn, tx, source, &body, routine.vars, &mut seen);
+    conn.end(tx, TxEnd::Rollback).unwrap();
+    assert_eq!(outcome, Ok(Outcome::Finished));
+    let text = |s: &str| Some(s.to_string());
+    assert_eq!(seen.rows, [[text("7001"), text("kept too")], [text("11"), text("kept too")]]);
+    assert!(served("select id from cmp_target where id >= 7001").is_empty());
+}

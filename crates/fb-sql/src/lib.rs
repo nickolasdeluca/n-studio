@@ -6,6 +6,7 @@
 //! PSQL bodies full of `;`. Ranges are byte offsets into the text.
 
 pub mod lexer;
+pub mod psql;
 
 use std::ops::Range;
 

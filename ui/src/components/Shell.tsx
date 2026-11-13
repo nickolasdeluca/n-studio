@@ -13,6 +13,7 @@ import { serverSummary } from "../api";
 import { isDocument, openEditor, setDock } from "../dock";
 import { useBuilders } from "../builder";
 import { forgetComparison } from "../compare";
+import { forgetDebug } from "../debug";
 import { useDiagrams } from "../diagram";
 import { useEditors } from "../editors";
 import { t } from "../i18n";
@@ -23,6 +24,7 @@ import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { AdminView, ServiceOutput } from "./AdminPanels";
 import { CompareView } from "./CompareView";
+import { DebugView } from "./DebugView";
 import { DiagramView } from "./DiagramView";
 import { QueryBuilder } from "./QueryBuilder";
 import { Dialogs } from "./Dialogs";
@@ -45,6 +47,7 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   diagram: (props) => <DiagramView {...(props as IDockviewPanelProps<{ id: string }>)} />,
   compare: (props) => <CompareView {...(props as IDockviewPanelProps<{ id: string }>)} />,
   builder: (props) => <QueryBuilder {...(props as IDockviewPanelProps<{ id: string }>)} />,
+  debug: (props) => <DebugView {...(props as IDockviewPanelProps<{ id: string }>)} />,
 };
 
 const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = {
@@ -103,6 +106,7 @@ export function Shell() {
       else if (panel.id.startsWith("adm-dgm-")) useDiagrams.getState().close(panel.id);
       else if (panel.id.startsWith("adm-cmp-")) forgetComparison(panel.id);
       else if (panel.id.startsWith("adm-qry-")) useBuilders.getState().close(panel.id);
+      else if (panel.id.startsWith("adm-dbg-")) forgetDebug(panel.id);
       else if (panel.id.startsWith("adm-")) useAdmin.getState().close(panel.id);
       if (!panel.id.startsWith("sql-")) return;
       forgetEditor(panel.id);

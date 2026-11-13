@@ -6,6 +6,7 @@ import { api, errorText, type Action, type ObjectKind, type ObjectRef } from "./
 import type { MenuItem } from "./components/ContextMenu";
 import { openBuilder } from "./builder";
 import { startComparison } from "./compare";
+import { openDebugger } from "./debug";
 import { openDiagram } from "./diagram";
 import { closePanel, openEditor, openObject } from "./dock";
 import { t } from "./i18n";
@@ -64,6 +65,12 @@ export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "se
       // Of tables and what they are related to
       disabled: tables.length === 0 || tables.length !== objects.length,
       onSelect: () => openDiagram(id, tables),
+    },
+    {
+      label: t("Debug"),
+      icon: "run",
+      disabled: one?.kind !== "procedure" && one?.kind !== "function",
+      onSelect: () => one && openDebugger(id, one.kind, one.name),
     },
     {
       label: t("Build Query"),

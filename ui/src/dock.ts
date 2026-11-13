@@ -64,7 +64,7 @@ export function openObject(registration: string, kind: ObjectKind, name: string)
 }
 
 /** Shows a tool's panel: the one with that id, or a new one */
-export function openAdminPanel(id: string, component: "admin" | "service" | "diagram" | "compare" | "builder", title: string) {
+export function openAdminPanel(id: string, component: "admin" | "service" | "diagram" | "compare" | "builder" | "debug", title: string) {
   if (!dock) return;
   const panel = dock.getPanel(id);
   if (panel) {
