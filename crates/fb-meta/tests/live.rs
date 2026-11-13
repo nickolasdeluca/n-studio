@@ -520,7 +520,9 @@ fn the_monitor_sees_this_connection() {
     assert!(this.sql.as_deref().is_some_and(|s| s.contains("mon$statements")), "{:?}", this.state);
     // That statement ended with its query: its text is no longer there to read
     assert_eq!(monitor::statement_text(&conn, this.id).unwrap(), None);
-    assert!(monitor::statements(&conn, false).unwrap().len() >= statements.len());
+    // Idle ones included, it is still there. Only its own are counted: the
+    // other tests' statements come and go between two readings.
+    assert!(monitor::statements(&conn, false).unwrap().iter().any(|s| s.attachment == own[0].id));
 }
 
 /// Ends another attachment and another's statement: only among the
