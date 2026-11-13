@@ -33,6 +33,20 @@ pub const BUFFER_LENGTH: u32 = u16::MAX as u32;
 /// 32767 leaves it room, and is far more than the counters take.
 pub const DB_INFO_BUFFER_LENGTH: u32 = i16::MAX as u32;
 
+/// How much of a blob one `op_get_segment` asks for. Firebird 2.5 writes a
+/// reply's length as a signed 16 bits: past 32767 bytes it says 0xFFFFFFFF,
+/// and a reader waits forever for the rest (what `DB_INFO_BUFFER_LENGTH` is
+/// about, too). So a blob over 32 KiB never finished reading there. This
+/// keeps every reply within what all servers can say; fbclient itself asks
+/// for less (16 KiB).
+pub const SEGMENT_BUFFER_LENGTH: u32 = i16::MAX as u32;
+
+/// Reply buffer for a statement's description (`op_prepare_statement`,
+/// `op_info_sql`), within the same 16 signed bits. A description that does
+/// not fit is not lost: the server marks it truncated and the client asks
+/// for the rest from the column it stopped at.
+pub const SQL_INFO_BUFFER_LENGTH: u32 = i16::MAX as u32;
+
 /// Highest protocol type offered at handshake.
 ///
 /// ptype 5 is `lazy_send`, which lets the server batch several responses into
@@ -430,7 +444,7 @@ pub fn prepare_statement(
     req.put_wire_bytes(&bytes);
     req.put_wire_bytes(&XSQLDA_DESCRIBE_VARS); // Data to be returned
 
-    req.put_u32(BUFFER_LENGTH);
+    req.put_u32(SQL_INFO_BUFFER_LENGTH);
 
     Ok(req.freeze())
 }
@@ -527,7 +541,7 @@ pub fn info_sql(stmt_handle: u32, requested_items: &[u8]) -> Bytes {
     req.put_u32(stmt_handle);
     req.put_u32(0); // Incarnation of object
     req.put_wire_bytes(requested_items);
-    req.put_u32(BUFFER_LENGTH);
+    req.put_u32(SQL_INFO_BUFFER_LENGTH);
 
     req.freeze()
 }
@@ -628,7 +642,7 @@ pub fn get_segment(blob_handle: u32) -> Bytes {
 
     req.put_u32(WireOp::GetSegment as u32);
     req.put_u32(blob_handle);
-    req.put_u32(BUFFER_LENGTH);
+    req.put_u32(SEGMENT_BUFFER_LENGTH);
     req.put_u32(0); // Data segment, apparently unused
 
     req.freeze()

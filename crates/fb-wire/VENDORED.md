@@ -73,6 +73,12 @@ in the workspace manifest.
 - **A smaller buffer for `op_info_database`.** Firebird 2.5 overflows a
   65535-byte one while adding its own items, and answers with a data length
   of 0xFFFFFFFF; the reader then waited forever. 32767 for database info.
+- **Smaller buffers for blob segments and statement descriptions too.** The
+  same overflow: `op_get_segment` asked for 65535 bytes, so on Firebird 2.5
+  a blob over 32 KiB never finished reading. Segments, `op_prepare_statement`
+  and `op_info_sql` ask for 32767; a description that does not fit comes
+  truncated and is asked for again from where it stopped, as before.
+  `read_blob` also gives up on a server that sends only empty segments.
 - **Blobs left unread.** `fetch_lazy` returns each blob as its id
   (`FetchedColumn::Blob`) instead of reading it with the row, which cost
   three round trips per blob per row; `read_blob` reads one later, up to a

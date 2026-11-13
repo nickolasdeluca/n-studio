@@ -323,6 +323,26 @@ fn editor_cursors_leave_blobs_to_be_read_on_demand() {
     assert!(conn.read_blob(tx, *source, true, 10).is_err());
 }
 
+/// A select whose description is longer than one reply holds: the wide
+/// tables of an ERP, and past what Firebird 2.5 can say the length of
+#[test]
+fn a_select_of_many_columns_is_described_whole() {
+    let Some(conn) = connect() else { return };
+    let tx = conn.begin(read_only()).unwrap();
+    let alias = |i: usize| format!("COLUNA_DE_NOME_COMPRIDO_{i:04}__");
+    let columns: Vec<String> = (0..700).map(|i| format!("{i} as {}", alias(i))).collect();
+    let sql = format!("select {} from rdb$database", columns.join(", "));
+    let executed = conn.execute(tx, &sql, vec![], ExecuteOptions { plan: false, performance: false }).unwrap();
+    assert_eq!(executed.columns.len(), 700);
+    for (i, column) in executed.columns.iter().enumerate() {
+        assert_eq!(column.name, alias(i));
+    }
+    let page = conn.fetch(executed.cursor.unwrap(), 1).unwrap();
+    assert_eq!(page.rows[0].len(), 700);
+    assert_eq!(page.rows[0][699].as_i64(), Some(699));
+    conn.end(tx, TxEnd::Rollback).unwrap();
+}
+
 /// A blob longer than one reply holds, and than Firebird 2.5 can say the
 /// length of: its replies count their bytes in a signed 16 bits
 #[test]

@@ -1304,11 +1304,18 @@ impl FirebirdWireConnection {
         let handle = self.open_blob(tr_handle, id)?;
         let mut data = Vec::new();
         let mut complete = false;
+        let mut empty = 0u32;
         let read = loop {
             let (segment, end) = match self.get_segment(BlobHandle(handle.0)) {
                 Ok(s) => s,
                 Err(e) => break Err(e),
             };
+            // A blob may hold empty segments, but a server that only ever
+            // sends those is not getting to its end: fail, not spin
+            empty = if segment.is_empty() { empty + 1 } else { 0 };
+            if empty > 1000 && !end {
+                break Err("blob: too many empty segments without its end".into());
+            }
             data.extend_from_slice(&segment);
             if end {
                 complete = true;
