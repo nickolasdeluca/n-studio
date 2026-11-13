@@ -8,3 +8,6 @@ dist/
 .env
 .env.local
 /spikes/**/out/
+
+# Signing and notarization credentials for scripts/build-release.sh
+/scripts/build-release.env

@@ -80,7 +80,8 @@ Releases carry one installer per system, built by
 not signed, so each system has to be told once that the app may run:
 
 - **macOS** (`.dmg`, Intel and Apple Silicon in one): drag the app to
-  Applications and open it; after the refusal, *System Settings → Privacy &
+  Applications and open it; unless it is the notarized build (below), after
+  the refusal, *System Settings → Privacy &
   Security → Open Anyway*. Or, in a terminal:
   `xattr -dr com.apple.quarantine "/Applications/N Studio.app"`.
 - **Windows** (`…-setup.exe`): SmartScreen's *More info → Run anyway*. The
@@ -90,6 +91,20 @@ not signed, so each system has to be told once that the app may run:
   Keyring, KWallet).
 
 The status bar shows the version; name it when reporting something.
+
+### A signed macOS installer
+
+The workflow's `.dmg` is signed ad hoc: the Developer ID certificate lives in a
+keychain, not in the repository. On a Mac that has it,
+
+```sh
+cp scripts/build-release.env.example scripts/build-release.env   # once; fill it in
+scripts/build-release.sh
+```
+
+builds the universal `.dmg`, signs it and the app with the Developer ID, has
+Apple notarize it and staples the answer, and leaves it in `dist/`. That one
+opens without the detour above.
 
 ## Running the app
 
