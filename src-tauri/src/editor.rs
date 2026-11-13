@@ -16,7 +16,7 @@ use fb_core::{
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::commands::blocking;
+use crate::commands::{blocking, AppState};
 use crate::error::{AppError, AppResult};
 use crate::export::{ExportOptions, Writer};
 use crate::results::{display, Cell, Rows, Sort};
@@ -346,12 +346,37 @@ pub async fn result_rows(app: AppHandle, result: u64, from: usize, count: usize)
 pub struct BlobView {
     /// A TEXT blob's text
     text: Option<String>,
-    /// Any other blob, as a hex dump
-    hex: Option<String>,
+    /// Any other blob's bytes, in base64: the viewer decides what they are
+    /// (a picture, text in a subtype 0 blob, or bytes to dump)
+    data: Option<String>,
     /// Bytes read
     size: usize,
     /// All of it: not cut at the size asked for
     complete: bool,
+}
+
+/// Reads a cell's blob, up to `max` bytes, in the transaction that fetched
+/// it. `None` for a null.
+fn read_cell_blob(
+    state: &AppState,
+    result: u64,
+    row: usize,
+    col: usize,
+    max: usize,
+) -> AppResult<Option<fb_core::BlobContent>> {
+    let set = state.results.get(result)?;
+    let (conn, tx, blob) = {
+        let set = set.lock().unwrap();
+        if set.tx_ended {
+            return Err(AppError::Invalid {
+                message: "The transaction that fetched these rows has ended: run the query again to read its blobs."
+                    .into(),
+            });
+        }
+        (set.conn.clone(), set.tx, set.rows.blob(row, col))
+    };
+    let Some((id, text)) = blob else { return Ok(None) };
+    Ok(Some(conn.read_blob(tx, id, text, max)?))
 }
 
 /// Reads the blob in a cell, up to `max` bytes, in the transaction that
@@ -365,23 +390,10 @@ pub async fn result_blob(
     max: usize,
 ) -> AppResult<Option<BlobView>> {
     blocking(app, move |state| {
-        let set = state.results.get(result)?;
-        let (conn, tx, blob) = {
-            let set = set.lock().unwrap();
-            if set.tx_ended {
-                return Err(AppError::Invalid {
-                    message:
-                        "The transaction that fetched these rows has ended: run the query again to read its blobs."
-                            .into(),
-                });
-            }
-            (set.conn.clone(), set.tx, set.rows.blob(row, col))
-        };
-        let Some((id, text)) = blob else { return Ok(None) };
-        let content = conn.read_blob(tx, id, text, max)?;
+        let Some(content) = read_cell_blob(state, result, row, col, max)? else { return Ok(None) };
         let size = content.text.as_ref().map_or(content.bytes.len(), String::len);
         Ok(Some(BlobView {
-            hex: content.text.is_none().then(|| hex_dump(&content.bytes)),
+            data: content.text.is_none().then(|| base64(&content.bytes)),
             text: content.text,
             size,
             complete: content.complete,
@@ -390,13 +402,38 @@ pub async fn result_blob(
     .await
 }
 
-/// Sixteen bytes a line: offset, hex, and the printable ones
-fn hex_dump(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 4 + bytes.len() / 16 * 12);
-    for (i, chunk) in bytes.chunks(16).enumerate() {
-        let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02X}")).collect();
-        let ascii: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
-        out.push_str(&format!("{:08X}  {:<47}  {ascii}\n", i * 16, hex.join(" ")));
+/// The most of a blob that is written to a file: what a blob can hold on
+/// the smallest page size is past it, and nothing kept in a table is.
+const BLOB_FILE_MAX: usize = 1 << 30;
+
+/// Writes the whole blob in a cell to a file: a TEXT blob as UTF-8, any
+/// other as its bytes. The bytes written come back.
+#[tauri::command]
+pub async fn result_blob_save(app: AppHandle, result: u64, row: usize, col: usize, path: PathBuf) -> AppResult<usize> {
+    blocking(app, move |state| {
+        let Some(content) = read_cell_blob(state, result, row, col, BLOB_FILE_MAX)? else {
+            return Err(AppError::Invalid { message: "The cell is null: there is no blob to save.".into() });
+        };
+        let bytes = content.text.map_or(content.bytes, String::into_bytes);
+        crate::files::replace(&path, &bytes)?;
+        Ok(bytes.len())
+    })
+    .await
+}
+
+/// Standard base64, padded: what a `data:` URL and `atob` take
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
     }
     out
 }
@@ -467,6 +504,16 @@ impl Utf16Cursor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base64_pads_what_three_bytes_do_not_fill() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xff, 0xfe, 0xfd, 0x00]), "//79AA==");
+    }
 
     #[test]
     fn statement_ranges_count_utf16() {

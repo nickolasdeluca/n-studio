@@ -215,8 +215,8 @@ export interface Executed {
 /** A blob cell's content, read on demand */
 export interface BlobView {
   text: string | null;
-  /** A non-text blob, as a hex dump */
-  hex: string | null;
+  /** Any other blob's bytes, in base64 */
+  data: string | null;
   size: number;
   complete: boolean;
 }
@@ -671,6 +671,9 @@ export const api = {
   resultRows: (result: number, from: number, count: number) => invoke<Cell[][]>("result_rows", { result, from, count }),
   resultBlob: (result: number, row: number, col: number, max: number) =>
     invoke<BlobView | null>("result_blob", { result, row, col, max }),
+  /** Writes the cell's whole blob to a file; the bytes written come back */
+  resultBlobSave: (result: number, row: number, col: number, path: string) =>
+    invoke<number>("result_blob_save", { result, row, col, path }),
   resultClose: (result: number) => invoke<void>("result_close", { result }),
   resultSort: (result: number, sort: Sort | null) => invoke<ResultView>("result_sort", { result, sort }),
   resultExport: (result: number, path: string, options: ExportOptions) =>

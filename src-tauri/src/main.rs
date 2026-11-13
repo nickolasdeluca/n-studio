@@ -59,6 +59,7 @@ fn main() {
             editor::result_sort,
             editor::result_export,
             editor::result_blob,
+            editor::result_blob_save,
             editor::result_close,
             editor::sql_statements,
             editor::statement_parameters,
