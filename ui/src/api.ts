@@ -281,6 +281,43 @@ export interface Diagram {
   all: string[];
 }
 
+export type JoinKind = "inner" | "left" | "right" | "full";
+export type Aggregate = "count" | "sum" | "avg" | "min" | "max";
+
+export interface QueryTable {
+  name: string;
+  /** What the statement calls it: its name, unless it is there twice */
+  alias: string;
+}
+
+export interface QueryJoin {
+  kind: JoinKind;
+  /** Aliases */
+  left: string;
+  right: string;
+  /** A column of `left` and the column of `right` it equals */
+  on: [string, string][];
+}
+
+export interface QueryColumn {
+  table: string;
+  column: string;
+  alias: string | null;
+  aggregate: Aggregate | null;
+  sort: "asc" | "desc" | null;
+  /** As it is written after the column: `> 10`, `IS NULL` */
+  filter: string | null;
+  output: boolean;
+}
+
+export interface QuerySpec {
+  tables: QueryTable[];
+  joins: QueryJoin[];
+  columns: QueryColumn[];
+  distinct: boolean;
+  first: number | null;
+}
+
 export type DiffKind = "only_source" | "only_target" | "different";
 
 export interface DiffRow {
@@ -553,6 +590,11 @@ export const api = {
   dataCompare: (run: number, source: string, sourceTable: string, target: string, targetTable: string) =>
     invoke<Comparison>("data_compare", { run, source, sourceTable, target, targetTable }),
   dataCompareCancel: (run: number) => invoke<boolean>("data_compare_cancel", { run }),
+  /** The tables and views named, the references between them, and the
+   *  names of all the others */
+  querySources: (id: string, names: string[]) => invoke<Diagram>("query_sources", { id, names }),
+  /** The SELECT the parts make */
+  queryBuild: (id: string, spec: QuerySpec) => invoke<string>("query_build", { id, spec }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
 };

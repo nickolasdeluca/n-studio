@@ -178,20 +178,40 @@ fn primary_keys(conn: &Connection) -> Result<HashSet<(String, String)>> {
     Ok(rows(conn, sql, vec![])?.iter().filter_map(|r| Some((r.text(0)?, r.text(1)?))).collect())
 }
 
+/// The names of the relations nobody but the user made: the tables, and
+/// the views too when `views` says so
+fn relations(conn: &Connection, views: bool) -> Result<Vec<String>> {
+    let only = if views { "" } else { " and r.rdb$view_blr is null" };
+    let sql = format!(
+        "select trim(r.rdb$relation_name) from rdb$relations r where coalesce(r.rdb$system_flag, 0) = 0{only} order by 1"
+    );
+    Ok(rows(conn, &sql, vec![])?.iter().filter_map(|r| r.text(0)).collect())
+}
+
 /// The diagram of `seeds` and what is within `depth` references of them,
 /// or of the whole database when there are no seeds
 pub fn diagram(conn: &Connection, seeds: &[String], depth: u32) -> Result<Diagram> {
-    let all: Vec<String> = rows(
-        conn,
-        "select trim(r.rdb$relation_name) from rdb$relations r \
-         where coalesce(r.rdb$system_flag, 0) = 0 and r.rdb$view_blr is null order by 1",
-        vec![],
-    )?
-    .iter()
-    .filter_map(|r| r.text(0))
-    .collect();
+    let all = relations(conn, false)?;
     let every = references(conn)?;
     let picked = pick(&all, &every, seeds, depth);
+    described(conn, all, every, picked)
+}
+
+/// What a query can read from: the tables and views named, in the order
+/// they are named, with the references between them. `all` names every
+/// table and view; none named, that is all it says.
+pub fn sources(conn: &Connection, names: &[String]) -> Result<Diagram> {
+    let all = relations(conn, true)?;
+    let mut picked: Vec<String> = Vec::new();
+    for name in names {
+        if all.contains(name) && !picked.contains(name) {
+            picked.push(name.clone());
+        }
+    }
+    described(conn, all, references(conn)?, picked)
+}
+
+fn described(conn: &Connection, all: Vec<String>, every: Vec<DiagramReference>, picked: Vec<String>) -> Result<Diagram> {
     if picked.is_empty() {
         return Ok(Diagram { all, ..Default::default() });
     }

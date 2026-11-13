@@ -90,6 +90,8 @@ const glyphs: Record<string, ReactNode> = {
   ),
   chevron: <path d="m6 4 4 4-4 4" />,
   plus: <path d="M8 3v10M3 8h10" />,
+  up: <path d="M8 12.6V3.4M4.4 7 8 3.4 11.6 7" />,
+  down: <path d="M8 3.4v9.2M4.4 9 8 12.6 11.6 9" />,
   plug: (
     <>
       <path d="M6 2v3M10 2v3M4.2 5h7.6v2.4a3.8 3.8 0 0 1-7.6 0zM8 11.2V14" />

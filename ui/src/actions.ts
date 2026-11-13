@@ -4,6 +4,7 @@
 import { adminActions } from "./admin";
 import { api, errorText, type Action, type ObjectKind, type ObjectRef } from "./api";
 import type { MenuItem } from "./components/ContextMenu";
+import { openBuilder } from "./builder";
 import { startComparison } from "./compare";
 import { openDiagram } from "./diagram";
 import { closePanel, openEditor, openObject } from "./dock";
@@ -63,6 +64,13 @@ export function objectActions(id: string, objects: ObjectRef[]): (MenuItem | "se
       // Of tables and what they are related to
       disabled: tables.length === 0 || tables.length !== objects.length,
       onSelect: () => openDiagram(id, tables),
+    },
+    {
+      label: t("Build Query"),
+      icon: "sql",
+      // Of what a query can read from
+      disabled: objects.length === 0 || objects.length > 8 || objects.some((o) => o.kind !== "table" && o.kind !== "view"),
+      onSelect: () => void openBuilder(id, objects.map((o) => o.name)),
     },
     "separator",
     {

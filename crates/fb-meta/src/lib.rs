@@ -22,6 +22,7 @@ pub mod extract;
 pub mod grant;
 mod ident;
 pub mod monitor;
+pub mod query;
 mod object;
 mod routine;
 mod row;

@@ -740,3 +740,70 @@ fn two_tables_are_compared_and_the_scripts_close_the_gap() {
     let stop = AtomicBool::new(true);
     assert!(compare(&conn, "CMP_SOURCE", &conn, "CMP_TARGET", 1000, &stop, |_| {}).unwrap().cancelled);
 }
+
+/// What a query is built from includes views, and says nothing of what
+/// was not asked for
+#[test]
+fn a_querys_sources_are_tables_and_views() {
+    use fb_meta::diagram::{diagram, sources};
+    let Some(conn) = connect() else { return };
+    let none = sources(&conn, &[]).unwrap();
+    assert!(none.tables.is_empty() && none.references.is_empty());
+    let tables = diagram(&conn, &["no such table".to_string()], 0).unwrap().all;
+    assert!(tables.iter().all(|t| none.all.contains(t)));
+    let Some(first) = none.all.first() else { return };
+    let one = sources(&conn, &[first.clone(), "no such table".to_string(), first.clone()]).unwrap();
+    assert_eq!(one.tables.len(), 1);
+    assert!(!one.tables[0].columns.is_empty());
+}
+
+/// The server takes what the builder writes: joined, grouped, filtered
+/// before and after, sorted and cut short
+#[test]
+fn a_built_query_runs_on_the_fixture() {
+    use fb_meta::diagram::sources;
+    use fb_meta::query::{select, Aggregate, JoinKind, QueryColumn, QueryJoin, QuerySpec, QueryTable, Sort};
+    let Some(conn) = fixture() else { return };
+    let from = sources(&conn, &["PEDIDO_ITEM".to_string(), "V_PEDIDO_TOTAL".to_string(), "PEDIDO".to_string()]).unwrap();
+    let names: Vec<&str> = from.tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["PEDIDO_ITEM", "V_PEDIDO_TOTAL", "PEDIDO"]);
+    assert!(from.all.iter().any(|n| n == "V_TIPOS") && from.all.iter().any(|n| n == "TIPOS"));
+    let fk = from.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").unwrap();
+
+    let table = |name: &str, alias: &str| QueryTable { name: name.into(), alias: alias.into() };
+    let column = |table: &str, column: &str| QueryColumn {
+        table: table.into(),
+        column: column.into(),
+        alias: None,
+        aggregate: None,
+        sort: None,
+        filter: None,
+        output: true,
+    };
+    let spec = QuerySpec {
+        tables: vec![table("PEDIDO", "P"), table("PEDIDO_ITEM", "PEDIDO_ITEM"), table("PEDIDO", "Outro"), table("V_PEDIDO_TOTAL", "V_PEDIDO_TOTAL")],
+        joins: vec![
+            QueryJoin {
+                kind: JoinKind::Left,
+                left: "PEDIDO_ITEM".into(),
+                right: "P".into(),
+                on: fk.from_columns.iter().cloned().zip(fk.to_columns.iter().cloned()).collect(),
+            },
+            QueryJoin { kind: JoinKind::Full, left: "P".into(), right: "Outro".into(), on: vec![("ID".into(), "ID".into())] },
+        ],
+        columns: vec![
+            column("P", "ID"),
+            QueryColumn { aggregate: Some(Aggregate::Count), alias: Some("itens".into()), sort: Some(Sort::Desc), filter: Some(">= 0".into()), ..column("PEDIDO_ITEM", "ITEM") },
+            QueryColumn { aggregate: Some(Aggregate::Sum), ..column("PEDIDO_ITEM", "QTD") },
+            QueryColumn { output: false, filter: Some("IS NOT NULL".into()), ..column("Outro", "ID") },
+            QueryColumn { output: false, sort: Some(Sort::Asc), ..column("P", "ID") },
+        ],
+        distinct: true,
+        first: Some(3),
+    };
+    let sql = select(&spec, conn.info().dialect);
+    let result = conn.query(&sql, vec![]).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    assert!(result.rows.len() <= 3, "{sql}");
+    let plain = select(&QuerySpec { tables: vec![table("V_PEDIDO_TOTAL", "V_PEDIDO_TOTAL")], ..Default::default() }, 3);
+    conn.query(&plain, vec![]).unwrap();
+}

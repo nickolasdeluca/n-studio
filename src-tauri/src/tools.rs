@@ -1,5 +1,6 @@
 //! The tools that look at a database as a whole rather than at one object:
-//! the diagram of its tables, and two tables' rows compared.
+//! the diagram of its tables, two tables' rows compared, and a query put
+//! together from parts.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use fb_meta::compare::{self, Comparison};
 use fb_meta::diagram::{self, Diagram};
+use fb_meta::query::{self, QuerySpec};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -96,4 +98,22 @@ pub fn data_compare_cancel(state: State<'_, AppState>, run: u64) -> bool {
         }
         None => false,
     }
+}
+
+/// The SELECT a builder's parts make, written for the registration's
+/// database: its dialect decides how names are quoted
+#[tauri::command]
+pub fn query_build(state: State<'_, AppState>, id: String, spec: QuerySpec) -> AppResult<String> {
+    Ok(query::select(&spec, state.session(&id)?.info().dialect))
+}
+
+/// The tables and views a query is being built from: their columns and
+/// the foreign keys between them, and the name of every other one
+#[tauri::command]
+pub async fn query_sources(app: AppHandle, id: String, names: Vec<String>) -> AppResult<Diagram> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        Ok(diagram::sources(&conn, &names)?)
+    })
+    .await
 }
