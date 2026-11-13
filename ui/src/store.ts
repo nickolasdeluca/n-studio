@@ -111,6 +111,8 @@ interface State {
   loadObjects(id: string, kind: ObjectKind): Promise<void>;
   saveRegistration(registration: Registration, password: string | null): Promise<Registration>;
   deleteRegistration(id: string): Promise<void>;
+  /** Puts a registration in a folder: beside `anchor`, or last in it */
+  placeRegistration(id: string, folder: string[], anchor?: string | null, after?: boolean): Promise<void>;
   /** Renames or moves an explorer folder, with all that is under it */
   moveFolder(from: string[], to: string[]): Promise<void>;
   openDialog(dialog: Dialog | null): void;
@@ -258,6 +260,16 @@ export const useStore = create<State>()((set, get) => ({
     const saved = await api.saveRegistration(registration, password);
     await refreshRegistrations();
     return saved;
+  },
+
+  // A drag or a menu choice: what fails is said in the status bar
+  async placeRegistration(id, folder, anchor = null, after = false) {
+    try {
+      await api.placeRegistration(id, folder, anchor, after);
+    } catch (e) {
+      set({ notice: errorText(e) });
+    }
+    await refreshRegistrations();
   },
 
   async moveFolder(from, to) {

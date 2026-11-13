@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { folderActions, kindActions, objectActions, registrationActions } from "../actions";
 import { openObject } from "../dock";
-import { serverSummary, type ObjectKind, type RegistrationView } from "../api";
+import { errorText, serverSummary, type ObjectKind, type RegistrationView } from "../api";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { keys, useStore, type NodeKey, type Selection } from "../store";
@@ -31,6 +31,27 @@ interface Row {
 
 const ROW = 22;
 const INDENT = 14;
+
+/** What is being dragged: a database, or a folder with all that is in it */
+type Source = { type: "registration"; id: string } | { type: "folder"; path: string[] };
+
+/** Where a drag would land, and the row that shows it */
+type Target =
+  /** Last in a folder; no path is the top, and no row the whole tree */
+  | { type: "into"; path: string[]; row: NodeKey | null }
+  /** Before or after a database, in its folder */
+  | { type: "beside"; id: string; after: boolean; row: NodeKey };
+
+interface Drag {
+  source: Source;
+  label: string;
+  x: number;
+  y: number;
+  target: Target | null;
+}
+
+/** A press becomes a drag once it has moved this far */
+const DRAG_AFTER = 5;
 
 export function Explorer() {
   const { registrations, servers, connecting, trees, objects, expanded, selection } = useStore();
@@ -127,6 +148,94 @@ export function Explorer() {
   }, [registrations, servers, connecting, trees, objects, expanded]);
 
   const selectedKey = selection ? keyOf(selection) : onFolder;
+
+  // Dragging a database or a folder: into a folder, beside a database, or
+  // to the empty space under the tree, which is the top. Mouse events and
+  // not the browser's drag and drop, which a Tauri window on Windows keeps
+  // for files dropped from outside.
+  const [drag, setDrag] = useState<Drag | null>(null);
+  const latest = useRef(rows);
+  latest.current = rows;
+
+  const targetAt = (source: Source, x: number, y: number): Target | null => {
+    const under = document.elementFromPoint(x, y);
+    if (!under || !scroller.current?.contains(under)) return null;
+    const element = under.closest<HTMLElement>("[data-index]");
+    const row = element ? latest.current[Number(element.dataset.index)] : undefined;
+    // A folder cannot go into itself, or into one inside it
+    const into = (path: string[], key: NodeKey | null): Target | null =>
+      source.type === "folder" && source.path.every((name, i) => path[i] === name) ? null : { type: "into", path, row: key };
+    if (!element || !row) return into([], null);
+    if (row.folder) return into(row.folder, row.key);
+    const id = row.selection?.id;
+    const registration = id ? useStore.getState().registrations.find((r) => r.id === id) : undefined;
+    if (!registration) return null;
+    // A folder has no place among databases: it goes to the folder they are in
+    if (source.type === "folder") {
+      return into(registration.folder, registration.folder.length ? keys.folder(registration.folder) : null);
+    }
+    if (registration.id === source.id) return null;
+    // Over what a connected database has open, it is after that database
+    const key = keys.registration(registration.id);
+    const box = element.getBoundingClientRect();
+    return { type: "beside", id: registration.id, after: row.key !== key || y > box.top + box.height / 2, row: key };
+  };
+
+  const drop = ({ source, target }: Drag) => {
+    if (!target) return;
+    const s = useStore.getState();
+    if (source.type === "folder") {
+      const to = [...(target.type === "into" ? target.path : []), source.path[source.path.length - 1]];
+      void s.moveFolder(source.path, to).catch((e) => s.setNotice(errorText(e)));
+    } else if (target.type === "into") {
+      void s.placeRegistration(source.id, target.path);
+    } else {
+      const folder = s.registrations.find((r) => r.id === target.id)?.folder ?? [];
+      void s.placeRegistration(source.id, folder, target.id, target.after);
+    }
+  };
+
+  const press = (row: Row, e: React.MouseEvent) => {
+    const source: Source | null = row.folder
+      ? { type: "folder", path: row.folder }
+      : row.selection && !row.selection.kind
+        ? { type: "registration", id: row.selection.id }
+        : null;
+    if (!source || e.button !== 0) return;
+    const from = { x: e.clientX, y: e.clientY };
+    let current: Drag | null = null;
+    const move = (ev: MouseEvent) => {
+      if (!current && Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < DRAG_AFTER) return;
+      current = { source, label: row.label, x: ev.clientX, y: ev.clientY, target: targetAt(source, ev.clientX, ev.clientY) };
+      setDrag(current);
+      // Near an edge, the tree scrolls to what is past it
+      const box = scroller.current?.getBoundingClientRect();
+      if (box && ev.clientY < box.top + ROW) scroller.current?.scrollBy(0, -ROW);
+      else if (box && ev.clientY > box.bottom - ROW) scroller.current?.scrollBy(0, ROW);
+    };
+    const end = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("keydown", key, true);
+      setDrag(null);
+    };
+    const up = () => {
+      const done = current;
+      end();
+      if (done) drop(done);
+    };
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.stopPropagation();
+      end();
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("keydown", key, true);
+  };
+
+  const dragged = drag ? (drag.source.type === "folder" ? keys.folder(drag.source.path) : keys.registration(drag.source.id)) : null;
+  const target = drag?.target ?? null;
   const selectedIndex = rows.findIndex((r) => r.key === selectedKey);
 
   const virtualizer = useVirtualizer({
@@ -234,7 +343,9 @@ export function Explorer() {
       role="tree"
       aria-label={t("Database Explorer")}
       tabIndex={0}
-      className="scroll-thin h-full overflow-auto bg-panel outline-none"
+      className={`scroll-thin h-full overflow-auto bg-panel outline-none ${drag ? "cursor-grabbing select-none" : ""} ${
+        target?.type === "into" && !target.row ? "shadow-[inset_0_0_0_1px_var(--accent)]" : ""
+      }`}
       onKeyDown={onKeyDown}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
@@ -250,12 +361,24 @@ export function Explorer() {
               aria-level={row.depth + 1}
               aria-expanded={row.expandable ? row.expanded : undefined}
               aria-selected={selected}
-              title={row.title}
+              data-index={v.index}
+              title={drag ? undefined : row.title}
               className={`absolute left-0 flex w-full items-center gap-1.5 pr-2 whitespace-nowrap ${
-                selected ? (focused ? "bg-selected" : "bg-selected-inactive") : "hover:bg-hover"
-              } ${row.error ? "text-danger" : row.dim ? "text-muted" : ""}`}
+                target?.type === "into" && target.row === row.key
+                  ? "bg-hover shadow-[inset_0_0_0_1px_var(--accent)]"
+                  : selected
+                    ? focused
+                      ? "bg-selected"
+                      : "bg-selected-inactive"
+                    : drag
+                      ? ""
+                      : "hover:bg-hover"
+              } ${row.error ? "text-danger" : row.dim ? "text-muted" : ""} ${row.key === dragged ? "opacity-50" : ""}`}
               style={{ top: v.start, height: ROW, paddingLeft: 4 + row.depth * INDENT }}
-              onMouseDown={() => pick(row)}
+              onMouseDown={(e) => {
+                pick(row);
+                press(row, e);
+              }}
               onDoubleClick={() => (row.folder ? open(row) : activate(row))}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -292,10 +415,25 @@ export function Explorer() {
               )}
               <span className="truncate">{row.label}</span>
               {row.detail && <span className="truncate text-faint">{row.detail}</span>}
+              {target?.type === "beside" && target.row === row.key && (
+                <span
+                  className="pointer-events-none absolute right-1 h-0.5 rounded bg-accent"
+                  style={{ left: 4 + row.depth * INDENT, [target.after ? "bottom" : "top"]: -1 }}
+                />
+              )}
             </div>
           );
         })}
       </div>
+      {drag && (
+        <div
+          className="pointer-events-none fixed z-[900] flex items-center gap-1.5 rounded border border-line bg-panel-2 px-2 py-0.5 shadow-[var(--shadow)]"
+          style={{ left: drag.x + 12, top: drag.y + 10 }}
+        >
+          <Icon name={drag.source.type === "folder" ? "folder" : "database"} className="text-faint" />
+          {drag.label}
+        </div>
+      )}
     </div>
   );
 }

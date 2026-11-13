@@ -31,8 +31,54 @@ export function registrationActions(id: string): (MenuItem | "separator")[] {
       icon: "edit",
       onSelect: () => s.openDialog({ type: "registration", registration }),
     },
+    { label: t("Move to Folder…"), icon: "folder", onSelect: () => registration && moveToFolder(registration.id) },
+    ...(registration?.folder.length
+      ? [{ label: t("Remove from Folder"), onSelect: () => void s.placeRegistration(id, []) }]
+      : []),
     { label: t("Unregister Database…"), icon: "trash", danger: true, onSelect: () => s.openDialog({ type: "delete", id }) },
   ];
+}
+
+const pathOf = (text: string) => text.split("/").map((name) => name.trim()).filter(Boolean);
+
+/** Every folder of the explorer, the ones that only hold folders too */
+function folderPaths(): string[] {
+  const paths = new Set<string>();
+  for (const r of useStore.getState().registrations) {
+    for (let depth = 1; depth <= r.folder.length; depth++) paths.add(r.folder.slice(0, depth).join(" / "));
+  }
+  return [...paths].sort((a, b) => a.localeCompare(b));
+}
+
+/** Asks which folder a registration goes to: one there is, or a new one */
+function moveToFolder(id: string) {
+  const s = useStore.getState();
+  const registration = s.registrations.find((r) => r.id === id);
+  if (!registration) return;
+  s.openDialog({
+    type: "form",
+    title: t("Move to Folder — {name}", { name: registration.name }),
+    form: {
+      title: registration.name,
+      fields: [
+        {
+          id: "folder",
+          label: "Folder",
+          kind: "combo",
+          value: registration.folder.join(" / "),
+          options: folderPaths(),
+          required: false,
+          hint: "One there is, or a new one. One inside another: Customers / North. Empty is out of every folder.",
+        },
+      ],
+    },
+    note: t("Dragging it in the explorer does the same."),
+    verb: t("Move"),
+    submit: async (values) => {
+      await useStore.getState().placeRegistration(id, pathOf(values.folder ?? ""));
+      useStore.getState().openDialog(null);
+    },
+  });
 }
 
 /** What can be done to a folder of the explorer */
@@ -64,11 +110,15 @@ export function folderActions(path: string[]): (MenuItem | "separator")[] {
           note: t("Every database in it goes along."),
           verb: t("Rename"),
           submit: async (values) => {
-            const to = (values.folder ?? "").split("/").map((name) => name.trim()).filter(Boolean);
-            await useStore.getState().moveFolder(path, to);
+            await useStore.getState().moveFolder(path, pathOf(values.folder ?? ""));
             useStore.getState().openDialog(null);
           },
         }),
+    },
+    {
+      // Its databases, and the folders inside it, go to where it was
+      label: t("Remove Folder, Keep Its Databases"),
+      onSelect: () => void s.moveFolder(path, path.slice(0, -1)).catch((e) => s.setNotice(errorText(e))),
     },
   ];
 }

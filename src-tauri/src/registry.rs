@@ -178,6 +178,41 @@ impl Registry {
         Ok(registration)
     }
 
+    /// Puts a registration in `folder`, beside another one: before `anchor`,
+    /// or after it. Without an anchor it goes last in the folder. This is
+    /// what a drag in the explorer does, so the order kept is the order
+    /// shown.
+    pub fn place(&mut self, id: &str, folder: &[String], anchor: Option<&str>, after: bool) -> AppResult<()> {
+        let folder = folder_path(folder);
+        if let Some(anchor) = anchor {
+            self.get(anchor)?;
+        }
+        let from = self
+            .registrations
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or_else(|| AppError::NotFound { message: format!("No registration {id}.") })?;
+        if anchor == Some(id) {
+            self.registrations[from].folder = folder;
+            return self.write();
+        }
+        let mut registration = self.registrations.remove(from);
+        let at = match anchor {
+            Some(anchor) => {
+                self.registrations.iter().position(|r| r.id == anchor).expect("the anchor is there") + usize::from(after)
+            }
+            // After the last one under the folder, the ones in folders
+            // inside it too; a new folder starts where the one it is in ends
+            None => (0..=folder.len())
+                .rev()
+                .find_map(|depth| self.registrations.iter().rposition(|r| r.folder.starts_with(&folder[..depth])))
+                .map_or(0, |last| last + 1),
+        };
+        registration.folder = folder;
+        self.registrations.insert(at, registration);
+        self.write()
+    }
+
     /// Renames or moves a folder: every registration under `from`, however
     /// deep, goes under `to` instead, in one write. An empty `to` takes
     /// them to the top. Returns how many registrations it moved.
@@ -305,6 +340,39 @@ mod tests {
         assert_eq!(registry.get(&ids[1]).unwrap().folder, ["North"]);
         assert_eq!(registry.move_folder(&path(&["Nowhere"]), &path(&["X"])).unwrap(), 0);
         assert!(registry.move_folder(&[], &path(&["X"])).is_err());
+    }
+
+    #[test]
+    fn a_registration_is_placed_in_a_folder_beside_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut registry = Registry::load(dir.path()).unwrap();
+        let path = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let mut add = |name: &str, folder: &[&str]| {
+            registry.save(Registration { name: name.into(), folder: path(folder), ..sample() }).unwrap().id
+        };
+        let (a, b, c, d) = (add("A", &["X"]), add("B", &["X", "Y"]), add("C", &[]), add("D", &[]));
+        let order = |registry: &Registry| {
+            registry.all().iter().map(|r| format!("{}:{}", r.name, r.folder.join("/"))).collect::<Vec<_>>().join(" ")
+        };
+
+        // Out of its folder, before and after one at the top
+        registry.place(&b, &[], Some(&d), false).unwrap();
+        assert_eq!(order(&registry), "A:X C: B: D:");
+        registry.place(&b, &[], Some(&d), true).unwrap();
+        assert_eq!(order(&registry), "A:X C: D: B:");
+        // Into a folder: last in it, the folders inside it counted
+        registry.place(&c, &path(&["X", "Y"]), None, false).unwrap();
+        registry.place(&d, &path(&["X"]), None, false).unwrap();
+        assert_eq!(order(&registry), "A:X C:X/Y D:X B:");
+        // To the top without an anchor: last of all
+        registry.place(&a, &[], None, false).unwrap();
+        assert_eq!(order(&registry), "C:X/Y D:X B: A:");
+        // Onto itself is only the folder; what is not there is refused and changes nothing
+        registry.place(&a, &path(&["X"]), Some(&a), true).unwrap();
+        assert!(registry.place(&a, &[], Some("nobody"), false).is_err());
+        assert!(registry.place("nobody", &[], None, false).is_err());
+        assert_eq!(order(&registry), "C:X/Y D:X B: A:X");
+        assert_eq!(order(&Registry::load(dir.path()).unwrap()), "C:X/Y D:X B: A:X");
     }
 
     #[test]

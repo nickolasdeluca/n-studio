@@ -156,6 +156,18 @@ pub async fn save_registration(
     .await
 }
 
+/// Puts a registration in a folder, before or after another one, or last
+#[tauri::command]
+pub async fn place_registration(
+    app: AppHandle,
+    id: String,
+    folder: Vec<String>,
+    anchor: Option<String>,
+    after: bool,
+) -> AppResult<()> {
+    blocking(app, move |state| state.registry.lock().unwrap().place(&id, &folder, anchor.as_deref(), after)).await
+}
+
 /// Renames or moves an explorer folder, with every registration under it
 #[tauri::command]
 pub async fn move_folder(app: AppHandle, from: Vec<String>, to: Vec<String>) -> AppResult<usize> {
