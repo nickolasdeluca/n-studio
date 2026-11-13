@@ -14,7 +14,7 @@ import {
   type CompletionResult,
 } from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
-import type { Extension } from "@codemirror/state";
+import { EditorState, type Extension, type StateEffect, type Transaction, type TransactionSpec } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { api, type CatalogRelation, type CompletionCatalog, type DiagramReference, type ObjectKind, type Word } from "./api";
 import { firebirdDialect } from "./firebird";
@@ -230,22 +230,54 @@ function joins(all: Names, inStatement: ReturnType<typeof sources>): Completion[
   return options;
 }
 
+/** The cursor went along a name, without typing, while a list was open */
+function alongName(tr: Transaction): boolean {
+  if (tr.docChanged || !tr.selection || !tr.isUserEvent("select") || completionStatus(tr.startState) !== "active") return false;
+  const from = tr.startState.selection.main;
+  const to = tr.newSelection.main;
+  if (!from.empty || !to.empty || from.head === to.head) return false;
+  // Still in the name: past a dot or a space, the list was for something else
+  return /^[\w$]+$/.test(tr.newDoc.sliceString(Math.min(from.head, to.head), Math.max(from.head, to.head)));
+}
+
+/** The effect `startCompletion` dispatches, which the library keeps to
+ *  itself: taken from a dispatch it is given, once */
+let startEffect: StateEffect<unknown> | null | undefined;
+
+function startEffectOf(state: EditorState): StateEffect<unknown> | null {
+  if (startEffect === undefined) {
+    startEffect = null;
+    const dispatch = (spec: TransactionSpec) => {
+      const effects = spec.effects;
+      startEffect = (Array.isArray(effects) ? effects[0] : effects) ?? null;
+    };
+    startCompletion({ state, dispatch } as unknown as EditorView);
+  }
+  return startEffect;
+}
+
 /**
  * An open list follows the cursor along a name: each letter the cursor
  * passes going right narrows the list to what starts the name up to there,
  * and going left widens it again, as IBExpert's does. On its own a list
  * closes when the cursor moves without typing.
+ *
+ * The list is asked for again in the transaction that moves the cursor, so
+ * it stays on the screen while the new one is made. Asked for afterwards,
+ * it would close and open at every key, which is seen as a flicker; that
+ * is still what happens should the library stop handing its effect over.
  */
-const followCursor = EditorView.updateListener.of((update) => {
-  if (update.docChanged || !update.selectionSet || !update.transactions.some((tr) => tr.isUserEvent("select"))) return;
-  if (completionStatus(update.startState) !== "active") return;
-  const before = update.startState.selection.main;
-  const now = update.state.selection.main;
-  if (!before.empty || !now.empty || before.head === now.head) return;
-  // Still in the name: past a dot or a space, the list was for something else
-  const passed = update.state.sliceDoc(Math.min(before.head, now.head), Math.max(before.head, now.head));
-  if (/^[\w$]+$/.test(passed)) startCompletion(update.view);
-});
+const followCursor: Extension = [
+  EditorState.transactionExtender.of((tr) => {
+    if (!alongName(tr)) return null;
+    const effect = startEffectOf(tr.startState);
+    return effect ? { effects: effect } : null;
+  }),
+  EditorView.updateListener.of((update) => {
+    if (!update.selectionSet || completionStatus(update.state) !== null) return;
+    if (update.transactions.some(alongName)) startCompletion(update.view);
+  }),
+];
 
 /** The list as this editor shows it: what each name is in a first column,
  *  then the name, then what is known of it */
