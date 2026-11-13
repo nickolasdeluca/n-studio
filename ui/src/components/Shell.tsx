@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import {
   DockviewDefaultTab,
   DockviewReact,
@@ -82,6 +83,17 @@ export function Shell() {
   useEffect(() => {
     void useStore.getState().load();
     void guardQuit();
+  }, []);
+
+  // The same choices from the menu bar's View menu, where there is one
+  useEffect(() => {
+    const heard = listen<string>("view-menu", (e) => {
+      const api = dock.current;
+      if (!api) return;
+      if (e.payload === "reset") defaultLayout(api);
+      else showPanel(api, e.payload);
+    });
+    return () => void heard.then((stop) => stop());
   }, []);
 
   // F12, as in IBExpert: an SQL editor on the selected database
@@ -179,6 +191,15 @@ function restore(api: DockviewApi): boolean {
   }
 }
 
+/** Brings a panel of the View menu to the front, or back if it was closed */
+function showPanel(api: DockviewApi, id: string) {
+  const known = panels.find((p) => p.id === id);
+  if (!known) return;
+  const panel = api.getPanel(id);
+  if (panel) panel.api.setActive();
+  else api.addPanel({ id, component: id, title: t(known.title), position: { direction: "left" }, initialWidth: 300 });
+}
+
 function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
   const selection = useStore((s) => s.selection);
   const connected = useStore((s) => (selection ? !!s.servers[selection.id] : false));
@@ -194,18 +215,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
     const items: MenuItem[] = panels.map((p) => ({
       label: t(p.title),
       icon: "panel",
-      onSelect: () => {
-        const panel = api.getPanel(p.id);
-        if (panel) panel.api.setActive();
-        else
-          api.addPanel({
-            id: p.id,
-            component: p.id,
-            title: t(p.title),
-            position: { direction: "left" },
-            initialWidth: 300,
-          });
-      },
+      onSelect: () => showPanel(api, p.id),
     }));
     showMenu(rect.left, rect.bottom + 2, [
       ...items,
