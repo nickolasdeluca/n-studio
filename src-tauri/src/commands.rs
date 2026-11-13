@@ -19,6 +19,7 @@ use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
 use crate::script::Scripts;
 use crate::secrets;
+use crate::session::SessionStore;
 use crate::debugger::Debuggers;
 use crate::tools::Comparisons;
 
@@ -35,10 +36,11 @@ pub struct AppState {
     /// a connection of its own, to the same server as the same user. Kept
     /// only while connected, and only in memory.
     params: Mutex<HashMap<String, ConnectParams>>,
+    pub(crate) session_store: SessionStore,
 }
 
 impl AppState {
-    pub fn new(registry: Registry) -> Self {
+    pub fn new(registry: Registry, session_store: SessionStore) -> Self {
         Self {
             registry: Mutex::new(registry),
             sessions: Mutex::default(),
@@ -48,6 +50,7 @@ impl AppState {
             comparisons: Comparisons::default(),
             debuggers: Debuggers::default(),
             params: Mutex::default(),
+            session_store,
         }
     }
 

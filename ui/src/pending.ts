@@ -5,6 +5,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closePanel, panelTitle } from "./dock";
 import { useEditors } from "./editors";
+import { flushSession } from "./session";
 import { useStore } from "./store";
 import { hasChanges, useViewers } from "./viewers";
 
@@ -26,8 +27,20 @@ export function unsavedViewers(filter: (registration: string) => boolean = () =>
 }
 
 /** Does `action` now if nothing stands in the way; asks otherwise: first
- *  about viewers' changes, then about transactions */
-export function request(action: PendingAction): void {
+ *  about an editor's unsaved file (`anyway` when that was answered), then
+ *  about viewers' changes, then about transactions.
+ *
+ *  Only a closing editor asks about its file, and only when it has one:
+ *  quitting and disconnecting keep every editor's text for the next run
+ *  (session.ts), and text that was never a file is a scratch pad's. */
+export function request(action: PendingAction, anyway = false): void {
+  if (action.kind === "close" && !anyway) {
+    const tab = useEditors.getState().tabs[action.tab];
+    if (tab?.file && tab.changed) {
+      useStore.getState().openDialog({ type: "unsaved", tab: action.tab, action });
+      return;
+    }
+  }
   const unsaved =
     action.kind === "close" ? [] : unsavedViewers(action.kind === "disconnect" ? (r) => r === action.id : undefined);
   if (unsaved.length > 0) {
@@ -73,6 +86,7 @@ async function perform(action: PendingAction) {
       await useStore.getState().disconnect(action.id, true);
       break;
     case "quit":
+      await flushSession();
       await getCurrentWindow().destroy();
       break;
   }
@@ -81,8 +95,12 @@ async function perform(action: PendingAction) {
 /** Asks before the window closes, when it would end transactions */
 export async function guardQuit(): Promise<void> {
   try {
-    await getCurrentWindow().onCloseRequested((event) => {
-      if (activeTabs().length === 0 && unsavedViewers().length === 0) return;
+    await getCurrentWindow().onCloseRequested(async (event) => {
+      if (activeTabs().length === 0 && unsavedViewers().length === 0) {
+        // The window closes once this is written
+        await flushSession();
+        return;
+      }
       event.preventDefault();
       request({ kind: "quit" });
     });

@@ -18,11 +18,13 @@ import {
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { TxEnd } from "../api";
-import { drafts, isolations, ms, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
+import { drafts, isolations, ms, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
 import { catalogCompletion, prepareCompletion } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon } from "../icons";
+import { formatLabel, saveEditor } from "../scripts";
+import { sessionChanged } from "../session";
 import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
@@ -65,6 +67,8 @@ function runKeys(id: string) {
       { key: "Ctrl-F9", run: run("script") },
       { key: "Mod-Alt-c", run: end("commit") },
       { key: "Mod-Alt-r", run: end("rollback") },
+      { key: "Mod-s", run: () => (void saveEditor(id), true) },
+      { key: "Mod-Shift-s", run: () => (void saveEditor(id, true), true) },
       { key: "Escape", run: cancelKey(id) },
     ]),
   );
@@ -151,6 +155,12 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
           autocompletion(),
           highlightSelectionMatches(),
           errorField,
+          // Typing makes the text other than its file's, and the session's
+          EditorView.updateListener.of((update) => {
+            if (!update.docChanged) return;
+            useEditors.getState().edited(id);
+            sessionChanged();
+          }),
           firebirdSql,
           catalogCompletion(() => useEditors.getState().tabs[id]?.registration),
           editorLook,
@@ -168,6 +178,8 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
         setPos({ line: line.number, col: head - line.from + 1 });
       },
     });
+    // From the view while there is one, from its kept state after
+    readers.set(id, () => (view.current?.state ?? saved.get(id))?.doc.toString() ?? "");
     drafts.delete(id);
     view.current = v;
     v.focus();
@@ -235,6 +247,13 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
       { label: t("Commit After Each DDL Statement"), icon: autoDdl ? "commit" : undefined, onSelect: () => set(tab.id, { autoDdl: !autoDdl }) },
     ]);
   };
+  const saveMenu = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    showMenu(rect.left, rect.bottom + 2, [
+      { label: t("Save"), icon: "save", onSelect: () => void saveEditor(tab.id) },
+      { label: t("Save As… (Ctrl+Shift+S)"), onSelect: () => void saveEditor(tab.id, true) },
+    ]);
+  };
   const s = useEditors.getState();
   const busy = tab.running || !connected;
   const active = tab.tx !== null;
@@ -248,6 +267,16 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
         title={t("Script Options")}
         aria-label={t("Script Options")}
         onClick={scriptMenu}
+        className="-ml-0.5 grid h-7 w-3.5 place-items-center rounded text-muted hover:bg-hover"
+      >
+        <Icon name="options" size={10} />
+      </button>
+      <span className="mx-1 h-4 w-px bg-line" />
+      <Tool icon="save" label={t("Save (Ctrl+S)")} onClick={() => saveEditor(tab.id)} />
+      <button
+        title={t("Save Options")}
+        aria-label={t("Save Options")}
+        onClick={saveMenu}
         className="-ml-0.5 grid h-7 w-3.5 place-items-center rounded text-muted hover:bg-hover"
       >
         <Icon name="options" size={10} />
@@ -551,10 +580,19 @@ function EditorStatus({ tab, pos }: { tab: EditorTab; pos: { line: number; col: 
           ? t("Transaction active · {isolation}{ro}", { isolation: t(isolation), ro: tab.txOptions.readOnly ? ` · ${t("read only")}` : "" })
           : t("No active transaction")}
       </span>
+      {tab.file && tab.format && (
+        <>
+          <span className="h-3 w-px bg-line" />
+          <span className="min-w-0 truncate" title={tab.file}>
+            {tab.file}
+          </span>
+          <span className="shrink-0">{formatLabel(tab.format)}</span>
+        </>
+      )}
       {result && (
         <>
           <span className="h-3 w-px bg-line" />
-          <span className="tabular-nums">
+          <span className="shrink-0 tabular-nums">
             {result.eof
               ? t("{n} row(s) fetched", { n: result.rows.toLocaleString() })
               : t("{n} row(s) fetched, more available", { n: result.rows.toLocaleString() })}

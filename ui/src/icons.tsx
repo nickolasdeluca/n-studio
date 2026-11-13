@@ -108,6 +108,8 @@ const glyphs: Record<string, ReactNode> = {
       <path d="M12.6 6.6A5 5 0 1 0 13 9.4" />
     </>
   ),
+  folder: <path d="M2.2 12.6V3.6h4l1.4 1.6h6.2v7.4zM2.2 7h11.6" />,
+  save: <path d="M2.8 2.8h8.4l2 2v8.4H2.8zM5.2 2.8v3.4h5V2.8M5 13.2V9.4h6v3.8" />,
   edit: <path d="m10.4 2.8 2.8 2.8-7.4 7.4H3v-2.8zM8.8 4.4l2.8 2.8" />,
   trash: <path d="M3 4.4h10M6.4 4.4V2.8h3.2v1.6M4.4 4.4l.6 8.8h6l.6-8.8" />,
   search: (

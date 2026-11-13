@@ -8,11 +8,13 @@ mod debugger;
 mod editor;
 mod error;
 mod export;
+mod files;
 mod objects;
 mod registry;
 mod results;
 mod script;
 mod secrets;
+mod session;
 mod tools;
 
 use tauri::Manager;
@@ -23,7 +25,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let registry = registry::Registry::load(&dir)?;
-            app.manage(commands::AppState::new(registry));
+            app.manage(commands::AppState::new(registry, session::SessionStore::new(&dir)));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -66,6 +68,10 @@ fn main() {
             admin::admin_script,
             admin::service_run,
             admin::service_cancel,
+            files::script_read,
+            files::script_write,
+            session::session_load,
+            session::session_save,
             tools::diagram,
             tools::write_text_file,
             tools::data_compare,

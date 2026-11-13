@@ -19,6 +19,8 @@ import { useDiagrams } from "../diagram";
 import { useEditors } from "../editors";
 import { t } from "../i18n";
 import { guardQuit, request } from "../pending";
+import { openScripts } from "../scripts";
+import { restoreSession, sessionChanged } from "../session";
 import { Icon } from "../icons";
 import { useStore } from "../store";
 import { hasChanges, useViewers } from "../viewers";
@@ -85,11 +87,14 @@ export function Shell() {
   // F12, as in IBExpert: an SQL editor on the selected database
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "F12") return;
+      // Ctrl+O, or Cmd+O: a script into an editor on the selected database
+      const script = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "o";
+      if (e.key !== "F12" && !script) return;
       const id = useStore.getState().selection?.id;
       if (!id) return;
       e.preventDefault();
-      openEditor(id);
+      if (!script) openEditor(id);
+      else if (useStore.getState().servers[id]) void openScripts(id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -99,6 +104,7 @@ export function Shell() {
     dock.current = e.api;
     setDock(e.api);
     if (!restore(e.api)) defaultLayout(e.api);
+    void restoreSession();
     // An editor's tab closing ends its transaction
     e.api.onDidRemovePanel((panel) => {
       if (panel.id.startsWith("obj-")) useViewers.getState().close(panel.id);
@@ -119,6 +125,8 @@ export function Shell() {
       } catch {
         // The layout is a convenience; without storage it resets next time
       }
+      // Which editors there are, their order and the one in front
+      sessionChanged();
     });
   };
 
@@ -216,6 +224,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <ToolButton icon="refresh" label={t("Refresh")} disabled={!connected} onClick={() => id && void s.refresh(id)} />
       <Separator />
       <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
+      <ToolButton icon="folder" label={t("Open Script… (Ctrl+O)")} disabled={!connected} onClick={() => id && openScripts(id)} />
       <Separator />
       <ToolButton
         icon="edit"

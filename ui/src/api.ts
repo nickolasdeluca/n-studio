@@ -274,6 +274,34 @@ export interface DiagramReference {
   toColumns: string[];
 }
 
+/** How a script's file holds its text */
+export interface FileFormat {
+  encoding: "utf8" | "utf8_bom" | "utf16_le" | "utf16_be" | "win1252";
+  /** Lines end in CR LF; the editor's text has LF alone */
+  crlf: boolean;
+}
+
+export interface ScriptFile {
+  text: string;
+  format: FileFormat;
+}
+
+/** An editor as it is kept between runs of the app */
+export interface SessionTab {
+  registration: string;
+  title: string;
+  file: string | null;
+  format: FileFormat | null;
+  /** Null when it is the file's, unchanged */
+  text: string | null;
+}
+
+export interface Session {
+  tabs: SessionTab[];
+  /** Which of them was in front */
+  active: number | null;
+}
+
 /** A name, and how SQL writes it in its database */
 export interface Word {
   name: string;
@@ -577,6 +605,11 @@ export const api = {
   disconnect: (id: string) => invoke<void>("disconnect", { id }),
   explorerTree: (id: string) => invoke<TreeKind[]>("explorer_tree", { id }),
   objectList: (id: string, kind: ObjectKind) => invoke<DbObject[]>("object_list", { id, kind }),
+  scriptRead: (path: string) => invoke<ScriptFile>("script_read", { path }),
+  /** Answers the format written: UTF-8 where the one asked for lacks a character */
+  scriptWrite: (path: string, text: string, format: FileFormat) => invoke<FileFormat>("script_write", { path, text, format }),
+  sessionLoad: () => invoke<Session>("session_load"),
+  sessionSave: (session: Session) => invoke<null>("session_save", { session }),
   completionCatalog: (id: string) => invoke<CompletionCatalog>("completion_catalog", { id }),
   objectTabs: (kind: ObjectKind) => invoke<TabInfo[]>("object_tabs", { kind }),
   objectTab: (id: string, kind: ObjectKind, name: string, tab: string) =>

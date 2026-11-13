@@ -272,9 +272,12 @@ parts of the editor's daily loop the feature milestones walked past.
 2. **Completion.** The editor completes keywords and nothing else. It gets the
    catalog `fb-meta` already reads: tables, views, routines, generators, and a
    table's columns after its name or alias.
-3. **Scripts as files.** Open a `.sql` into a tab, save a tab to a file, and say
-   so before closing one that has unsaved text. Tabs and their text come back
-   when the app is opened again.
+3. **Scripts as files.** Open a `.sql` into a tab, save a tab to a file; a file
+   is written back in the encoding and line endings it was found in (`WIN1252`
+   with CR LF as readily as UTF-8). Tabs and their text come back when the app
+   is opened again, so quitting asks nothing about them; closing one tab asks
+   only when it is a file's and has unsaved changes. Text that was never a
+   file is a scratch pad's, and closes without a question.
 4. **Query history.** What was run, where, when, how long it took and whether it
    failed, kept per registration in SQLite as §1 planned, and brought back into
    an editor.

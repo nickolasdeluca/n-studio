@@ -9,6 +9,7 @@ import {
   type ColumnInfo,
   type Executed,
   type ExportOptions,
+  type FileFormat,
   type Isolation,
   type ResultView,
   type ScriptProblem,
@@ -59,6 +60,18 @@ export interface EditorTab {
   /** Behind an object viewer's Data tab rather than an editor of the
    *  user's: read only, and ended without asking */
   viewer: boolean;
+  /** The script it was opened from or saved to */
+  file: string | null;
+  format: FileFormat | null;
+  /** Its text is no longer what `file` holds */
+  changed: boolean;
+}
+
+/** Where an editor's text is, when it is a file's */
+export interface EditorFile {
+  file: string;
+  format: FileFormat;
+  changed: boolean;
 }
 
 export type RunMode = "current" | "all" | "to_cursor";
@@ -74,7 +87,13 @@ export interface RunInput {
 interface State {
   tabs: Record<string, EditorTab>;
   /** `viewer`: for an object viewer's Data tab */
-  open(registration: string, viewer?: boolean): string;
+  open(registration: string, viewer?: boolean, file?: EditorFile): string;
+  /** The text was typed in */
+  edited(id: string): void;
+  /** The text is now what `file` holds */
+  stored(id: string, file: string, format: FileFormat): void;
+  /** Says something in the tab's messages */
+  note(id: string, text: string): void;
   close(id: string): Promise<void>;
   setTxOptions(id: string, options: Partial<TxOptions>): void;
   setBottom(id: string, bottom: BottomTab): void;
@@ -106,6 +125,11 @@ export const isolations: { value: Isolation; label: string }[] = [
 let opened = 0;
 /** The text a new editor opens with, by tab, until its panel takes it */
 export const drafts = new Map<string, string>();
+/** How to read each editor's text, which lives in its panel */
+export const readers = new Map<string, () => string>();
+
+/** An editor's text as it is now */
+export const textOf = (id: string): string => readers.get(id)?.() ?? drafts.get(id) ?? "";
 
 /** Of one script's statements, how many problems the log takes */
 const MAX_PROBLEMS = 500;
@@ -129,7 +153,7 @@ export const useEditors = create<State>()((set, get) => {
   return {
     tabs: {},
 
-    open(registration, viewer = false) {
+    open(registration, viewer = false, file) {
       opened += 1;
       const id = `${viewer ? "data" : "sql"}-${Date.now().toString(36)}-${opened}`;
       set((s) => ({
@@ -148,6 +172,9 @@ export const useEditors = create<State>()((set, get) => {
             script: null,
             scriptOptions: { stopOnError: false, autoDdl: true },
             viewer,
+            file: file?.file ?? null,
+            format: file?.format ?? null,
+            changed: file?.changed ?? false,
           },
         },
       }));
@@ -160,6 +187,7 @@ export const useEditors = create<State>()((set, get) => {
       closeResult(tab);
       forgetParams(id);
       drafts.delete(id);
+      readers.delete(id);
       set((s) => {
         const tabs = { ...s.tabs };
         delete tabs[id];
@@ -168,6 +196,19 @@ export const useEditors = create<State>()((set, get) => {
       // A closing editor's work is rolled back, never committed behind the
       // user's back
       if (tab.tx !== null) await api.editorEnd(tab.registration, tab.tx, "rollback").catch(() => {});
+    },
+
+    edited(id) {
+      const tab = get().tabs[id];
+      if (tab?.file && !tab.changed) patch(id, { changed: true });
+    },
+
+    stored(id, file, format) {
+      patch(id, { file, format, changed: false });
+    },
+
+    note(id, text) {
+      log(id, "info", text);
     },
 
     setTxOptions(id, options) {

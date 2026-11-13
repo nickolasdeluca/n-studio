@@ -2,7 +2,6 @@
 //! app's config directory. Passwords never go in the file; see `secrets`.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fb_core::{AuthPlugin, ConnectParams, Dialect};
@@ -175,17 +174,10 @@ impl Registry {
         self.write()
     }
 
-    /// Through a temporary file and a rename, so a crash mid-write cannot
-    /// leave half a file behind.
     fn write(&self) -> AppResult<()> {
-        let dir = self.path.parent().expect("the file lives in a directory");
-        fs::create_dir_all(dir).map_err(|e| AppError::storage(dir, e))?;
         let json = serde_json::to_vec_pretty(&File { version: VERSION, registrations: self.registrations.clone() })
             .expect("registrations serialize");
-        let tmp = self.path.with_extension("json.tmp");
-        let mut file = fs::File::create(&tmp).map_err(|e| AppError::storage(&tmp, e))?;
-        file.write_all(&json).and_then(|_| file.sync_all()).map_err(|e| AppError::storage(&tmp, e))?;
-        fs::rename(&tmp, &self.path).map_err(|e| AppError::storage(&self.path, e))
+        crate::files::replace(&self.path, &json)
     }
 }
 

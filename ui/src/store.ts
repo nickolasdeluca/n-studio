@@ -40,6 +40,8 @@ export type Dialog =
   | { type: "delete"; id: string }
   /** Editors whose transactions an action would end: commit or roll back? */
   | { type: "pending"; tabs: string[]; action: PendingAction }
+  /** An editor closing over text its file does not have: save it first? */
+  | { type: "unsaved"; tab: string; action: PendingAction }
   /** A statement's parameter values, which a run waits for */
   | { type: "params"; request: ParamRequest }
   /** Where and how to write an editor's rows */

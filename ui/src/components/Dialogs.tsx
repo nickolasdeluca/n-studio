@@ -5,7 +5,8 @@ import { useEditors } from "../editors";
 import { panelTitle } from "../dock";
 import { t } from "../i18n";
 import type { ParamRequest, ParamValue } from "../params";
-import { activeTabs, resolve, type PendingAction } from "../pending";
+import { activeTabs, request, resolve, type PendingAction } from "../pending";
+import { saveEditor } from "../scripts";
 import { useStore } from "../store";
 import { CompileDialog, DiscardDialog } from "./CompileDialog";
 import { FormDialog } from "./FormDialog";
@@ -25,6 +26,8 @@ export function Dialogs() {
       return <DeleteDialog id={dialog.id} />;
     case "pending":
       return <PendingDialog tabs={dialog.tabs} action={dialog.action} />;
+    case "unsaved":
+      return <UnsavedDialog tab={dialog.tab} action={dialog.action} />;
     case "params":
       return <ParamsDialog request={dialog.request} />;
     case "export":
@@ -256,6 +259,49 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
       </ul>
       <p className="mt-2.5">{t("{what}: commit or roll back first?", { what })}</p>
       {error && <p className="mt-3 rounded border border-danger/40 px-2.5 py-1.5 whitespace-pre-wrap text-danger">{error}</p>}
+    </Modal>
+  );
+}
+
+function UnsavedDialog({ tab, action }: { tab: string; action: PendingAction }) {
+  const [busy, setBusy] = useState(false);
+  const close = () => useStore.getState().openDialog(null);
+  // What comes next may ask something of its own: the transaction's end
+  const go = () => {
+    close();
+    request(action, true);
+  };
+  const saveFirst = async () => {
+    setBusy(true);
+    const saved = await saveEditor(tab);
+    setBusy(false);
+    // Not saved is said in the status bar; the editor stays open
+    if (saved) go();
+    else close();
+  };
+
+  return (
+    <Modal
+      title={t("Unsaved Changes")}
+      width="w-[26rem]"
+      onCancel={close}
+      onSubmit={() => void saveFirst()}
+      footer={
+        <>
+          <span className="flex-1" />
+          <Button onClick={close} disabled={busy}>
+            {t("Cancel")}
+          </Button>
+          <Button onClick={go} disabled={busy}>
+            {t("Don't Save")}
+          </Button>
+          <Button primary submit disabled={busy}>
+            {t("Save")}
+          </Button>
+        </>
+      }
+    >
+      <p>{t("{file} has changes that were not saved.", { file: panelTitle(tab) })}</p>
     </Modal>
   );
 }
