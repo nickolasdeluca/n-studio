@@ -24,6 +24,7 @@ use crate::session::SessionStore;
 use crate::formatter::StyleStore;
 use crate::debugger::Debuggers;
 use crate::tools::Comparisons;
+use crate::trace::Traces;
 
 pub struct AppState {
     pub(crate) registry: Mutex<Registry>,
@@ -34,6 +35,7 @@ pub struct AppState {
     pub(crate) services: Services,
     pub(crate) comparisons: Comparisons,
     pub(crate) debuggers: Debuggers,
+    pub(crate) traces: Traces,
     /// What each open connection was made with, for the services manager:
     /// a connection of its own, to the same server as the same user. Kept
     /// only while connected, and only in memory.
@@ -44,7 +46,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(registry: Registry, session_store: SessionStore, history: History, style_store: StyleStore) -> Self {
+    pub fn new(
+        registry: Registry,
+        session_store: SessionStore,
+        history: History,
+        style_store: StyleStore,
+        traces: Traces,
+    ) -> Self {
         Self {
             registry: Mutex::new(registry),
             sessions: Mutex::default(),
@@ -53,6 +61,7 @@ impl AppState {
             services: Services::default(),
             comparisons: Comparisons::default(),
             debuggers: Debuggers::default(),
+            traces,
             params: Mutex::default(),
             session_store,
             history,

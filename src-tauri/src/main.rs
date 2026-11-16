@@ -19,6 +19,7 @@ mod script;
 mod secrets;
 mod session;
 mod tools;
+mod trace;
 
 use tauri::Manager;
 
@@ -65,6 +66,7 @@ fn main() {
                 session::SessionStore::new(&dir),
                 history::History::open(&dir),
                 formatter::StyleStore::new(&dir),
+                trace::Traces::new(&dir),
             ));
             #[cfg(target_os = "macos")]
             view_menu(app.handle())?;
@@ -113,6 +115,15 @@ fn main() {
             admin::admin_script,
             admin::service_run,
             admin::service_cancel,
+            trace::trace_start,
+            trace::trace_stop,
+            trace::trace_close,
+            trace::trace_state,
+            trace::trace_page,
+            trace::trace_event,
+            trace::trace_top,
+            trace::trace_sessions,
+            trace::trace_open,
             files::script_read,
             files::script_write,
             history::history_add,
