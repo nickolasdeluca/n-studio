@@ -11,6 +11,7 @@ mod error;
 mod params;
 mod script;
 mod service;
+mod trace;
 mod value;
 
 pub use connection::{Connection, QueryResult, ServerInfo};
@@ -24,6 +25,7 @@ pub use service::{
     run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask, ServiceUser,
     StatisticsOptions,
 };
+pub use trace::{run_trace, trace_config, trace_database, TraceEnd, TraceOptions};
 pub use params::{charset_names, AuthPlugin, ConnectParams, Dialect};
 pub use rsfbclient_core::Decimal;
 pub use value::Value;

@@ -99,19 +99,19 @@ pub struct ServiceUser {
     pub last_name: String,
 }
 
-fn attach(params: &ConnectParams) -> Result<ServiceClient> {
+pub(crate) fn attach(params: &ConnectParams) -> Result<ServiceClient> {
     Ok(ServiceClient::connect(&params.host, params.port, &params.user, &params.password, params.auth)?)
 }
 
 /// A start block: an action, then its arguments
-struct Spb(Vec<u8>);
+pub(crate) struct Spb(pub(crate) Vec<u8>);
 
 impl Spb {
-    fn action(action: u32) -> Self {
+    pub(crate) fn action(action: u32) -> Self {
         Spb(vec![action as u8])
     }
 
-    fn string(mut self, item: u32, value: &str) -> Result<Self> {
+    pub(crate) fn string(mut self, item: u32, value: &str) -> Result<Self> {
         let len = u16::try_from(value.len())
             .map_err(|_| Error::Client { message: "a service argument is too long".into() })?;
         self.0.push(item as u8);
@@ -225,20 +225,24 @@ fn start_block(task: &ServiceTask) -> Result<Vec<u8>> {
 
 /// One answer to a query, as far as this module reads them
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Answer {
+pub(crate) struct Answer {
     /// Bytes of output (`isc_info_svc_to_eof`), or of one text item
-    data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
     /// Whether an output item came at all
-    output: bool,
+    pub(crate) output: bool,
     /// The server gave up waiting for more: the service is still running
-    timed_out: bool,
+    pub(crate) timed_out: bool,
     /// More of the same is waiting to be asked for
-    truncated: bool,
+    pub(crate) truncated: bool,
+    /// Nothing was written yet by a service that has not ended: what a
+    /// trace session answers while the server is idle
+    pub(crate) not_ready: bool,
 }
 
 const INFO_END: u8 = ibase::isc_info_end as u8;
 const INFO_TRUNCATED: u8 = ibase::isc_info_truncated as u8;
-const INFO_TO_EOF: u8 = ibase::isc_info_svc_to_eof as u8;
+const INFO_NOT_READY: u8 = ibase::isc_info_data_not_ready as u8;
+pub(crate) const INFO_TO_EOF: u8 = ibase::isc_info_svc_to_eof as u8;
 const INFO_LINE: u8 = ibase::isc_info_svc_line as u8;
 const INFO_TIMEOUT: u8 = ibase::isc_info_svc_timeout as u8;
 const INFO_VERSION: u8 = ibase::isc_info_svc_server_version as u8;
@@ -249,7 +253,7 @@ fn malformed() -> Error {
 }
 
 /// Reads an info buffer holding text items
-fn parse_answer(buf: &[u8]) -> Result<Answer> {
+pub(crate) fn parse_answer(buf: &[u8]) -> Result<Answer> {
     let mut answer = Answer::default();
     let mut at = 0;
     while at < buf.len() {
@@ -261,6 +265,10 @@ fn parse_answer(buf: &[u8]) -> Result<Answer> {
             }
             INFO_TIMEOUT => {
                 answer.timed_out = true;
+                at += 1;
+            }
+            INFO_NOT_READY => {
+                answer.not_ready = true;
                 at += 1;
             }
             INFO_TO_EOF | INFO_LINE | INFO_VERSION | INFO_USERS => {
@@ -290,7 +298,7 @@ fn text(bytes: &[u8]) -> String {
 /// yet: how often a cancel is noticed
 const WAIT_SECONDS: u32 = 1;
 
-fn timeout_item() -> Vec<u8> {
+pub(crate) fn timeout_item() -> Vec<u8> {
     let mut send = vec![INFO_TIMEOUT, 4, 0];
     send.extend_from_slice(&WAIT_SECONDS.to_le_bytes());
     send
@@ -465,6 +473,8 @@ mod tests {
         assert!(done.output && done.data.is_empty() && !done.timed_out && !done.truncated);
         let waiting = parse_answer(&[63, 0, 0, 64, 1]).unwrap();
         assert!(waiting.timed_out);
+        let idle = parse_answer(&[63, 0, 0, 4, 1]).unwrap();
+        assert!(idle.not_ready && idle.data.is_empty());
         let more = parse_answer(&[63, 2, 0, b'a', b'\n', 2, 1]).unwrap();
         assert_eq!(more.data, b"a\n");
         assert!(more.truncated);

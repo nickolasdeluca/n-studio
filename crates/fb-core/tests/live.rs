@@ -8,6 +8,7 @@ use fb_core::{
     run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask,
     StatisticsOptions,
 };
+use fb_core::{run_trace, trace_config, trace_database, TraceEnd, TraceOptions};
 use fb_core::{
     run_script, ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait,
     ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
@@ -581,4 +582,75 @@ fn fixture_a_service_can_be_left_before_it_ends() {
     };
     let end = run_service(&params, &task, &cancel, |_| cancel.store(true, std::sync::atomic::Ordering::Relaxed));
     assert_eq!(end.unwrap(), ServiceEnd::Cancelled);
+}
+
+/// A trace session writes down what a connection made after it started
+/// runs, and ends when it is told to. Only against the fixture: tracing
+/// everything is a load no real server asked for.
+#[test]
+fn fixture_a_trace_session_writes_down_what_a_connection_runs() {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let first = Connection::open(&params).expect("connect");
+    let config = trace_config(&TraceOptions::default(), first.info().major, Some(&trace_database(&first).unwrap()));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let text = Arc::new(Mutex::new(String::new()));
+    let reader = {
+        let (params, config, stop, text) = (params.clone(), config.clone(), stop.clone(), text.clone());
+        std::thread::spawn(move || {
+            run_trace(&params, "n-studio-test", &config, &stop, |bytes| {
+                text.lock().unwrap().push_str(&String::from_utf8_lossy(bytes))
+            })
+        })
+    };
+    let seen = |what: &str| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline && !reader.is_finished() {
+            if text.lock().unwrap().contains(what) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        text.lock().unwrap().contains(what)
+    };
+    let so_far = || format!("{config}\n{}", text.lock().unwrap());
+
+    assert!(seen("Trace session ID"), "{}", so_far());
+    // One made before the session and one made after it: both are followed
+    first.query("select 424241 from rdb$database", vec![]).unwrap();
+    let second = Connection::open(&params).expect("connect");
+    second.query("select 424242 from rdb$database", vec![]).unwrap();
+    drop(second);
+    assert!(seen("424242") && seen("DETACH_DATABASE"), "{}", so_far());
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(reader.join().unwrap().unwrap(), TraceEnd::Stopped);
+    let text = text.lock().unwrap().clone();
+    for expected in ["424241", "ATTACH_DATABASE", "START_TRANSACTION", "EXECUTE_STATEMENT_FINISH", "RDB$DATABASE"] {
+        assert!(text.contains(expected), "{expected} is missing from\n{text}");
+    }
+    // The whole text, for whoever reads a failure of the parser's tests
+    // against a server version: `cargo test -- --nocapture`
+    println!("{text}");
+}
+
+/// A configuration the server cannot read ends the session at once, with
+/// the reason in the text
+#[test]
+fn fixture_a_trace_session_with_a_bad_configuration_says_why() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let mut text = String::new();
+    let end = run_trace(&params, "", "database { no_such_parameter = true }", &AtomicBool::new(false), |bytes| {
+        text.push_str(&String::from_utf8_lossy(bytes))
+    });
+    assert!(end.is_err() || (end == Ok(TraceEnd::Ended) && !text.contains("Trace session ID")), "{end:?} {text}");
 }
