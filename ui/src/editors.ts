@@ -51,6 +51,9 @@ export interface Outcome {
   /** How the rows can be changed in the grid, when they are one table's
    *  and came with its key; known a moment after the rows are */
   edit: SelectEditing | null;
+  /** What the run before this one took in all, when it was of the same
+   *  statement: prepare, execute and what it had fetched */
+  previousMs?: number;
   /** Read again after its rows were changed: the grid stays where it was */
   again?: boolean;
 }
@@ -155,6 +158,12 @@ const editings = new Map<string, Promise<RowEditing | null>>();
 onMetadataChanged((registration) => {
   for (const key of editings.keys()) if (key.startsWith(`${registration}:`)) editings.delete(key);
 });
+
+/** What the outcome before took, if it was of this same statement */
+function tookBefore(before: Outcome | null, sql: string): number | undefined {
+  if (!before || before.sql.trim() !== sql.trim()) return undefined;
+  return before.executed.prepareMs + before.executed.executeMs + (before.result?.fetchMs ?? 0);
+}
 
 /** Of one script's statements, how many problems the log takes */
 const MAX_PROBLEMS = 500;
@@ -562,7 +571,7 @@ export const useEditors = create<State>()((set, get) => {
         const dropped = editCount(before.edits);
         if (dropped > 0) log(id, "info", t("{n} changed row(s) of the last result were not applied, and went with it.", { n: dropped }));
         patch(id, (tab) => ({
-          outcome: { executed, result: executed.result, sql, sent: { sql: bound.sql, params }, edit: null },
+          outcome: { executed, result: executed.result, sql, sent: { sql: bound.sql, params }, edit: null, previousMs: tookBefore(before.outcome, sql) },
           edits: noEdits,
           bottom: tab.bottom === "messages" && executed.result ? "results" : tab.bottom,
         }));

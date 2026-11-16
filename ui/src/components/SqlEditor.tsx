@@ -18,7 +18,7 @@ import {
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type TxEnd } from "../api";
-import { drafts, isolations, ms, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
+import { drafts, isolations, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
 import { catalogCompletion, completionList, prepareCompletion } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
@@ -31,6 +31,7 @@ import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
 import { HistoryPane } from "./HistoryPane";
 import { noEdits, toChanges } from "../rowEdits";
+import { PerformancePane } from "./PerformancePane";
 import { Empty, Results, type ResultsEdit } from "./Results";
 
 /** Editor states by tab, so a panel that remounts keeps its text and undo */
@@ -609,80 +610,6 @@ function Plan({ tab }: { tab: EditorTab }) {
           <div className="mt-3 mb-1 font-sans font-semibold text-muted">{t("Explained plan")}</div>
           <pre className="whitespace-pre-wrap">{e.explainedPlan.trim()}</pre>
         </>
-      )}
-    </div>
-  );
-}
-
-function PerformancePane({ tab }: { tab: EditorTab }) {
-  const outcome = tab.outcome;
-  if (!outcome) return <Empty>{t("Execute a statement to see what it cost.")}</Empty>;
-  const { executed, result } = outcome;
-  const perf = result ? result.performance : executed.performance;
-  const kb = (b: number) => `${Math.round(b / 1024).toLocaleString()} KB`;
-  const n = (v: number) => v.toLocaleString();
-  const rows: [string, string][] = [
-    [t("Prepare"), ms(executed.prepareMs)],
-    [t("Execute"), ms(executed.executeMs)],
-  ];
-  if (result) rows.push([t("Fetch"), `${ms(result.fetchMs)} · ${t("{n} row(s)", { n: n(result.rows) })}`]);
-  if (perf) {
-    rows.push(
-      [t("Reads"), n(perf.reads)],
-      [t("Writes"), n(perf.writes)],
-      [t("Fetches"), n(perf.fetches)],
-      [t("Marks"), n(perf.marks)],
-      [t("Current memory"), kb(perf.currentMemory)],
-      [t("Max memory"), kb(perf.maxMemory)],
-      [t("Buffers"), `${n(perf.buffers)} × ${n(perf.pageSize)} ${t("bytes")}`],
-    );
-  }
-  return (
-    <div className="scroll-thin flex h-full gap-6 overflow-auto p-2 text-[12px]">
-      <table className="h-min shrink-0">
-        <tbody>
-          {rows.map(([k, v]) => (
-            <tr key={k}>
-              <td className="pr-4 text-muted">{k}</td>
-              <td className="text-right tabular-nums">{v}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {!perf ? (
-        <p className="text-muted">
-          {result && !result.eof
-            ? t("Fetch all the rows to see the statement's reads and writes.")
-            : t("Counters are measured when a single statement runs.")}
-        </p>
-      ) : perf.tables.length > 0 ? (
-        <table className="h-min border-collapse">
-          <thead>
-            <tr className="text-muted">
-              {[t("Table"), t("Indexed reads"), t("Non-indexed reads"), t("Inserts"), t("Updates"), t("Deletes"), t("Backouts"), t("Purges"), t("Expunges")].map(
-                (h, i) => (
-                  <th key={h} className={`border-b border-line px-2 py-0.5 font-semibold ${i ? "text-right" : "text-left"}`}>
-                    {h}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {perf.tables.map((r) => (
-              <tr key={r.table} className="border-b border-line/60">
-                <td className="px-2 font-semibold">{r.table}</td>
-                {[r.indexedReads, r.nonIndexedReads, r.inserts, r.updates, r.deletes, r.backouts, r.purges, r.expunges].map((v, i) => (
-                  <td key={i} className={`px-2 text-right tabular-nums ${i === 1 && v > 0 ? "text-danger" : ""} ${v === 0 ? "text-faint" : ""}`}>
-                    {n(v)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <p className="text-muted">{t("No table was read or written.")}</p>
       )}
     </div>
   );
