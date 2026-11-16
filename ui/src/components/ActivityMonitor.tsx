@@ -494,11 +494,25 @@ function Detail({ session, seq, registration }: { session: MonitorSession; seq: 
   if (!detail) return <Empty>{t("Loading…")}</Empty>;
   const { event, statement } = detail;
   const scans = event.tables.some((table) => table.natural > 0);
+  // Of what is counted per table, only what some table has: a pane this
+  // narrow has no room for six columns of nothing, and a table wider than
+  // it gets a scrollbar that hides its last row
+  const counted = (
+    [
+      ["Index", "index"],
+      ["Update", "update"],
+      ["Insert", "insert"],
+      ["Delete", "delete"],
+      ["Backout", "backout"],
+      ["Purge", "purge"],
+      ["Expunge", "expunge"],
+    ] as const
+  ).filter(([, key], i) => i === 0 || event.tables.some((table) => table[key] > 0));
   const block = (label: string, text: string) =>
     text && (
       <div className="flex flex-col gap-1">
         <span className="text-muted">{label}</span>
-        <pre className={`${card} ${mono} scroll-thin m-0 max-h-64 overflow-auto px-2.5 py-2 leading-[1.5] whitespace-pre-wrap select-text`}>{text}</pre>
+        <pre className={`${card} ${mono} scroll-thin m-0 max-h-64 overflow-x-hidden overflow-y-auto px-2.5 py-2 leading-[1.5] [overflow-wrap:anywhere] whitespace-pre-wrap select-text`}>{text}</pre>
       </div>
     );
   const tile = (label: string, value: string, tone = "") => (
@@ -549,12 +563,13 @@ function Detail({ session, seq, registration }: { session: MonitorSession; seq: 
         </div>
       )}
       {event.tables.length > 0 && (
-        <div className={`${card} scroll-thin overflow-x-auto`}>
+        <div className={`${card} scroll-thin overflow-x-auto overflow-y-hidden`}>
           <table className="w-full border-collapse tabular-nums">
             <thead>
               <tr className="text-right text-muted">
                 <th className="px-2.5 py-1.5 text-left font-medium">{t("Table")}</th>
-                {["Natural", "Index", "Update", "Insert", "Delete", "Backout", "Purge", "Expunge"].map((h) => (
+                <th className="px-2 py-1.5 font-medium">{t("Natural")}</th>
+                {counted.map(([h]) => (
                   <th key={h} className="px-2 py-1.5 font-medium">
                     {t(h)}
                   </th>
@@ -566,9 +581,9 @@ function Detail({ session, seq, registration }: { session: MonitorSession; seq: 
                 <tr key={table.name} className="border-t border-line text-right">
                   <td className="px-2.5 py-1.5 text-left select-text">{table.name}</td>
                   <td className={`px-2 py-1.5 ${table.natural ? "font-semibold text-danger" : ""}`}>{table.natural ? n(table.natural) : ""}</td>
-                  {[table.index, table.update, table.insert, table.delete, table.backout, table.purge, table.expunge].map((v, i) => (
-                    <td key={i} className="px-2 py-1.5">
-                      {v ? n(v) : ""}
+                  {counted.map(([h, key]) => (
+                    <td key={h} className="px-2 py-1.5">
+                      {table[key] ? n(table[key]) : ""}
                     </td>
                   ))}
                 </tr>
