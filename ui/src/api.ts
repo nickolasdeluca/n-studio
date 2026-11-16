@@ -491,6 +491,153 @@ export interface CompareProgress {
 
 export type AdminView = "monitor" | "users";
 
+/** What a monitoring session writes down; what is left out takes its default */
+export interface TraceOptions {
+  thresholdMs?: number;
+  wholeServer?: boolean;
+  explainedPlans?: boolean;
+  prepares?: boolean;
+  context?: boolean;
+  include?: string;
+  exclude?: string;
+}
+
+/** One second of a session, on the server's clock */
+export interface TraceSecond {
+  at: number;
+  events: number;
+  statements: number;
+  errors: number;
+  average: number;
+  /** What 95 in 100 statements stayed under, in ms */
+  high: number;
+  fetches: number;
+  reads: number;
+  writes: number;
+  marks: number;
+  attachments: number;
+}
+
+/** The `trace-tick` event, and what a session answers about itself */
+export interface TraceTick {
+  run: number;
+  standing: "recording" | "stopped" | "ended" | "failed" | "opened";
+  error: string | null;
+  total: number;
+  /** The number of the oldest event still kept in memory */
+  first: number;
+  gaps: number;
+  notices: string[];
+  seconds: TraceSecond[];
+  log: string;
+}
+
+export interface TraceFilter {
+  group: string;
+  attachment: number | null;
+  minMs: number;
+  text: string;
+}
+
+export interface TraceRow {
+  seq: number;
+  at: string;
+  kind: string;
+  failed: boolean;
+  attachment: number | null;
+  depth: number;
+  what: string;
+  ms: number | null;
+  fetches: number;
+}
+
+export interface TraceTable {
+  name: string;
+  natural: number;
+  index: number;
+  update: number;
+  insert: number;
+  delete: number;
+  backout: number;
+  purge: number;
+  expunge: number;
+}
+
+export interface TraceEvent {
+  at: string;
+  kind: string;
+  outcome: "ok" | "failed" | "unauthorized";
+  database: string;
+  attachment: number | null;
+  user: string;
+  role: string;
+  charset: string;
+  address: string;
+  process: string;
+  transaction: number | null;
+  transactionOptions: string;
+  statement: number | null;
+  object: string;
+  sql: string;
+  plan: string;
+  params: string[];
+  records: number | null;
+  ms: number | null;
+  reads: number;
+  writes: number;
+  fetches: number;
+  marks: number;
+  tables: TraceTable[];
+  message: string;
+}
+
+/** What the runs of one statement add up to */
+export interface TraceStatement {
+  sql: string;
+  runs: number;
+  ms: number;
+  slowest: number;
+  fetches: number;
+  reads: number;
+  records: number;
+  natural: number;
+  sorts: boolean;
+  plan: string;
+  slowestEvent: number;
+  /** Bytes, 0 when it was never caught running */
+  memory: number;
+}
+
+export interface TraceDetail {
+  seq: number;
+  depth: number;
+  event: TraceEvent;
+  statement: TraceStatement | null;
+}
+
+export interface MemoryUse {
+  id: number;
+  attachment: number;
+  user: string | null;
+  address: string | null;
+  sql: string | null;
+  used: number;
+  peak: number;
+}
+
+export interface TraceMemory {
+  used: number;
+  peak: number;
+  attachments: MemoryUse[];
+  statements: MemoryUse[];
+}
+
+export interface TraceRecorded {
+  path: string;
+  name: string;
+  bytes: number;
+}
+
 /** The `service-output` event */
 export interface ServiceOutput {
   run: number;
@@ -747,6 +894,21 @@ export const api = {
   serviceRun: (id: string, run: number, tool: string, values: Record<string, string>) =>
     invoke<ServiceResult>("service_run", { id, run, tool, values }),
   serviceCancel: (run: number) => invoke<boolean>("service_cancel", { run }),
+  /** Starts monitoring a connected registration's server; `trace-tick`
+   *  events named by `run` follow */
+  traceStart: (id: string, run: number, options: TraceOptions) => invoke<TraceTick>("trace_start", { id, run, options }),
+  traceStop: (run: number) => invoke<boolean>("trace_stop", { run }),
+  traceClose: (run: number) => invoke<void>("trace_close", { run }),
+  traceState: (run: number) => invoke<TraceTick>("trace_state", { run }),
+  tracePage: (run: number, filter: TraceFilter, offset: number, limit: number) =>
+    invoke<{ matching: number; rows: TraceRow[] }>("trace_page", { run, filter, offset, limit }),
+  traceEvent: (run: number, seq: number) => invoke<TraceDetail>("trace_event", { run, seq }),
+  traceTop: (run: number, by: string, sortingOnly: boolean, limit: number) =>
+    invoke<TraceStatement[]>("trace_top", { run, by, sortingOnly, limit }),
+  traceMemory: (run: number) => invoke<TraceMemory | null>("trace_memory", { run }),
+  traceSessions: (id: string) => invoke<TraceRecorded[]>("trace_sessions", { id }),
+  /** Opens a recorded session's log as the session `run` */
+  traceOpen: (run: number, path: string) => invoke<TraceTick>("trace_open", { run, path }),
   /** The tables named and what is within `depth` references of them; the
    *  whole database's when none is named */
   diagram: (id: string, tables: string[], depth: number) => invoke<Diagram>("diagram", { id, tables, depth }),

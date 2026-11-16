@@ -1,11 +1,14 @@
-// The administration tools' tabs: the activity monitor and the users, as
+// The administration tools' tabs: the users and the monitoring tables, as
 // the grids the backend draws, and a service's output as it is written.
+// The activity monitor itself is `ActivityMonitor`, which these grids are
+// a tab of.
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef, useState } from "react";
 import { cancelService, linesOf, startAdminAction, useAdmin, useServices } from "../admin";
 import { t } from "../i18n";
 import { useStore } from "../store";
+import { ActivityMonitor } from "./ActivityMonitor";
 import { Section, TextButton } from "./ObjectViewer";
 
 /** How often the monitor reads again by itself, in seconds; 0 is never */
@@ -36,7 +39,7 @@ export function AdminView({ params, api: dock }: IDockviewPanelProps<{ id: strin
   const monitor = panel.view === "monitor";
   const { sections } = panel;
 
-  return (
+  const grids = (
     <div className="flex h-full flex-col bg-panel">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line bg-panel-2 px-2">
         <TextButton icon="refresh" label={t("Refresh")} disabled={panel.loading} onClick={() => useAdmin.getState().load(panel.id)} />
@@ -92,6 +95,8 @@ export function AdminView({ params, api: dock }: IDockviewPanelProps<{ id: strin
       </div>
     </div>
   );
+  // The monitor's grids are who is connected now: one tab of a recording
+  return monitor ? <ActivityMonitor panel={panel} grids={grids} /> : grids;
 }
 
 const LINE_H = 18;

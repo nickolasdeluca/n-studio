@@ -9,6 +9,7 @@ import type { MenuItem } from "./components/ContextMenu";
 import { openBuilder } from "./builder";
 import { openDiagram } from "./diagram";
 import { openAdminPanel } from "./dock";
+import { closeMonitor } from "./monitor";
 import { t } from "./i18n";
 import { useStore, type Dialog } from "./store";
 
@@ -52,6 +53,8 @@ export const useAdmin = create<AdminState>((set, get) => {
       return id;
     },
     close(id) {
+      // A recording ends with the panel that shows it
+      closeMonitor(id);
       set((s) => {
         const panels = { ...s.panels };
         delete panels[id];

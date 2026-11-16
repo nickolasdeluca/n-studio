@@ -18,6 +18,9 @@
   --hover: #eef1f5;
   --danger: #c4372b;
   --ok: #2e8a4f;
+  --warn: #8a5200;
+  --chart-1: #2f6fdf;
+  --chart-2: #b9530b;
   --shadow: 0 12px 40px rgb(15 23 42 / 0.18), 0 2px 8px rgb(15 23 42 / 0.08);
   --row: 22px;
   --font-size: 12.5px;
@@ -46,6 +49,9 @@
     --hover: #262a31;
     --danger: #ef6a5c;
     --ok: #4fbf7a;
+    --warn: #e3a94f;
+    --chart-1: #6ea2ff;
+    --chart-2: #f0a35e;
     --shadow: 0 12px 40px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
     --sql-keyword: #7aa7ff;
     --sql-type: #c792ea;
@@ -72,6 +78,7 @@
   --color-hover: var(--hover);
   --color-danger: var(--danger);
   --color-ok: var(--ok);
+  --color-warn: var(--warn);
 }
 
 html,
