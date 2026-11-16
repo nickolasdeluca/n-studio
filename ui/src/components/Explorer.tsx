@@ -65,6 +65,9 @@ export function Explorer() {
     if (selection) setOnFolder(null);
   }, [selection]);
   const scroller = useRef<HTMLDivElement>(null);
+  // What was typed over the tree to go to a name, and whether a name has it
+  const [typed, setTyped] = useState("");
+  const [missed, setMissed] = useState(false);
 
   const rows = useMemo(() => {
     const rows: Row[] = [];
@@ -280,8 +283,52 @@ export function Explorer() {
     if (row) pick(row);
   };
 
+  /** Goes to a row that has `text` in its name: one that begins with it
+   *  first, looking from `from` in the direction of `step` and round */
+  const find = (text: string, from: number, step: 1 | -1) => {
+    setTyped(text);
+    if (!text) return setMissed(false);
+    const wanted = text.toLowerCase();
+    const at = (begins: boolean) => {
+      for (let n = 0; n < rows.length; n++) {
+        const i = (((from + n * step) % rows.length) + rows.length) % rows.length;
+        const row = rows[i];
+        if (!row.selection && !row.folder) continue;
+        const label = row.label.toLowerCase();
+        if (begins ? label.startsWith(wanted) : label.includes(wanted)) return i;
+      }
+      return -1;
+    };
+    let found = at(true);
+    if (found < 0) found = at(false);
+    setMissed(found < 0);
+    if (found >= 0) pick(rows[found]);
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     const row = rows[selectedIndex];
+    // A letter typed over the tree goes to the name that has what was typed
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && (typed || e.key !== " ")) {
+      find(typed + e.key, Math.max(0, selectedIndex), 1);
+      e.preventDefault();
+      return;
+    }
+    if (typed) {
+      // While something is typed, the arrows go to the other names that have it
+      const searching: Record<string, () => void> = {
+        Backspace: () => find(typed.slice(0, -1), Math.max(0, selectedIndex), 1),
+        Escape: () => find("", 0, 1),
+        ArrowDown: () => find(typed, selectedIndex + 1, 1),
+        ArrowUp: () => find(typed, selectedIndex - 1, -1),
+      };
+      if (searching[e.key]) {
+        searching[e.key]();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (e.key !== "Shift") find("", 0, 1);
+    }
     switch (e.key) {
       case "ArrowDown":
         moveTo(nextSelectable(rows, selectedIndex, 1));
@@ -338,17 +385,33 @@ export function Explorer() {
   }
 
   return (
+    <div className="flex h-full flex-col bg-panel">
+      <div
+        className={`flex h-6 shrink-0 items-center gap-1.5 border-b border-line px-2 ${missed ? "text-danger" : typed ? "text-fg" : "text-faint"}`}
+        title={t("Click the tree and type to go to a name. Up and Down go to the other names that have what was typed; Backspace takes a letter back and Esc ends it.")}
+        role="status"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          scroller.current?.focus();
+        }}
+      >
+        <Icon name="search" size={12} className="shrink-0 text-faint" />
+        <span className="truncate whitespace-pre">{typed ? (missed ? t("{text}: no such name", { text: typed }) : typed) : t("Type to go to a name")}</span>
+      </div>
     <div
       ref={scroller}
       role="tree"
       aria-label={t("Database Explorer")}
       tabIndex={0}
-      className={`scroll-thin h-full overflow-auto bg-panel outline-none ${drag ? "cursor-grabbing select-none" : ""} ${
+      className={`scroll-thin min-h-0 flex-1 overflow-auto bg-panel outline-none ${drag ? "cursor-grabbing select-none" : ""} ${
         target?.type === "into" && !target.row ? "shadow-[inset_0_0_0_1px_var(--accent)]" : ""
       }`}
       onKeyDown={onKeyDown}
       onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
+      onBlur={() => {
+        setFocused(false);
+        find("", 0, 1);
+      }}
     >
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((v) => {
@@ -376,6 +439,7 @@ export function Explorer() {
               } ${row.error ? "text-danger" : row.dim ? "text-muted" : ""} ${row.key === dragged ? "opacity-50" : ""}`}
               style={{ top: v.start, height: ROW, paddingLeft: 4 + row.depth * INDENT }}
               onMouseDown={(e) => {
+                find("", 0, 1);
                 pick(row);
                 press(row, e);
               }}
@@ -434,6 +498,7 @@ export function Explorer() {
           {drag.label}
         </div>
       )}
+    </div>
     </div>
   );
 }
