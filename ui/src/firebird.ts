@@ -129,6 +129,7 @@ export const editorLook = [
     // The list: kind, name, and what is known of it at the right
     ".cm-tooltip.cm-tooltip-autocomplete > ul": { minWidth: "22em", maxWidth: "min(60em, 90vw)", maxHeight: "18em" },
     ".cm-tooltip-autocomplete > ul > li": { display: "flex", alignItems: "baseline", gap: "0.75em", padding: "1px 8px" },
+    ".cm-tooltip-autocomplete > ul > li.cm-completionMarked": { backgroundColor: "var(--selected)", color: "var(--text)" },
     ".cm-completionKind": { flex: "none", width: "5.5em", fontSize: "11px", color: "var(--muted)" },
     ".cm-completionKind-table, .cm-completionKind-view": { color: "var(--sql-keyword)" },
     ".cm-completionKind-column": { color: "var(--sql-number)" },

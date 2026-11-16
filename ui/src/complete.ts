@@ -5,17 +5,21 @@
 // Keywords are the language's own source (firebird.ts).
 import {
   autocompletion,
+  closeCompletion,
   completionStatus,
+  currentCompletions,
   insertCompletionText,
+  moveCompletionSelection,
   pickedCompletion,
+  selectedCompletionIndex,
   startCompletion,
   type Completion,
   type CompletionContext,
   type CompletionResult,
 } from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
-import { EditorState, type Extension, type StateEffect, type Transaction, type TransactionSpec } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorState, Prec, StateEffect, StateField, type Extension, type Transaction, type TransactionSpec } from "@codemirror/state";
+import { EditorView, keymap, ViewPlugin, type Command, type ViewUpdate } from "@codemirror/view";
 import { api, type CatalogRelation, type CompletionCatalog, type DiagramReference, type ObjectKind, type Word } from "./api";
 import { firebirdDialect } from "./firebird";
 import { t } from "./i18n";
@@ -80,7 +84,13 @@ const whole = (text: string): Completion["apply"] => (view, completion, from, to
   view.dispatch({ ...insertCompletionText(view.state, text, from, to + rest), annotations: pickedCompletion.of(completion) });
 };
 
-const word = (w: Word, rest: Partial<Completion>): Completion => ({ label: w.name, apply: whole(w.sql), ...rest });
+/** A completion that knows the text it writes, for when several are
+ *  written at once */
+interface Named extends Completion {
+  sql?: string;
+}
+
+const word = (w: Word, rest: Partial<Completion>): Named => ({ label: w.name, apply: whole(w.sql), sql: w.sql, ...rest });
 
 /** What a list of columns starts with before anything is typed: the
  *  primary key, then the unique ones. Small, so that it only breaks ties. */
@@ -148,7 +158,7 @@ const QUOTED = /^"[^"]*"?$/;
 /** What was begun with a quote is matched and written with its quotes */
 function inQuotes(option: Completion): Completion {
   const name = `"${option.label.replaceAll('"', '""')}"`;
-  return { ...option, label: name, apply: whole(name) };
+  return { ...option, label: name, apply: whole(name), sql: name } as Named;
 }
 
 async function complete(context: CompletionContext, registration: string | undefined): Promise<CompletionResult | null> {
@@ -279,9 +289,113 @@ const followCursor: Extension = [
   }),
 ];
 
+/**
+ * Several names picked from an open list, as IBExpert's takes them: Shift
+ * with the down arrow marks the name the list is on and goes to the next,
+ * Shift with the up arrow goes back and takes the mark away, and Enter
+ * writes all of them, separated by commas, each after the qualifier the
+ * list was opened for (`c.ID, c.NOME`).
+ *
+ * What is marked is from where the marking began to where the list is
+ * now, both included: the place it began is all that is kept.
+ */
+const setAnchor = StateEffect.define<number | null>();
+const anchor = StateField.define<number | null>({
+  create: () => null,
+  update(value, tr) {
+    for (const effect of tr.effects) if (effect.is(setAnchor)) return effect.value;
+    // Typing makes another list, and a closed one has nothing marked
+    return tr.docChanged || completionStatus(tr.state) !== "active" ? null : value;
+  },
+});
+
+/** The places marked in the list, first and last, if any are */
+function marked(state: EditorState): [number, number] | null {
+  const from = state.field(anchor, false) ?? null;
+  const at = selectedCompletionIndex(state);
+  return from === null || at === null ? null : [Math.min(from, at), Math.max(from, at)];
+}
+
+const mark = (forward: boolean): Command => (view) => {
+  const { state } = view;
+  const at = selectedCompletionIndex(state);
+  if (completionStatus(state) !== "active" || at === null) return false;
+  // The list goes round at its ends: marking stops there
+  if (forward ? at >= currentCompletions(state).length - 1 : at <= 0) return true;
+  if (state.field(anchor) === null) view.dispatch({ effects: setAnchor.of(at) });
+  moveCompletionSelection(forward)(view);
+  return true;
+};
+
+/** A plain arrow goes back to one name */
+const unmark: Command = (view) => {
+  if (view.state.field(anchor, false) != null) view.dispatch({ effects: setAnchor.of(null) });
+  return false;
+};
+
+const acceptMarked: Command = (view) => {
+  const { state } = view;
+  const range = marked(state);
+  if (!range || range[0] === range[1]) return false;
+  const options = currentCompletions(state).slice(range[0], range[1] + 1) as Named[];
+  // Over the whole name the cursor is in, as one completion is written
+  const head = state.selection.main.head;
+  const line = state.doc.lineAt(head);
+  const before = line.text.slice(0, head - line.from);
+  const typed = /"[^"]*$|[\w$]*$/.exec(before)?.[0] ?? "";
+  const rest = /^[\w$]*"?/.exec(line.text.slice(head - line.from))?.[0] ?? "";
+  // The qualifier the list was opened after goes before every name
+  const prefix = /((?:"(?:[^"]|"")+"|[A-Za-z_][\w$]*)\s*\.\s*)$/.exec(before.slice(0, before.length - typed.length))?.[1] ?? "";
+  const text = options.map((o, i) => (i ? prefix : "") + (o.sql ?? o.label)).join(", ");
+  view.dispatch({
+    ...insertCompletionText(state, text, head - typed.length, head + rest.length),
+    annotations: pickedCompletion.of(options[0]),
+  });
+  closeCompletion(view);
+  return true;
+};
+
+/** Shows what is marked: the list is the library's, and says which of its
+ *  lines is which by their ids */
+const showMarked = ViewPlugin.fromClass(
+  class {
+    update(update: ViewUpdate) {
+      const range = marked(update.state);
+      const was = marked(update.startState);
+      if (!range && !was) return;
+      update.view.requestMeasure({
+        key: this,
+        read: () => update.view.dom.ownerDocument.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete > ul > li"),
+        write: (lines) => {
+          for (const line of lines) {
+            const index = Number(line.id.slice(line.id.lastIndexOf("-") + 1));
+            line.classList.toggle("cm-completionMarked", !!range && index >= range[0] && index <= range[1]);
+          }
+        },
+      });
+    }
+  },
+);
+
+const multiple: Extension = [
+  anchor,
+  showMarked,
+  Prec.highest(
+    keymap.of([
+      { key: "Shift-ArrowDown", run: mark(true) },
+      { key: "Shift-ArrowUp", run: mark(false) },
+      { key: "ArrowDown", run: unmark },
+      { key: "ArrowUp", run: unmark },
+      { key: "PageDown", run: unmark },
+      { key: "PageUp", run: unmark },
+      { key: "Enter", run: acceptMarked },
+    ]),
+  ),
+];
+
 /** The list as this editor shows it: what each name is in a first column,
  *  then the name, then what is known of it */
-export const completionList: Extension = [followCursor, autocompletion({
+export const completionList: Extension = [followCursor, multiple, autocompletion({
   icons: false,
   addToOptions: [
     {
