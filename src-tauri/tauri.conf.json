@@ -11,7 +11,7 @@
   },
   "app": {
     "windows": [
-      { "title": "N Studio", "width": 1440, "height": 900, "minWidth": 900, "minHeight": 560 }
+      { "title": "N Studio", "width": 1440, "height": 900, "minWidth": 900, "minHeight": 560, "visible": false }
     ],
     "security": { "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:" }
   },

@@ -20,6 +20,7 @@ mod secrets;
 mod session;
 mod tools;
 mod trace;
+mod window;
 
 use tauri::Manager;
 
@@ -68,9 +69,20 @@ fn main() {
                 formatter::StyleStore::new(&dir),
                 trace::Traces::new(&dir),
             ));
+            // The window is made unseen, and shown where it was left
+            let places = window::Places::open(&dir);
+            window::restore(app, &places);
+            app.manage(places);
             #[cfg(target_os = "macos")]
             view_menu(app.handle())?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let Some(places) = window.try_state::<std::sync::Arc<window::Places>>() {
+                    places.changed(window, event);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::charsets,
