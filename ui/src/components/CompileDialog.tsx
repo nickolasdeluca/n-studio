@@ -1,7 +1,7 @@
 // A change to the catalog, before it is made: the script that makes it, for
 // the user to read, and then run whole or not at all.
 import { useState } from "react";
-import { errorText, type ScriptProblem } from "../api";
+import { api, errorText, type ScriptProblem } from "../api";
 import { metadataChanged } from "../changes";
 import { closePanel, openEditor } from "../dock";
 import { t } from "../i18n";
@@ -33,6 +33,11 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
     setRunning(true);
     setFailure(null);
     const problems: ScriptProblem[] = [];
+    if (dialog.tx !== undefined) {
+      await within(dialog.tx);
+      setRunning(false);
+      return;
+    }
     try {
       const options = { stopOnError: true, autoDdl: false, atomic: true };
       const end = await runScript(newRun(), registration, null, defaultTx, script, options, (e) => problems.push(...e.problems));
@@ -51,6 +56,33 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
       setFailure({ problems: [], note: errorText(e) });
     } finally {
       setRunning(false);
+    }
+  };
+
+  // In an editor's transaction, which stays as it was: a savepoint is what
+  // undoes the statements that ran when one of them fails
+  const within = async (tx: number) => {
+    const plain = { plan: false, performance: false };
+    const point = (sql: string) => api.editorExecute(registration, tx, sql, [], plain, 0);
+    const problems: ScriptProblem[] = [];
+    try {
+      await point("SAVEPOINT NSTUDIO_ROWS");
+      const options = { stopOnError: true, autoDdl: false, atomic: false };
+      const end = await runScript(newRun(), registration, tx, defaultTx, script, options, (e) => problems.push(...e.problems));
+      const errors = [...problems, ...end.problems].filter((p) => p.error !== null);
+      if (errors.length === 0 && end.done > 0) {
+        await point("RELEASE SAVEPOINT NSTUDIO_ROWS ONLY");
+        dialog.done?.();
+        close();
+        return;
+      }
+      await point("ROLLBACK TO SAVEPOINT NSTUDIO_ROWS");
+      setFailure({
+        problems: errors,
+        note: errors.length > 0 ? t("Nothing was changed: what had run was undone, and the transaction is as it was.") : t("There is nothing to run in this script."),
+      });
+    } catch (e) {
+      setFailure({ problems: [], note: errorText(e) });
     }
   };
 
@@ -80,7 +112,9 @@ export function CompileDialog({ dialog }: { dialog: Compile }) {
       }
     >
       <p className="mb-2 text-muted">
-        {t("These statements run in one transaction: committed if all of them succeed, rolled back otherwise.")}
+        {dialog.tx !== undefined
+          ? t("These statements run in the editor's transaction, all of them or none. They are kept when it is committed, and undone if it is rolled back.")
+          : t("These statements run in one transaction: committed if all of them succeed, rolled back otherwise.")}
       </p>
       <pre className="scroll-thin max-h-[22rem] overflow-auto rounded border border-line bg-bg p-2 font-mono text-[12px] select-text">
         {script}

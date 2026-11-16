@@ -215,6 +215,18 @@ pub async fn extract_metadata(app: AppHandle, id: String, objects: Vec<ObjectRef
     .await
 }
 
+/// How the rows of `table` can be changed from a grid that shows some of
+/// them: what an editor asks of the table its select read. `None` for what
+/// is no table, or a table whose rows nothing tells apart.
+#[tauri::command]
+pub async fn row_editing(app: AppHandle, id: String, table: String) -> AppResult<Option<RowEditing>> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        Ok(fb_meta::table(&conn, &table).ok().and_then(|table| data::editing(&table)))
+    })
+    .await
+}
+
 /// The script that makes a grid's changes the table's: for the user to
 /// see, and then to run
 #[tauri::command]

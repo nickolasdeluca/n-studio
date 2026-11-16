@@ -39,6 +39,9 @@ export interface GridEdit {
   key: number[];
   /** By column: whether a value can be typed into it */
   editable: boolean[];
+  /** By column: the table's column a value is for, when that is not what
+   *  the grid heads it with */
+  names?: string[];
   edits: RowEdits;
   onEdits(edits: RowEdits): void;
 }
@@ -101,7 +104,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   /** How many rows come before the first fetched one */
   const offset = inserted.length;
   const total = result.rows + offset;
-  const names = useMemo(() => columns.map((c) => c.name), [columns]);
+  const given = edit?.names;
+  const names = useMemo(() => given ?? columns.map((c) => c.name), [given, columns]);
 
   // A new result starts over
   useEffect(() => {

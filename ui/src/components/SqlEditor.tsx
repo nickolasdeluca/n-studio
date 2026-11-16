@@ -17,7 +17,7 @@ import {
 } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { TxEnd } from "../api";
+import { api, errorText, type TxEnd } from "../api";
 import { drafts, isolations, ms, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
 import { catalogCompletion, completionList, prepareCompletion } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
@@ -30,7 +30,8 @@ import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
 import { HistoryPane } from "./HistoryPane";
-import { Empty, Results } from "./Results";
+import { noEdits, toChanges } from "../rowEdits";
+import { Empty, Results, type ResultsEdit } from "./Results";
 
 /** Editor states by tab, so a panel that remounts keeps its text and undo */
 const saved = new Map<string, EditorState>();
@@ -229,11 +230,14 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
     };
   }, [id, run, end]);
 
-  // A new result starts at its first row
+  // A new result starts at its first row; the same rows read again after
+  // a change stay where they were, as far as there still are rows
   const resultId = tab?.outcome?.result?.id;
   useEffect(() => {
-    setCursor({ row: 0, col: 0 });
-  }, [resultId]);
+    const outcome = useEditors.getState().tabs[id]?.outcome;
+    const rows = outcome?.result?.rows ?? 0;
+    setCursor((c) => (outcome?.again ? { row: Math.max(0, Math.min(c.row, rows - 1)), col: c.col } : { row: 0, col: 0 }));
+  }, [resultId, id]);
 
   if (!tab) {
     return <div className="grid h-full place-items-center bg-bg text-muted">{t("This editor is closed.")}</div>;
@@ -442,6 +446,47 @@ const bottomTabs: { id: BottomTab; label: string }[] = [
   { id: "performance", label: "Performance Analysis" },
 ];
 
+/** Shows the script that makes the grid's changes the table's, to run in
+ *  the editor's transaction when it has one */
+async function applyRows(tab: EditorTab, table: string) {
+  const s = useStore.getState();
+  try {
+    const script = await api.dataChangesScript(tab.registration, table, toChanges(tab.edits));
+    const tx = useEditors.getState().tabs[tab.id]?.tx ?? undefined;
+    s.openDialog({
+      type: "compile",
+      registration: tab.registration,
+      title: t("Apply Changes: {name}", { name: table }),
+      script,
+      verb: tx === undefined ? t("Run and Commit") : t("Run"),
+      tx,
+      done: () => {
+        const editors = useEditors.getState();
+        if (tx !== undefined) editors.note(tab.id, t("The changes to {name} ran in this editor's transaction: commit it to keep them.", { name: table }));
+        editors.setEdits(tab.id, noEdits);
+        void editors.again(tab.id);
+      },
+    });
+  } catch (e) {
+    s.setNotice(errorText(e));
+  }
+}
+
+/** How the rows of the tab's select are changed in the grid, when they can be */
+function rowsEdit(tab: EditorTab): ResultsEdit | undefined {
+  const edit = tab.outcome?.edit;
+  if (!edit || tab.viewer) return undefined;
+  return {
+    key: edit.key,
+    editable: edit.editable,
+    names: edit.names,
+    edits: tab.edits,
+    onEdits: (edits) => useEditors.getState().setEdits(tab.id, edits),
+    onApply: () => void applyRows(tab, edit.table),
+    onRevert: () => useEditors.getState().setEdits(tab.id, noEdits),
+  };
+}
+
 function Bottom(props: {
   tab: EditorTab;
   cursor: GridCursor;
@@ -455,7 +500,7 @@ function Bottom(props: {
   let pane: ReactNode;
   switch (tab.bottom) {
     case "results":
-      pane = <Results {...props} />;
+      pane = <Results {...props} edit={rowsEdit(tab)} />;
       break;
     case "messages":
       pane = <Messages tab={tab} select={props.select} />;

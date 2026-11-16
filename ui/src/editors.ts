@@ -8,6 +8,7 @@ import {
   isAppError,
   type ColumnInfo,
   type Executed,
+  type RowEditing,
   type ExportOptions,
   type FileFormat,
   type Isolation,
@@ -17,11 +18,14 @@ import {
   type TxEnd,
   type TxOptions,
 } from "./api";
-import { metadataChanged } from "./changes";
+import { metadataChanged, onMetadataChanged } from "./changes";
 import { record } from "./history";
 import { t } from "./i18n";
 import { newRun, runScript } from "./script";
 import { askParams, forgetParams, paramFields } from "./params";
+import { editCount, noEdits, type RowEdits } from "./rowEdits";
+import { selectEditing, tableOf, type SelectEditing } from "./selectEdit";
+import { blanked, sources } from "./sqlScope";
 
 /** Rows fetched with the execute, and per page as the grid scrolls */
 export const PAGE = 200;
@@ -41,6 +45,14 @@ export interface Outcome {
   /** The select's rows as fetched so far; updated as more come */
   result: ResultView | null;
   sql: string;
+  /** What went to the server, and the values its parameters were given:
+   *  what reads the rows again once they were changed */
+  sent: { sql: string; params: (string | null)[] };
+  /** How the rows can be changed in the grid, when they are one table's
+   *  and came with its key; known a moment after the rows are */
+  edit: SelectEditing | null;
+  /** Read again after its rows were changed: the grid stays where it was */
+  again?: boolean;
 }
 
 export interface EditorTab {
@@ -53,6 +65,8 @@ export interface EditorTab {
   /** Fetching more rows of the last select */
   fetching: boolean;
   outcome: Outcome | null;
+  /** What was done to the last select's rows in the grid and not applied */
+  edits: RowEdits;
   messages: Message[];
   bottom: BottomTab;
   /** The script it is running, and how far that is */
@@ -110,6 +124,9 @@ interface State {
   sort(id: string, column: number): Promise<void>;
   /** Writes the last select's rows to a file, fetching the rest first */
   exportRows(id: string, path: string, options: ExportOptions): Promise<void>;
+  setEdits(id: string, edits: RowEdits): void;
+  /** Reads the last select's rows again, as they are after a change */
+  again(id: string): Promise<void>;
   /** Stops the statement or fetch the tab is running */
   cancel(id: string): Promise<void>;
   /** The registration disconnected: its transactions and results are gone */
@@ -131,6 +148,13 @@ export const readers = new Map<string, () => string>();
 
 /** An editor's text as it is now */
 export const textOf = (id: string): string => readers.get(id)?.() ?? drafts.get(id) ?? "";
+
+/** How each table's rows can be changed, by registration and table: asked
+ *  once, and again after the catalog changed */
+const editings = new Map<string, Promise<RowEditing | null>>();
+onMetadataChanged((registration) => {
+  for (const key of editings.keys()) if (key.startsWith(`${registration}:`)) editings.delete(key);
+});
 
 /** Of one script's statements, how many problems the log takes */
 const MAX_PROBLEMS = 500;
@@ -168,6 +192,7 @@ export const useEditors = create<State>()((set, get) => {
             running: false,
             fetching: false,
             outcome: null,
+            edits: noEdits,
             messages: [],
             bottom: "results",
             script: null,
@@ -389,6 +414,36 @@ export const useEditors = create<State>()((set, get) => {
       });
     },
 
+    setEdits(id, edits) {
+      patch(id, { edits });
+    },
+
+    async again(id) {
+      const tab = get().tabs[id];
+      const outcome = tab?.outcome;
+      if (!tab || !outcome?.result || tab.running || tab.fetching) return;
+      patch(id, { running: true });
+      try {
+        let tx = tab.tx;
+        if (tx === null) {
+          tx = await api.editorBegin(tab.registration, tab.txOptions);
+          patch(id, { tx });
+        }
+        const { plan, performance } = outcome.executed;
+        const options = { plan: plan !== null, performance: performance !== null };
+        // As many rows as were on the screen, so the grid can stay where it is
+        const rows = Math.min(Math.max(PAGE, outcome.result.rows), 5000);
+        const executed = await api.editorExecute(tab.registration, tx, outcome.sent.sql, outcome.sent.params, options, rows);
+        closeResult(tab);
+        patch(id, { outcome: { ...outcome, executed, result: executed.result, again: true }, edits: noEdits });
+      } catch (e) {
+        log(id, "error", errorText(e));
+        patch(id, { bottom: "messages" });
+      } finally {
+        patch(id, { running: false });
+      }
+    },
+
     async cancel(id) {
       const tab = get().tabs[id];
       if (!tab || !(tab.running || tab.fetching)) return;
@@ -430,6 +485,30 @@ export const useEditors = create<State>()((set, get) => {
     } finally {
       patch(id, { fetching: false });
     }
+  }
+
+  /** Finds whether a select's rows can be changed in the grid: they are one
+   *  table's, which has a key, and the select brought it */
+  async function findEditing(id: string, executed: Executed) {
+    const tab = get().tabs[id];
+    const sql = tab?.outcome?.executed === executed ? tab.outcome.sent.sql : null;
+    if (!tab || sql === null) return;
+    // A union's columns are said to be its first select's, whose rows only
+    // some of them are
+    if (/\bunion\b/i.test(blanked(sql))) return;
+    const table = tableOf(executed.columns, sources(sql, 0).map((s) => s.relation));
+    if (!table) return;
+    const key = `${tab.registration}:${table}`;
+    let asked = editings.get(key);
+    if (!asked) {
+      asked = api.rowEditing(tab.registration, table).catch(() => null);
+      editings.set(key, asked);
+    }
+    const editing = await asked;
+    const edit = editing && selectEditing(executed.columns, table, editing);
+    if (!edit) return;
+    // Still the result it was asked for
+    patch(id, (now) => (now.outcome?.executed === executed ? { outcome: { ...now.outcome, edit } } : {}));
   }
 
   /** Runs one statement, starting a transaction first if there is none,
@@ -478,11 +557,16 @@ export const useEditors = create<State>()((set, get) => {
       if (executed.ended === "commit" || executed.ended === "rollback") patch(id, { tx: null });
       // Only a statement with something to show replaces the last outcome
       if (executed.result || executed.columns.length > 0 || detailed) {
-        closeResult(get().tabs[id]!);
+        const before = get().tabs[id]!;
+        closeResult(before);
+        const dropped = editCount(before.edits);
+        if (dropped > 0) log(id, "info", t("{n} changed row(s) of the last result were not applied, and went with it.", { n: dropped }));
         patch(id, (tab) => ({
-          outcome: { executed, result: executed.result, sql },
+          outcome: { executed, result: executed.result, sql, sent: { sql: bound.sql, params }, edit: null },
+          edits: noEdits,
           bottom: tab.bottom === "messages" && executed.result ? "results" : tab.bottom,
         }));
+        if (executed.result && !tab.viewer) void findEditing(id, executed);
       }
       return "ok";
     } catch (e) {

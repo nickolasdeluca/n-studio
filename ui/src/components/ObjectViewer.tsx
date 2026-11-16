@@ -19,6 +19,7 @@ import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { useStore } from "../store";
 import { editCount, noEdits, toChanges, type RowEdits } from "../rowEdits";
+import { typed } from "../selectEdit";
 import { useViewers, type Viewer } from "../viewers";
 import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
@@ -435,9 +436,6 @@ export function TextButton(props: { icon: string; label: string; accent?: boolea
 }
 
 /** The object's rows, through an editor tab of the viewer's own */
-/** The kinds of column whose values the grid shows as they can be typed */
-const typed = new Set(["integer", "decimal", "float", "text", "date", "time", "timestamp", "boolean"]);
-
 /** Shows the script that makes the Data tab's changes the table's, to run */
 async function applyEdits(viewer: Viewer) {
   const s = useStore.getState();

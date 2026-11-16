@@ -55,8 +55,10 @@ export type Dialog =
   /** A change to the catalog, as the script that makes it: shown, then run
    *  whole or not at all. `done` is called once it is committed.
    *  `back` is the dialog it came from, shown again if it is cancelled;
-   *  `verb` names the button when the script compiles nothing. */
-  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog; verb?: string }
+   *  `verb` names the button when the script compiles nothing. `tx` is an
+   *  editor's transaction for it to run in, which is then left as active as
+   *  it was: all of the script is done in it, or none. */
+  | { type: "compile"; registration: string; title: string; script: string; danger?: boolean; done?: () => void; back?: Dialog; verb?: string; tx?: number }
   /** What an action asks before it goes on: usually to a script to compile */
   | {
       type: "form";

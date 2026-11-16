@@ -844,6 +844,8 @@ export const api = {
     values: Record<string, string>,
   ) => invoke<ActionScript>("object_action_script", { id, kind, name, action, key, values }),
   /** The script that makes a grid's changes the table's */
+  /** How a table's rows can be changed; `null` when they cannot */
+  rowEditing: (id: string, table: string) => invoke<RowEditing | null>("row_editing", { id, table }),
   dataChangesScript: (id: string, table: string, changes: RowChanges) =>
     invoke<string>("data_changes_script", { id, table, changes }),
   objectDropScript: (id: string, kind: ObjectKind, name: string) => invoke<string>("object_drop_script", { id, kind, name }),
