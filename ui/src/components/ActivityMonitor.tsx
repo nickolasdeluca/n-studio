@@ -18,6 +18,7 @@ import type { AdminPanel } from "../admin";
 import { openEditor } from "../dock";
 import { t } from "../i18n";
 import { openRecorded, startMonitor, stopMonitor, useMonitor, type MonitorSession } from "../monitor";
+import { useStore } from "../store";
 import { TextButton } from "./ObjectViewer";
 
 type Tab = "overview" | "live" | "statements" | "connections" | "memory" | "sessions";
@@ -94,7 +95,7 @@ function dense(seconds: TraceSecond[]): TraceSecond[] {
   const out: TraceSecond[] = [];
   for (let at = from; at <= to; at++) {
     out.push(
-      by.get(at) ?? { at, events: 0, statements: 0, errors: 0, average: 0, high: 0, fetches: 0, reads: 0, writes: 0, marks: 0, attachments: 0 },
+      by.get(at) ?? { at, events: 0, statements: 0, errors: 0, connects: 0, average: 0, high: 0, fetches: 0, reads: 0, writes: 0, marks: 0, attachments: 0 },
     );
   }
   return out;
@@ -204,12 +205,12 @@ function useTop(session: MonitorSession, by: string, sortingOnly: boolean, limit
   return top;
 }
 
-function StatementTable(props: { rows: TraceStatement[]; by: string; memory?: boolean; open(seq: number): void }) {
+function StatementTable(props: { rows: TraceStatement[]; by: string; memory?: boolean; none?: string; open(seq: number): void }) {
   const { rows, by } = props;
   const key = (s: TraceStatement) =>
     by === "runs" ? s.runs : by === "fetches" ? s.fetches : by === "natural" ? s.natural : by === "slowest" ? s.slowest : by === "memory" ? s.memory : s.ms;
   const most = Math.max(1, ...rows.map(key));
-  if (rows.length === 0) return <Empty>{t("No statement finished yet.")}</Empty>;
+  if (rows.length === 0) return <Empty>{props.none ?? t("No statement finished yet.")}</Empty>;
   return (
     <div className="scroll-thin overflow-x-auto">
       <table className="w-full min-w-[720px] border-collapse tabular-nums">
@@ -280,8 +281,24 @@ interface Finding {
 }
 
 /** What stands out in the statements that cost the most */
-function findings(top: TraceStatement[], sorting: TraceStatement[], errors: number): Finding[] {
+function findings(top: TraceStatement[], sorting: TraceStatement[], errors: number, session: MonitorSession): Finding[] {
   const found: Finding[] = [];
+  // A program that connects for every statement or two: connecting costs
+  // more than most statements do
+  const connects = session.seconds.reduce((sum, s) => sum + s.connects, 0);
+  const statements = session.seconds.reduce((sum, s) => sum + s.statements, 0);
+  if (connects >= 20 && statements < connects * 5) {
+    const [who, count] = session.tick.connector ?? ["", 0];
+    found.push({
+      kind: t("Connect"),
+      tone: "text-warn",
+      text: t("{connects} connections were made for {statements} statements. Making a connection costs more than most statements: keeping it open, or a pool of them, saves that.", {
+        connects: n(connects),
+        statements: n(statements),
+      }),
+      where: who ? t("{count} of them by {who}", { count: n(count), who }) : "",
+    });
+  }
   for (const s of top) {
     const each = s.natural / Math.max(1, s.runs);
     if (each >= 1000 && s.natural > s.records * 10) {
@@ -331,11 +348,17 @@ function Overview({ session, open }: { session: MonitorSession; open(seq: number
   const statements = recent.reduce((sum, s) => sum + s.statements, 0);
   const average = statements ? recent.reduce((sum, s) => sum + s.average * s.statements, 0) / statements : 0;
   const errors = session.seconds.reduce((sum, s) => sum + s.errors, 0);
+  const found = findings(byNatural, sorting, errors, session);
   const tiles: [string, string, string, string?][] = [
     [t("Statements per second"), n(mean((s) => s.statements)), t("{n} events recorded", { n: n(session.tick.total) })],
     [t("Average statement time"), took(average), t("95 in 100 under {time}", { time: took(Math.max(0, ...recent.map((s) => s.high))) })],
     [t("Page fetches per second"), short(mean((s) => s.fetches)), t("{n} read from disk", { n: short(mean((s) => s.reads)) })],
     [t("Active connections"), n(Math.max(0, ...recent.map((s) => s.attachments))), t("that ran something lately")],
+    [
+      t("Connections made per second"),
+      mean((s) => s.connects).toFixed(1),
+      t("{n} in this session", { n: n(session.seconds.reduce((sum, s) => sum + s.connects, 0)) }),
+    ],
     [t("Errors"), n(errors), errors ? t("in this session") : t("none in this session"), errors ? "text-danger" : undefined],
   ];
   return (
@@ -349,7 +372,7 @@ function Overview({ session, open }: { session: MonitorSession; open(seq: number
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(420px,1fr))] gap-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(max(420px,40%),1fr))] gap-3">
         <Chart title={t("Statements per second")} seconds={seconds} series={[{ label: t("finished"), values: seconds.map((s) => s.statements) }]} />
         <Chart
           title={t("Statement time, ms")}
@@ -368,11 +391,11 @@ function Overview({ session, open }: { session: MonitorSession; open(seq: number
           ]}
         />
         <Chart
-          title={t("Activity")}
+          title={t("Connections")}
           seconds={seconds}
           series={[
-            { label: t("connections that ran something"), values: seconds.map((s) => s.attachments) },
-            { label: t("failed events"), values: seconds.map((s) => s.errors) },
+            { label: t("that ran something"), values: seconds.map((s) => s.attachments) },
+            { label: t("made"), values: seconds.map((s) => s.connects) },
           ]}
         />
       </div>
@@ -387,7 +410,7 @@ function Overview({ session, open }: { session: MonitorSession; open(seq: number
         </div>
         <div className={`${card} min-w-0 flex-[1_1_360px]`}>
           <div className="border-b border-line px-3 py-2 font-semibold">{t("Findings")}</div>
-          {findings(byNatural, sorting, errors).map((f, i) => (
+          {found.map((f, i) => (
             <button
               key={i}
               type="button"
@@ -402,7 +425,7 @@ function Overview({ session, open }: { session: MonitorSession; open(seq: number
               </span>
             </button>
           ))}
-          {findings(byNatural, sorting, errors).length === 0 && <Empty>{t("Nothing stands out so far.")}</Empty>}
+          {found.length === 0 && <Empty>{t("Nothing stands out so far.")}</Empty>}
         </div>
       </div>
     </div>
@@ -786,7 +809,7 @@ function MemoryTab({ session, open }: { session: MonitorSession; open(seq: numbe
         {(
           [
             [t("Statements that sorted"), n(sorting.length), t("{n} running a statement now", { n: n(memory?.statements.length ?? 0) })],
-            [t("Largest statement memory"), bytes(Math.max(0, ...sorting.map((s) => s.memory))), t("seen while it ran")],
+            [t("Largest statement memory"), sorting.some((s) => s.memory > 0) ? bytes(Math.max(...sorting.map((s) => s.memory))) : "—", t("seen while it ran")],
             [t("Database memory in use"), memory ? bytes(memory.used) : "—", memory ? t("peak {peak}", { peak: bytes(memory.peak) }) : t("not read in this session")],
           ] as const
         ).map(([label, value, note]) => (
@@ -803,7 +826,7 @@ function MemoryTab({ session, open }: { session: MonitorSession; open(seq: numbe
           <span className="flex-1" />
           <OrderSelect by={by} setBy={setBy} memory />
         </div>
-        <StatementTable rows={sorting} by={by} memory open={open} />
+        <StatementTable rows={sorting} by={by} memory none={t("No statement with a sort in its plan finished in this session.")} open={open} />
         <div className="border-t border-line px-3 py-2 text-muted">
           {t(
             "Peak memory is the statement's own memory in MON$MEMORY_USAGE, read every 5 seconds while it runs: a statement faster than that may never be caught. Firebird doesn't report how much of a sort went to temporary files.",
@@ -828,7 +851,9 @@ function MemoryTab({ session, open }: { session: MonitorSession; open(seq: numbe
           <div className="border-b border-line px-3 py-2 font-semibold">{t("Memory by connection")}</div>
           {memory.attachments.slice(0, 30).map((a) => (
             <div key={a.id} className="flex flex-wrap items-center gap-2.5 border-t border-line px-3 py-1.5 first:border-t-0">
-              <span className="w-64 shrink-0 truncate">{who(a)}</span>
+              <span className="w-80 shrink-0 truncate" title={who(a)}>
+                {who(a)}
+              </span>
               <div aria-hidden className="h-2 min-w-40 flex-1 rounded-sm bg-panel-2">
                 <div className="h-2 rounded-sm bg-[var(--chart-1)]" style={{ width: `${Math.max(1, (a.used / largest) * 100)}%` }} />
               </div>
@@ -897,6 +922,8 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
   const [starting, setStarting] = useState(false);
   const [, beat] = useState(0);
   const recording = session?.tick.standing === "recording";
+  // Firebird 2.5 has no plan but the short one
+  const trees = useStore((s) => (s.servers[panel.registration]?.major ?? 0) >= 3);
 
   // The clock of a recording
   useEffect(() => {
@@ -986,12 +1013,12 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
             ))}
           </select>
         </label>
-        <label className="flex items-center gap-1.5 text-muted" title={t("Firebird 3 and later")}>
+        <label className="flex items-center gap-1.5 text-muted" title={trees ? undefined : t("This server is older than Firebird 3, which is where plans as trees begin.")}>
           <input
             type="checkbox"
             className="accent-[var(--accent)]"
-            disabled={recording}
-            checked={options.explainedPlans}
+            disabled={recording || !trees}
+            checked={options.explainedPlans && trees}
             onChange={(e) => setOptions({ ...options, explainedPlans: e.target.checked })}
           />
           {t("Plans as trees")}

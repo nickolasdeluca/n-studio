@@ -82,6 +82,7 @@ struct Second {
     events: u64,
     statements: u64,
     errors: u64,
+    connects: u64,
     ms: u64,
     fetches: u64,
     reads: u64,
@@ -100,6 +101,8 @@ pub struct SecondView {
     events: u64,
     statements: u64,
     errors: u64,
+    /// Connections made
+    connects: u64,
     /// Average time of a statement, in milliseconds
     average: f64,
     /// What 95 in 100 statements stayed under
@@ -122,6 +125,7 @@ impl Second {
             events: self.events,
             statements: self.statements,
             errors: self.errors,
+            connects: self.connects,
             average: if self.statements == 0 { 0.0 } else { self.ms as f64 / self.statements as f64 },
             high,
             fetches: self.fetches,
@@ -275,6 +279,18 @@ pub struct Store {
     memory: Option<Memory>,
     /// The most memory each statement was seen holding
     peaks: HashMap<String, i64>,
+    /// Connections made, by the program and the machine that made them
+    connectors: HashMap<String, u64>,
+}
+
+/// Who connects, as a few words: the program's file and the machine,
+/// without what changes at every connection (the process id, the port)
+fn connector(event: &TraceEvent) -> String {
+    let program = event.process.rsplit_once(':').map_or(event.process.as_str(), |(path, _)| path);
+    let program = program.rsplit(['/', '\\']).next().unwrap_or_default();
+    let machine = event.address.split_once(':').map_or(event.address.as_str(), |(_, rest)| rest);
+    let machine = machine.rsplit_once('/').map_or(machine, |(host, _)| host);
+    [program, machine].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(" · ")
 }
 
 impl Store {
@@ -291,7 +307,9 @@ impl Store {
     }
 
     /// What the monitoring tables said about memory just now
-    pub fn sample(&mut self, memory: Memory) {
+    pub fn sample(&mut self, mut memory: Memory) {
+        // The connection that reads them is not one of the database's users
+        memory.attachments.retain(|a| Some(a.id) != self.ignored);
         for statement in &memory.statements {
             if let Some(sql) = &statement.sql {
                 let peak = self.peaks.entry(normalize(sql)).or_default();
@@ -335,10 +353,15 @@ impl Store {
         let seq = self.total;
         let failed = event.outcome != TraceOutcome::Ok || kind == "ERROR";
         let finished = kind == "EXECUTE_STATEMENT_FINISH";
+        let connected = kind == "ATTACH_DATABASE" && !failed;
+        if connected && (self.connectors.len() < 1_000 || self.connectors.contains_key(&connector(&event))) {
+            *self.connectors.entry(connector(&event)).or_default() += 1;
+        }
 
         if let Some(second) = self.second(&event.at) {
             second.events += 1;
             second.errors += u64::from(failed);
+            second.connects += u64::from(connected);
             if let Some(attachment) = event.attachment {
                 if !second.attachments.contains(&attachment) {
                     second.attachments.push(attachment);
@@ -489,6 +512,9 @@ pub struct Tick {
     /// Times the server dropped events for want of room
     gaps: u64,
     notices: Vec<String>,
+    /// Who made the most connections, and how many: a program that
+    /// connects for every statement stands out here
+    connector: Option<(String, u64)>,
     /// The latest seconds: the last may still grow
     seconds: Vec<SecondView>,
     log: String,
@@ -513,6 +539,7 @@ impl Trace {
             first: store.first,
             gaps: store.gaps,
             notices: store.notices.clone(),
+            connector: store.connectors.iter().max_by_key(|(name, count)| (**count, std::cmp::Reverse(*name))).map(|(n, c)| (n.clone(), *c)),
             seconds: store.series(seconds),
             log: self.log.display().to_string(),
         }
@@ -892,6 +919,20 @@ mod tests {
         // It ran twice, with another number
         assert_eq!((detail.event.sql.as_str(), detail.statement.unwrap().runs), ("select 3 from PEDIDO", 2));
         assert!(store.detail(9).is_none());
+    }
+
+    #[test]
+    fn connections_are_counted_by_who_makes_them() {
+        let attach = |at: &str, id: i64, port: u32| {
+            format!(
+                "2024-05-01T10:15:{at} (1:0x1) ATTACH_DATABASE\n\t/data/sales.fdb (ATT_{id}, APP:NONE, UTF8, TCPv4:10.0.0.5/{port})\n\tC:\\apps\\api\\node.exe:{port}\n\n"
+            )
+        };
+        let failed = attach("41.0000", 9, 3).replace(") ATTACH", ") FAILED ATTACH");
+        let store = store(&[attach("40.0001", 1, 5001), attach("40.5000", 2, 5002), failed].concat());
+        assert_eq!(store.connectors.get("node.exe · 10.0.0.5"), Some(&2));
+        assert_eq!(store.connectors.len(), 1);
+        assert_eq!(store.series(10).iter().map(|s| s.connects).collect::<Vec<_>>(), [2, 0]);
     }
 
     #[test]

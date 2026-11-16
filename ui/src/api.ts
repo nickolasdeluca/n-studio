@@ -508,6 +508,8 @@ export interface TraceSecond {
   events: number;
   statements: number;
   errors: number;
+  /** Connections made */
+  connects: number;
   average: number;
   /** What 95 in 100 statements stayed under, in ms */
   high: number;
@@ -528,6 +530,8 @@ export interface TraceTick {
   first: number;
   gaps: number;
   notices: string[];
+  /** Who made the most connections, and how many */
+  connector: [string, number] | null;
   seconds: TraceSecond[];
   log: string;
 }
