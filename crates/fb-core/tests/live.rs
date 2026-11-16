@@ -8,7 +8,7 @@ use fb_core::{
     run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask,
     StatisticsOptions,
 };
-use fb_core::{run_trace, trace_config, trace_database, TraceEnd, TraceOptions};
+use fb_core::{run_trace, trace_config, trace_database, TraceEnd, TraceItem, TraceOptions, TraceReader};
 use fb_core::{
     run_script, ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait,
     ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
@@ -635,22 +635,40 @@ fn fixture_a_trace_session_writes_down_what_a_connection_runs() {
     for expected in ["424241", "ATTACH_DATABASE", "START_TRANSACTION", "EXECUTE_STATEMENT_FINISH", "RDB$DATABASE"] {
         assert!(text.contains(expected), "{expected} is missing from\n{text}");
     }
-    // The whole text, for whoever reads a failure of the parser's tests
-    // against a server version: `cargo test -- --nocapture`
-    println!("{text}");
-}
 
-/// A configuration the server cannot read ends the session at once, with
-/// the reason in the text
-#[test]
-fn fixture_a_trace_session_with_a_bad_configuration_says_why() {
-    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
-        return;
-    }
-    let Some(params) = ConnectParams::from_env() else { return };
-    let mut text = String::new();
-    let end = run_trace(&params, "", "database { no_such_parameter = true }", &AtomicBool::new(false), |bytes| {
-        text.push_str(&String::from_utf8_lossy(bytes))
-    });
-    assert!(end.is_err() || (end == Ok(TraceEnd::Ended) && !text.contains("Trace session ID")), "{end:?} {text}");
+    // The text as this server version writes it reads back as events
+    let mut events = Vec::new();
+    let mut notices = Vec::new();
+    let mut reader = TraceReader::new();
+    let mut take = |item: TraceItem, _: &str| match item {
+        TraceItem::Event(event) => events.push(*event),
+        TraceItem::Notice(notice) => notices.push(notice),
+        TraceItem::Gap => {}
+    };
+    reader.feed(text.as_bytes(), &mut take);
+    reader.finish(&mut take);
+    assert!(notices.iter().any(|n| n.starts_with("Trace session ID")), "{notices:?}\n{text}");
+
+    let database = trace_database(&first).unwrap();
+    let statement = events
+        .iter()
+        .find(|e| e.kind == "EXECUTE_STATEMENT_FINISH" && e.sql.contains("424242"))
+        .unwrap_or_else(|| panic!("the statement is missing from\n{text}"));
+    assert_eq!(statement.sql, "select 424242 from rdb$database", "{text}");
+    assert_eq!((statement.database.as_str(), statement.user.as_str()), (database.as_str(), params.user.as_str()), "{text}");
+    assert!(statement.attachment.is_some() && statement.transaction.is_some() && statement.statement.is_some(), "{text}");
+    assert!(statement.plan.contains("RDB$DATABASE"), "{:?}\n{text}", statement.plan);
+    assert_eq!(statement.records, Some(1), "{text}");
+    assert!(statement.ms.is_some() && statement.fetches > 0, "{statement:?}\n{text}");
+    assert!(statement.tables.iter().any(|t| t.name == "RDB$DATABASE" && t.natural == 1), "{:?}\n{text}", statement.tables);
+    assert!(statement.transaction_options.contains("READ_ONLY"), "{:?}\n{text}", statement.transaction_options);
+
+    let attached = events
+        .iter()
+        .find(|e| e.kind == "ATTACH_DATABASE" && e.attachment == statement.attachment)
+        .unwrap_or_else(|| panic!("the attachment is missing from\n{text}"));
+    assert!(!attached.address.is_empty() && attached.sql.is_empty(), "{attached:?}\n{text}");
+    assert!(events.iter().any(|e| e.kind == "START_TRANSACTION" && e.transaction == statement.transaction), "{text}");
+    assert!(events.iter().any(|e| e.kind == "DETACH_DATABASE" && e.attachment == statement.attachment), "{text}");
+    assert!(events.iter().all(|e| !e.kind.is_empty() && e.at.len() == 24), "{text}");
 }

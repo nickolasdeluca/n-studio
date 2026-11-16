@@ -11,6 +11,8 @@
 //! Who sees what is the server's rule: SYSDBA and administrators see every
 //! attachment, anyone else only their own.
 
+mod parse;
+
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,6 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::service::{attach, parse_answer, timeout_item, Spb, INFO_TO_EOF};
 use crate::{ConnectParams, Connection, Error, Result};
+
+pub use parse::{TableCounts, TraceEvent, TraceItem, TraceOutcome, TraceReader};
 
 /// What a session writes down
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,15 +215,18 @@ pub fn trace_config(options: &TraceOptions, major: u32, database: Option<&str>) 
 pub enum TraceEnd {
     /// The caller stopped it
     Stopped,
-    /// The server ended it: it refused the configuration and said why in
-    /// the text, someone else stopped the session, or the server shut down
+    /// The server ended it: no trace plugin is loaded, which the text says,
+    /// someone else stopped the session, or the server shut down. A
+    /// configuration it cannot read does not end a session: the server
+    /// reads it when an attachment comes along, and complains in the text.
     Ended,
 }
 
 /// Starts a trace session and hands over what the server writes, as bytes
 /// and as they arrive: text in the server's trace format, cut wherever an
 /// answer happened to end. The first line names the session ("Trace session
-/// ID 7 started"), or says why there is none.
+/// ID 7 started"), or says why there is none. An empty piece says the
+/// server had nothing to write for a second: what came before it is whole.
 ///
 /// Blocks until the session ends. `stop` is looked at about once a second;
 /// the session lives on this service connection, so leaving ends it on the
@@ -246,11 +253,10 @@ pub fn run_trace(
             return Ok(TraceEnd::Stopped);
         }
         let answer = parse_answer(&service.query(&send, &[INFO_TO_EOF])?)?;
-        if !answer.data.is_empty() {
-            on_data(&answer.data);
-        } else if !answer.timed_out && !answer.truncated && !answer.not_ready {
+        if answer.data.is_empty() && !answer.timed_out && !answer.truncated && !answer.not_ready {
             return Ok(TraceEnd::Ended);
         }
+        on_data(&answer.data);
     }
 }
 

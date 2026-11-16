@@ -287,7 +287,7 @@ pub(crate) fn parse_answer(buf: &[u8]) -> Result<Answer> {
 
 /// The server writes in its own character set, which nothing names: UTF-8
 /// when it reads as such, and byte for byte (Latin-1) when it does not.
-fn text(bytes: &[u8]) -> String {
+pub(crate) fn text(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
