@@ -315,6 +315,54 @@ Not in the alpha, and said to be: the keymap editor and adjustable font sizes
 (§7), languages other than English, signing and an updater, what M5 left out,
 and the debugger's limits as M6 lists them.
 
+### M8 — The activity monitor as a recording — done
+
+Asked for by the alpha's users, with HQbird's monitoring as the reference:
+the monitor of M5 reads `MON$` now and then, so what starts and ends between
+two reads is never seen, and nothing it shows adds up to an answer to "what
+is slow, and why".
+
+- **A trace session** (`fb-core::trace`): the user trace session of the
+  services manager, what `fbtracemgr` starts. The configuration is written
+  for the server's version (2.5 has a syntax of its own, and every version
+  refuses a parameter it does not know); one database is followed by its
+  file name as `mon$database` gives it, escaped as the pattern it is read
+  as, since before Firebird 5 an alias never matches. The text is asked for
+  every second and handed over as it arrives.
+- **The text read back** (`fb-core::trace::parse`): the trace plugin prints
+  for people, so the reader goes line by line by what `TracePluginImpl.cpp`
+  prints, takes what it knows and keeps the rest. The live tests read what
+  2.5, 3.0, 4.0 and 5.0 really write for a statement and check every field.
+- **A monitoring session** (`src-tauri/src/trace.rs`): a thread of its own
+  from start to stop, the text written as it is to a log per session under
+  `traces/<registration>` (the server's format, with `# ` lines of ours
+  around it, so any trace tool reads it and so does this one, back into a
+  session), the last hundred thousand events kept in memory with what they
+  add up to by second and by statement, literals taken out.
+- **Memory**: a trace says nothing of it, so `MON$MEMORY_USAGE` is read
+  every five seconds on a connection of the session's own, and the most each
+  statement was seen holding is kept: how a large sort is found.
+- **The panel**: Overview, Live (every event, nested by call), Statements,
+  Connections and transactions (M5's grids), Sorts and memory, Recorded
+  sessions.
+
+What it cannot do, and says: it is not lossless. The server keeps a
+session's text in a buffer (`MaxUserTraceLogSize`, 10 MB) and drops events
+when a reader lets it fill; reading without pause makes that rare, the gap
+is counted and shown, and nothing prevents it. Only SYSDBA and
+administrators see every attachment. The server's CPU, its memory as the
+operating system counts it, the lock table and how much of a sort went to
+temporary files are not told over the wire at all: HQbird has an agent on
+the server for those, and a build of the engine of its own.
+
+Left out: the role in the service attach (a user who is an administrator
+only through `RDB$ADMIN` sees their own attachments), a session started
+with a configuration the server cannot read (it runs and records nothing;
+the server's complaint is in the text), long transactions among the
+findings, the monitoring grids on a connection of their own, the
+Firebird 5 profiler, and a run against a real server, which wants its
+owner's leave: a trace of everything is load, and its log is their SQL.
+
 ---
 
 ## 5. Testing

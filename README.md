@@ -84,8 +84,17 @@ extracted as metadata in dependency order.
 ### Manage the server
 
 Run backup, restore, validation, sweep and statistics, read the server log,
-and manage users. The activity monitor shows attachments and statements,
-with actions to disconnect an attachment or cancel a statement.
+and manage users.
+
+The activity monitor records everything the server runs, through a trace
+session: every statement, procedure, trigger and transaction, with its plan
+and what it cost. It shows what that adds up to (charts by the second, the
+statements that cost the most, tables read whole, sorts that held a lot of
+memory), lists each event nested under what called it, and saves each
+recording to a log file that can be opened again. It also shows who is
+connected now, with actions to disconnect an attachment or cancel a
+statement. The server may drop events when it is busier than they can be
+read; the monitor counts those gaps.
 
 ### Work across tables and routines
 
@@ -100,8 +109,9 @@ limits are listed below.
 - A language other than English; adjustable fonts; remapping keys.
 - Windows and Linux installers are unsigned. There is no in-app updater;
   download a new version and install it over the old one.
-- `nbackup`, shutting a database down, changing its header settings, trace
-  sessions.
+- `nbackup`, shutting a database down, changing its header settings.
+- The server's CPU, memory and lock table are not shown: Firebird does not
+  report them to a client.
 - The debugger is an emulator and says what it does not follow: triggers,
   packaged routines, cursors opened by hand (the plan's M6 has the list).
 - Closing a tab whose text was never saved to a file does not ask first.
