@@ -266,6 +266,90 @@ pub fn statements(conn: &Connection, running: bool) -> Result<Vec<Statement>> {
         .collect())
 }
 
+/// Memory one attachment or one statement holds
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MemoryUse {
+    /// The attachment's id, or the statement's
+    pub id: i64,
+    pub attachment: i64,
+    pub user: Option<String>,
+    pub address: Option<String>,
+    /// A statement's text, as far as it comes with the row
+    pub sql: Option<String>,
+    /// Bytes in use now
+    pub used: i64,
+    /// The most it has been
+    pub peak: i64,
+}
+
+/// Where the database's memory is, now
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct Memory {
+    pub used: i64,
+    pub peak: i64,
+    /// By attachment, the largest first
+    pub attachments: Vec<MemoryUse>,
+    /// By statement being run by another attachment, the largest first.
+    /// A sort's buffers are the statement's memory, so a large sort shows
+    /// here; what a sort wrote to temporary files the server does not tell.
+    pub statements: Vec<MemoryUse>,
+}
+
+pub fn memory(conn: &Connection) -> Result<Memory> {
+    let mut memory = Memory::default();
+    let database = rows(
+        conn,
+        "select m.mon$memory_used, m.mon$max_memory_used from mon$database d \
+         join mon$memory_usage m on m.mon$stat_id = d.mon$stat_id",
+        vec![],
+    )?;
+    if let Some(r) = database.first() {
+        memory.used = flag_or(r, 0);
+        memory.peak = flag_or(r, 1);
+    }
+    memory.attachments = rows(
+        conn,
+        "select a.mon$attachment_id, a.mon$user, a.mon$remote_address, m.mon$memory_used, m.mon$max_memory_used \
+         from mon$attachments a join mon$memory_usage m on m.mon$stat_id = a.mon$stat_id \
+         order by m.mon$memory_used desc",
+        vec![],
+    )?
+    .iter()
+    .map(|r| MemoryUse {
+        id: flag_or(r, 0),
+        attachment: flag_or(r, 0),
+        user: r.text(1),
+        address: r.text(2),
+        sql: None,
+        used: flag_or(r, 3),
+        peak: flag_or(r, 4),
+    })
+    .collect();
+    let sql = format!(
+        "select s.mon$statement_id, s.mon$attachment_id, a.mon$user, a.mon$remote_address, {}, \
+         m.mon$memory_used, m.mon$max_memory_used \
+         from mon$statements s \
+         join mon$memory_usage m on m.mon$stat_id = s.mon$stat_id \
+         join mon$attachments a on a.mon$attachment_id = s.mon$attachment_id \
+         where s.mon$state <> 0 and s.mon$sql_text is not null and s.mon$attachment_id <> current_connection \
+         order by m.mon$max_memory_used desc",
+        inline("s.mon$sql_text"),
+    );
+    memory.statements = rows(conn, &sql, vec![])?
+        .iter()
+        .map(|r| MemoryUse {
+            id: flag_or(r, 0),
+            attachment: flag_or(r, 1),
+            user: r.text(2),
+            address: r.text(3),
+            sql: r.text(4),
+            used: flag_or(r, 5),
+            peak: flag_or(r, 6),
+        })
+        .collect();
+    Ok(memory)
+}
+
 /// The whole text of a statement, while it is still there
 pub fn statement_text(conn: &Connection, id: i64) -> Result<Option<String>> {
     let found = rows(conn, "select mon$sql_text from mon$statements where mon$statement_id = ?", vec![Value::Integer(id)])?;

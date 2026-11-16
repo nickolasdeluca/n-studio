@@ -595,6 +595,12 @@ fn the_monitor_sees_this_connection() {
     assert!(this.sql.as_deref().is_some_and(|s| s.contains("mon$statements")), "{:?}", this.state);
     // That statement ended with its query: its text is no longer there to read
     assert_eq!(monitor::statement_text(&conn, this.id).unwrap(), None);
+
+    let memory = monitor::memory(&conn).unwrap();
+    assert!(memory.used > 0 && memory.peak >= memory.used, "{memory:?}");
+    assert!(memory.attachments.iter().any(|a| a.id == own[0].id && a.used > 0), "{memory:?}");
+    // Its own statement is the one reading: never listed
+    assert!(memory.statements.iter().all(|s| s.attachment != own[0].id), "{memory:?}");
     // Idle ones included, it is still there. Only its own are counted: the
     // other tests' statements come and go between two readings.
     assert!(monitor::statements(&conn, false).unwrap().iter().any(|s| s.attachment == own[0].id));

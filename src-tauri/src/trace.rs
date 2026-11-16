@@ -16,7 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDateTime};
-use fb_core::{run_trace, trace_config, trace_database, TraceEnd, TraceEvent, TraceItem, TraceOptions, TraceOutcome, TraceReader};
+use fb_core::{Connection, run_trace, trace_config, trace_database, TraceEnd, TraceEvent, TraceItem, TraceOptions, TraceOutcome, TraceReader};
+use fb_meta::monitor::{self, Memory};
 use fb_sql::lexer::{tokenize, TokenKind};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -35,6 +36,13 @@ const SECONDS_KEPT: usize = 3_600;
 const STATEMENTS_KEPT: usize = 20_000;
 /// Times kept of a second, to say what most statements stayed under
 const TIMES_KEPT: usize = 512;
+
+/// How often the monitoring tables are read for memory. Each read makes
+/// the server take a snapshot of what every attachment is doing, which on
+/// a busy server is not free.
+const SAMPLE_EVERY: Duration = Duration::from_secs(5);
+/// The line of a log's head that names the attachment reading them
+const MONITOR: &str = "monitor: ATT_";
 
 /// A statement with its literals taken out, so that runs of the same
 /// statement with different values count as one
@@ -144,6 +152,9 @@ pub struct StatementStats {
     plan: String,
     /// The event of its slowest run, while that is still kept
     slowest_event: u64,
+    /// The most memory a run of it was seen holding, in bytes; 0 when it
+    /// was never caught running
+    memory: i64,
 }
 
 struct Kept {
@@ -257,6 +268,13 @@ pub struct Store {
     statements: HashMap<String, StatementStats>,
     /// How deep each attachment is inside routines
     depths: HashMap<i64, u16>,
+    /// The attachment that reads the monitoring tables for this session:
+    /// what it runs is not what is being looked for
+    ignored: Option<i64>,
+    /// Where the memory was when last looked at
+    memory: Option<Memory>,
+    /// The most memory each statement was seen holding
+    peaks: HashMap<String, i64>,
 }
 
 impl Store {
@@ -272,7 +290,29 @@ impl Store {
         }
     }
 
+    /// What the monitoring tables said about memory just now
+    pub fn sample(&mut self, memory: Memory) {
+        for statement in &memory.statements {
+            if let Some(sql) = &statement.sql {
+                let peak = self.peaks.entry(normalize(sql)).or_default();
+                *peak = (*peak).max(statement.peak).max(statement.used);
+            }
+        }
+        if self.peaks.len() > STATEMENTS_KEPT {
+            self.peaks.clear();
+        }
+        self.memory = Some(memory);
+    }
+
+    fn with_memory(&self, mut stats: StatementStats) -> StatementStats {
+        stats.memory = self.peaks.get(&stats.sql).copied().unwrap_or(0);
+        stats
+    }
+
     fn event(&mut self, event: TraceEvent) {
+        if self.ignored.is_some() && event.attachment == self.ignored {
+            return;
+        }
         let kind = event.kind.as_str();
         let routine = is_routine(kind);
         let depth = match event.attachment {
@@ -398,14 +438,18 @@ impl Store {
 
     pub fn detail(&self, seq: u64) -> Option<Detail> {
         let kept = self.events.get(usize::try_from(seq.checked_sub(self.first)?).ok()?)?;
-        let statement = (!kept.event.sql.is_empty()).then(|| self.statements.get(&normalize(&kept.event.sql)).cloned()).flatten();
+        let statement = (!kept.event.sql.is_empty())
+            .then(|| self.statements.get(&normalize(&kept.event.sql)).cloned())
+            .flatten()
+            .map(|stats| self.with_memory(stats));
         Some(Detail { seq, depth: kept.depth, event: kept.event.clone(), statement })
     }
 
     /// The statements that cost the most by `by`: `runs`, `fetches`,
-    /// `natural`, `slowest`, `records`, or the total time
+    /// `natural`, `slowest`, `records`, `memory`, or the total time
     pub fn top(&self, by: &str, sorting_only: bool, limit: usize) -> Vec<StatementStats> {
         let key = |s: &StatementStats| match by {
+            "memory" => self.peaks.get(&s.sql).copied().unwrap_or(0).max(0) as u64,
             "runs" => s.runs,
             "fetches" => s.fetches,
             "natural" => s.natural,
@@ -415,7 +459,7 @@ impl Store {
         };
         let mut top: Vec<&StatementStats> = self.statements.values().filter(|s| !sorting_only || s.sorts).collect();
         top.sort_by(|a, b| key(b).cmp(&key(a)).then_with(|| b.ms.cmp(&a.ms)).then_with(|| a.sql.cmp(&b.sql)));
-        top.into_iter().take(limit).cloned().collect()
+        top.into_iter().take(limit).map(|s| self.with_memory(s.clone())).collect()
     }
 }
 
@@ -516,27 +560,55 @@ pub async fn trace_start(app: AppHandle, id: String, run: u64, options: TraceOpt
         let database = trace_database(&session)?;
         let config = trace_config(&options, info.major, Some(&database));
 
+        // The monitoring tables are read on a connection of this session's
+        // own, so that a query running in an editor does not hold them up.
+        // Without one, the session goes on without memory figures.
+        let sampler = Connection::open(&params).ok().and_then(|conn| {
+            let own = conn.query("select current_connection from rdb$database", vec![]).ok()?;
+            Some((conn, own.rows.first()?.first()?.as_i64()?))
+        });
+        let ignored = sampler.as_ref().map(|(_, id)| *id);
+
         let dir = state.traces.dir.join(&id);
         fs::create_dir_all(&dir).map_err(|e| AppError::storage(&dir, e))?;
         let now = Local::now();
         let log = dir.join(format!("{}.log", now.format("%Y-%m-%d_%H%M%S")));
         let mut file = BufWriter::new(File::create(&log).map_err(|e| AppError::storage(&log, e))?);
         let head = format!(
-            "N Studio monitoring session\nstarted: {}\nserver: Firebird {}\ndatabase: {database}\nuser: {}\n\n{config}",
+            "N Studio monitoring session\nstarted: {}\nserver: Firebird {}\ndatabase: {database}\nuser: {}{}\n\n{config}",
             now.format("%Y-%m-%d %H:%M:%S"),
             info.engine_version,
             params.user,
+            ignored.map(|id| format!("\n{MONITOR}{id}")).unwrap_or_default(),
         );
         remarks(&mut file, &head).and_then(|()| file.flush()).map_err(|e| AppError::storage(&log, e))?;
 
         let trace = Arc::new(Trace {
             stop: AtomicBool::new(false),
-            store: Mutex::default(),
+            store: Mutex::new(Store { ignored, ..Store::default() }),
             standing: Mutex::new((Standing::Recording, None)),
             log: log.clone(),
         });
         state.traces.open.lock().unwrap().insert(run, trace.clone());
         let first = trace.tick(run, 0);
+
+        if let Some((conn, _)) = sampler {
+            let trace = trace.clone();
+            let _ = std::thread::Builder::new().name("trace-memory".into()).spawn(move || {
+                let recording = || trace.standing.lock().unwrap().0 == Standing::Recording && !trace.stop.load(Ordering::Relaxed);
+                while recording() {
+                    match monitor::memory(&conn) {
+                        Ok(memory) => trace.store.lock().unwrap().sample(memory),
+                        // Not allowed to, or the connection went: no figures
+                        Err(_) => break,
+                    }
+                    let waited = Instant::now();
+                    while recording() && waited.elapsed() < SAMPLE_EVERY {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            });
+        }
 
         std::thread::Builder::new()
             .name("trace".into())
@@ -637,6 +709,13 @@ pub async fn trace_top(app: AppHandle, run: u64, by: String, sorting_only: bool,
     blocking(app, move |state| Ok(state.traces.get(run)?.store.lock().unwrap().top(&by, sorting_only, limit.min(1_000)))).await
 }
 
+/// Where the database's memory was when last looked at; nothing for a
+/// session that could not look, or one opened from its log
+#[tauri::command]
+pub fn trace_memory(state: State<'_, AppState>, run: u64) -> AppResult<Option<Memory>> {
+    Ok(state.traces.get(run)?.store.lock().unwrap().memory.clone())
+}
+
 /// A recorded session
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -671,15 +750,17 @@ pub async fn trace_sessions(app: AppHandle, id: String) -> AppResult<Vec<Recorde
 
 /// What a log holds, read back
 fn read_log(bytes: &[u8]) -> Store {
-    let mut store = Store::default();
+    let lines = || bytes.split_inclusive(|&b| b == b'\n');
+    let ignored = lines()
+        .filter_map(|line| std::str::from_utf8(line.strip_prefix(b"# ")?).ok()?.trim().strip_prefix(MONITOR)?.parse().ok())
+        .next();
+    let mut store = Store { ignored, ..Store::default() };
     let mut reader = TraceReader::new();
     let mut take = |item: TraceItem, _: &str| store.take(item);
     // Our own lines are not the server's: one after the last record would
     // read as part of it
-    for line in bytes.split_inclusive(|&b| b == b'\n') {
-        if !line.starts_with(b"# ") && line != b"#\n" && line != b"#\r\n" {
-            reader.feed(line, &mut take);
-        }
+    for line in lines().filter(|line| !line.starts_with(b"#")) {
+        reader.feed(line, &mut take);
     }
     reader.finish(&mut take);
     store
@@ -811,6 +892,36 @@ mod tests {
         // It ran twice, with another number
         assert_eq!((detail.event.sql.as_str(), detail.statement.unwrap().runs), ("select 3 from PEDIDO", 2));
         assert!(store.detail(9).is_none());
+    }
+
+    #[test]
+    fn what_the_monitor_itself_runs_is_left_out_and_memory_is_kept_by_statement() {
+        let text = [
+            statement("40.0001", 17, "select 1 from T", 10, 1, "PLAN SORT (T NATURAL)"),
+            statement("40.0002", 99, "select mon$memory_used from mon$memory_usage", 10, 1, ""),
+        ]
+        .concat();
+        let mut log = Vec::new();
+        remarks(&mut log, &format!("user: X\n{MONITOR}99")).unwrap();
+        log.extend_from_slice(text.as_bytes());
+        let mut store = read_log(&log);
+        assert_eq!(store.total, 1);
+        assert_eq!(store.top("time", false, 10).len(), 1);
+
+        let running = |sql: &str, used, peak| monitor::MemoryUse {
+            id: 1,
+            attachment: 17,
+            user: None,
+            address: None,
+            sql: Some(sql.into()),
+            used,
+            peak,
+        };
+        store.sample(Memory { used: 10, peak: 20, attachments: vec![], statements: vec![running("select 5 from T", 300, 900)] });
+        store.sample(Memory { used: 10, peak: 20, attachments: vec![], statements: vec![running("select 6 from T", 400, 500)] });
+        assert_eq!(store.top("memory", true, 10)[0].memory, 900);
+        assert_eq!(store.detail(0).unwrap().statement.unwrap().memory, 900);
+        assert_eq!(store.memory.as_ref().unwrap().statements[0].used, 400);
     }
 
     #[test]

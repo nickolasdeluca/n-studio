@@ -122,6 +122,7 @@ fn main() {
             trace::trace_page,
             trace::trace_event,
             trace::trace_top,
+            trace::trace_memory,
             trace::trace_sessions,
             trace::trace_open,
             files::script_read,
