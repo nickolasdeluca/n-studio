@@ -17,6 +17,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "category": "DeveloperTool",
@@ -24,5 +25,11 @@
     "longDescription": "A database IDE for Firebird: SQL editor, object viewers and editors, services, monitoring.",
     "copyright": "MIT License",
     "macOS": { "signingIdentity": "-", "minimumSystemVersion": "10.15" }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgwMUI0QjY5QjUwMEFFMUEKUldRYXJnQzFhVXNiZ05Bb3ZGU01OOUZaSWtJRHlLUzJhSXJsQnRkTnpNc2V0TUg2cDROSVVqUXQK",
+      "endpoints": ["https://github.com/nickolasdeluca/n-studio/releases/latest/download/latest.json"]
+    }
   }
 }

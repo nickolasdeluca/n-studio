@@ -7,9 +7,12 @@ import { closePanel, panelTitle } from "./dock";
 import { useEditors } from "./editors";
 import { flushSession } from "./session";
 import { useStore } from "./store";
+import { installUpdate } from "./update";
 import { hasChanges, useViewers } from "./viewers";
 
-export type PendingAction = { kind: "close"; tab: string } | { kind: "disconnect"; id: string } | { kind: "quit" };
+/** `update`: the app is replaced by a newer version and started again,
+ *  which ends what a quit ends */
+export type PendingAction = { kind: "close"; tab: string } | { kind: "disconnect"; id: string } | { kind: "quit" } | { kind: "update" };
 
 /** Editors with an active transaction, optionally only some */
 export function activeTabs(filter: (registration: string, tab: string) => boolean = () => true): string[] {
@@ -59,6 +62,7 @@ function affected(action: PendingAction): string[] {
     case "disconnect":
       return activeTabs((registration) => registration === action.id);
     case "quit":
+    case "update":
       return activeTabs();
   }
 }
@@ -88,6 +92,10 @@ async function perform(action: PendingAction) {
     case "quit":
       await flushSession();
       await getCurrentWindow().destroy();
+      break;
+    case "update":
+      await flushSession();
+      await installUpdate();
       break;
   }
 }

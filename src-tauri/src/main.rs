@@ -20,6 +20,7 @@ mod secrets;
 mod session;
 mod tools;
 mod trace;
+mod update;
 mod window;
 
 use tauri::Manager;
@@ -59,6 +60,8 @@ fn view_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(update::Found::default())
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let registry = registry::Registry::load(&dir)?;
@@ -139,6 +142,8 @@ fn main() {
             trace::trace_sessions,
             trace::trace_open,
             trace::trace_folder,
+            update::update_check,
+            update::update_install,
             files::script_read,
             files::script_write,
             history::history_add,

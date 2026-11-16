@@ -20,6 +20,7 @@ import { useDiagrams } from "../diagram";
 import { useEditors } from "../editors";
 import { t } from "../i18n";
 import { guardQuit, request } from "../pending";
+import { checkForUpdate } from "../update";
 import { openScripts } from "../scripts";
 import { restoreSession, sessionChanged } from "../session";
 import { Icon } from "../icons";
@@ -288,8 +289,13 @@ function StatusBar() {
   const busy = useStore((s) => s.busy);
   // The bundle's version, so a report can say which build it is about
   const [version, setVersion] = useState("");
+  const update = useStore((s) => s.update);
+  const updating = useStore((s) => s.updating);
+  // What a check asked for by hand answered, shown for a moment
+  const [checked, setChecked] = useState("");
   useEffect(() => {
     getVersion().then(setVersion, () => {});
+    void checkForUpdate();
   }, []);
 
   let left: ReactNode = t("No database selected");
@@ -326,7 +332,48 @@ function StatusBar() {
           </button>
         </span>
       )}
-      {version && <span className={`shrink-0 text-faint ${notice ? "" : "ml-auto"}`}>v{version}</span>}
+      <span className={`flex shrink-0 items-center gap-2 ${notice ? "" : "ml-auto"}`}>
+        {updating !== null ? (
+          <span className="text-fg tabular-nums" role="status">
+            {updating === true
+              ? t("Downloading {version}…", { version: update?.version ?? "" })
+              : t("Downloading {version}… {done}%", { version: update?.version ?? "", done: Math.round(updating * 100) })}
+          </span>
+        ) : (
+          update && (
+            <span className="flex items-center gap-1.5" role="status">
+              <span className="size-1.5 rounded-full bg-accent" />
+              <span className="text-fg select-text" title={update.page}>
+                {update.installable
+                  ? t("Version {version} is available", { version: update.version })
+                  : t("Version {version} is available at {page}", { version: update.version, page: update.page })}
+              </span>
+              {update.installable && (
+                <button className="rounded px-1.5 text-accent hover:bg-hover" onClick={() => request({ kind: "update" })}>
+                  {t("Update and Restart")}
+                </button>
+              )}
+              <button aria-label={t("Later")} title={t("Later")} className="px-1 hover:text-fg" onClick={() => useStore.setState({ update: null })}>
+                ×
+              </button>
+            </span>
+          )
+        )}
+        {version && (
+          <button
+            className="text-faint hover:text-fg"
+            title={t("Check for updates")}
+            onClick={async () => {
+              setChecked(t("Checking…"));
+              const found = await checkForUpdate(true);
+              setChecked(found ? "" : t("Up to date"));
+              setTimeout(() => setChecked(""), 4000);
+            }}
+          >
+            {checked || `v${version}`}
+          </button>
+        )}
+      </span>
     </div>
   );
 }

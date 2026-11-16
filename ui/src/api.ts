@@ -795,6 +795,16 @@ export interface RowChanges {
   inserts: Assign[][];
 }
 
+/** A release newer than this build */
+export interface UpdateAvailable {
+  version: string;
+  current: string;
+  /** The release's page */
+  page: string;
+  /** Whether this install can replace itself */
+  installable: boolean;
+}
+
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
@@ -914,6 +924,10 @@ export const api = {
   traceMemory: (run: number) => invoke<TraceMemory | null>("trace_memory", { run }),
   traceSessions: (id: string) => invoke<TraceRecorded[]>("trace_sessions", { id }),
   /** Opens a recorded session's log as the session `run` */
+  /** Asks the latest release whether it is newer than this build */
+  updateCheck: () => invoke<UpdateAvailable | null>("update_check"),
+  /** Fetches the update found and restarts into it; answers only on failure */
+  updateInstall: () => invoke<void>("update_install"),
   /** Shows the folder of a registration's logs in the file manager */
   traceFolder: (id: string) => invoke<void>("trace_folder", { id }),
   traceOpen: (run: number, path: string) => invoke<TraceTick>("trace_open", { run, path }),

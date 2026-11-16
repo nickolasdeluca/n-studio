@@ -19,6 +19,13 @@
 # refused until that draft is there, and for an installer Apple has not
 # notarized. Needs the GitHub CLI (`gh`), logged in.
 #
+# It is also what makes the release one the app updates itself from. The
+# build leaves, beside the .dmg, the app as an archive signed with the
+# updater's key, and publishing writes `latest.json`: the version, and for
+# each system the file an install fetches and its signature, read from the
+# release itself. The app asks for that file at releases/latest, which only
+# a published release that is no pre-release answers.
+#
 # scripts/build-release.env (gitignored; copy the .example beside it) is
 # sourced when it is there. Variables set before running override it:
 #   SIGN_IDENTITY        the "Developer ID Application: Name (TEAMID)" string
@@ -27,6 +34,12 @@
 #   APPLE_API_KEY_ID     its Key ID
 #   APPLE_API_ISSUER_ID  and its Issuer ID; or, instead of the three,
 #   NOTARY_PROFILE       a `notarytool store-credentials` keychain profile
+#   UPDATER_KEY_PATH     the updater's private key, made once with
+#                        `tauri signer generate` and never committed
+#                        (default: ~/.tauri/n-studio-updater.key). The same
+#                        key is the workflow's TAURI_SIGNING_PRIVATE_KEY
+#                        secret: an update signed with another is refused
+#                        by every install there is.
 #   DIST_DIR             where the installer is copied (default: dist)
 #   SKIP_NOTARIZE=1      sign, but do not notarize or staple
 
@@ -44,6 +57,8 @@ KEY_PATH="${APPLE_API_KEY_PATH:-}"
 KEY_ID="${APPLE_API_KEY_ID:-}"
 ISSUER_ID="${APPLE_API_ISSUER_ID:-}"
 DIST_DIR="${DIST_DIR:-dist}"
+UPDATER_KEY_PATH="${UPDATER_KEY_PATH:-$HOME/.tauri/n-studio-updater.key}"
+REPO_URL="https://github.com/nickolasdeluca/n-studio"
 TARGET="universal-apple-darwin"
 
 log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -78,13 +93,45 @@ release() {
     local missing=""
     gh release view "$tag" --json assets -q '.assets[].name' | grep -q -- '-setup\.exe$' || missing="Windows"
     [ -z "$missing" ] || die "Release $tag has no $missing installer: the workflow has not finished, or it failed."
-    log "Adding $(basename "$out") to release $tag"
-    gh release upload "$tag" "$out" --clobber
-    gh release edit "$tag" --draft=false
+    [ -f "$archive" ] && [ -f "$archive.sig" ] \
+        || die "There is no $archive with its .sig: run without --release-only to build them."
+    log "Adding $(basename "$out") and the update archive to release $tag"
+    gh release upload "$tag" "$out" "$archive" "$archive.sig" --clobber
+
+    # What an install asks for: each system's file and its signature, as the
+    # release holds them. GitHub writes a space in a file's name as a dot.
+    local assets exe image
+    assets="$(gh release view "$tag" --json assets -q '.assets[].name')"
+    exe="$(printf '%s\n' "$assets" | grep -- '-setup\.exe$' | head -1)"
+    image="$(printf '%s\n' "$assets" | grep -- '\.AppImage$' | head -1)"
+    [ -n "$image" ] || die "Release $tag has no AppImage."
+    printf '%s\n' "$assets" | grep -qx -- "$exe.sig" || die "Release $tag has no signature for $exe: was the workflow given the updater's key?"
+    printf '%s\n' "$assets" | grep -qx -- "$image.sig" || die "Release $tag has no signature for $image."
+    signature() { gh release download "$tag" -p "$1" -O - | tr -d '\n'; }
+    local base="$REPO_URL/releases/download/$tag" mac
+    mac="$(basename "$archive")"
+    cat > "$DIST_DIR/latest.json" <<JSON
+{
+  "version": "$VERSION",
+  "notes": "$REPO_URL/releases/tag/$tag",
+  "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "platforms": {
+    "darwin-aarch64": { "signature": "$(cat "$archive.sig")", "url": "$base/$mac" },
+    "darwin-x86_64": { "signature": "$(cat "$archive.sig")", "url": "$base/$mac" },
+    "windows-x86_64": { "signature": "$(signature "$exe.sig")", "url": "$base/$exe" },
+    "linux-x86_64": { "signature": "$(signature "$image.sig")", "url": "$base/$image" }
+  }
+}
+JSON
+    gh release upload "$tag" "$DIST_DIR/latest.json" --clobber
+    gh release edit "$tag" --draft=false --prerelease=false --latest
     log "Published: $(gh release view "$tag" --json url -q .url)"
 }
 
 out="$DIST_DIR/N Studio_${VERSION}_universal.dmg"
+# The app as an install fetches it to update itself, named as GitHub would
+# name it anyway
+archive="$DIST_DIR/N.Studio_${VERSION}_universal.app.tar.gz"
 
 # What is released is what the tag names: asked before an hour of building
 if [ "$RELEASE" = 1 ] && [ "$BUILD" = 1 ]; then
@@ -116,6 +163,8 @@ if [ "$BUILD" = 1 ]; then
         die "No notarization credentials: set the three APPLE_API_* variables or NOTARY_PROFILE (scripts/build-release.env.example), or SKIP_NOTARIZE=1."
     fi
 
+    [ -f "$UPDATER_KEY_PATH" ] || die "No updater key at $UPDATER_KEY_PATH (UPDATER_KEY_PATH): without it no install could take this build as an update."
+
     log "N Studio $VERSION for $TARGET"
     rustup target add aarch64-apple-darwin x86_64-apple-darwin
     (cd ui && npm ci)
@@ -126,7 +175,9 @@ if [ "$BUILD" = 1 ]; then
     # asked once below, about the .dmg, which covers the app inside it.
     log "Building and signing"
     (cd ui && env -u APPLE_API_KEY -u APPLE_API_ISSUER -u APPLE_API_KEY_PATH -u APPLE_ID -u APPLE_PASSWORD \
-        APPLE_SIGNING_IDENTITY="$SIGN_IDENTITY" npm run tauri -- build --target "$TARGET" --bundles dmg)
+        APPLE_SIGNING_IDENTITY="$SIGN_IDENTITY" \
+        TAURI_SIGNING_PRIVATE_KEY="$(cat "$UPDATER_KEY_PATH")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${UPDATER_KEY_PASSWORD:-}" \
+        npm run tauri -- build --target "$TARGET" --bundles app,dmg)
 
     bundle="target/$TARGET/release/bundle"
     app="$bundle/macos/N Studio.app"
@@ -151,7 +202,15 @@ if [ "$BUILD" = 1 ]; then
         spctl -a -t open --context context:primary-signature -v "$dmg"
     fi
 
+    # The archive holds the app as Tauri signed it. Apple's ticket for the
+    # .dmg covers the app in it; an app put in place by the updater is not
+    # one the system quarantines and asks about.
+    packed="$bundle/macos/N Studio.app.tar.gz"
+    [ -f "$packed" ] && [ -f "$packed.sig" ] || die "The build left no $packed with its .sig."
+
     mkdir -p "$DIST_DIR"
+    cp "$packed" "$archive"
+    cp "$packed.sig" "$archive.sig"
     cp "$dmg" "$out"
     log "Done: $out"
     printf '    sha256: %s\n    bytes:  %s\n' "$(shasum -a 256 "$out" | cut -d' ' -f1)" "$(stat -f%z "$out")"

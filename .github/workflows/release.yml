@@ -1,7 +1,7 @@
 name: Release
 
 # The installers. On a version tag the Windows and Linux ones become a draft
-# pre-release on GitHub, which waits for the one file this workflow cannot
+# release on GitHub, which waits for the one file this workflow cannot
 # make: the macOS installer signed with a Developer ID and notarized, built
 # on a Mac that has the certificate (`scripts/build-release.sh --release`
 # uploads it and publishes the release). Run by hand, the installers are
@@ -42,6 +42,13 @@ jobs:
     name: ${{ matrix.name }}
     needs: version
     runs-on: ${{ matrix.os }}
+    # The updater's key: each installer an install can update itself from
+    # (the Windows setup, the AppImage) is built with a signature beside it,
+    # which an install checks against the public key it carries. The same key
+    # signs the macOS archive on the Mac that builds it.
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
     strategy:
       fail-fast: false
       matrix:
@@ -96,11 +103,13 @@ jobs:
           path: |
             target/**/release/bundle/dmg/*.dmg
             target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe.sig
             target/release/bundle/deb/*.deb
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
 
   publish:
-    name: draft pre-release
+    name: draft release
     if: github.ref_type == 'tag'
     needs: [version, bundle]
     runs-on: ubuntu-latest
@@ -112,12 +121,13 @@ jobs:
           path: dist
           merge-multiple: true
       # Everything but the ad hoc .dmg. A draft: it is published from the Mac
-      # that adds the notarized one, so no release is ever seen without it.
+      # that adds the notarized one and writes latest.json, so no release is
+      # ever seen without it, nor offered to installs before it is whole.
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
           find dist -type f ! -name '*.dmg' -print0 | xargs -0 gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "N Studio ${{ needs.version.outputs.version }}" \
-            --draft --prerelease --generate-notes \
+            --draft --generate-notes \
             --notes "macOS: signed and notarized. Windows and Linux: unsigned builds; the README says how each system is told to open them."

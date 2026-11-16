@@ -230,6 +230,7 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
     close: t("Close the editor"),
     disconnect: t("Disconnect"),
     quit: t("Quit N Studio"),
+    update: t("Update and restart"),
   }[action.kind];
 
   return (

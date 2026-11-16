@@ -363,6 +363,26 @@ findings, the monitoring grids on a connection of their own, the
 Firebird 5 profiler, and a run against a real server, which wants its
 owner's leave: a trace of everything is load, and its log is their SQL.
 
+### M9 — Out of the alpha: the app updates itself — done
+
+Releases were pre-releases, each fetched and installed by hand. The app now
+asks the latest release whether it is newer, when it opens and when the
+version in the status bar is clicked, and offers it there; taken, it is
+fetched, checked, put in this build's place and started, after the same
+questions a quit asks about transactions and unsaved changes.
+
+It is Tauri's updater plugin: a release carries `latest.json` (the version
+and, for each system, a file and its signature), and an install takes only
+what is signed with the key whose public half it was built with. The
+workflow signs the Windows setup and the AppImage, the Mac that notarizes
+signs the app's archive and writes `latest.json` from what the release
+holds, and then publishes. Releases are no longer pre-releases:
+`releases/latest`, which installs ask, answers only for those.
+
+Left out: a `.deb` install does not replace itself (it is told where the
+new version is); nothing is fetched before the user says so; and versions
+before this one have no updater, so they are updated by hand one last time.
+
 ---
 
 ## 5. Testing
@@ -439,8 +459,8 @@ where update-statement generation and dirty-row tracking already have to exist.
 
 **Distribution: unsigned CI artifacts until the tool is worth installing.**
 GitHub Actions builds macOS/Windows/Linux bundles per release (M7; first planned
-per commit). No Windows cert and no updater plugin yet: Windows shows
-SmartScreen. The macOS installer is the exception since the alpha: signed with
+per commit). No Windows cert yet: Windows shows
+SmartScreen (the updater came with M9). The macOS installer is the exception since the alpha: signed with
 a Developer ID and notarized on a Mac, and added to the release the workflow
 drafts with the other two (the README says how). Signing and package-manager presence get revisited once
 there is something to distribute.

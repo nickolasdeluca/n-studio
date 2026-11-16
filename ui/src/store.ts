@@ -12,6 +12,7 @@ import {
   type RegistrationView,
   type ServerInfo,
   type TreeKind,
+  type UpdateAvailable,
 } from "./api";
 import { onMetadataChanged } from "./changes";
 import { useEditors } from "./editors";
@@ -100,6 +101,10 @@ interface State {
   dialog: Dialog | null;
   /** The last thing that went wrong outside a dialog */
   notice: string | null;
+  /** A release newer than this build, until it is put off */
+  update: UpdateAvailable | null;
+  /** The update being fetched: how far, 0 to 1, or `true` when that is not known */
+  updating: number | true | null;
   /** What is being waited for outside a panel of its own */
   busy: string | null;
 
@@ -161,6 +166,8 @@ export const useStore = create<State>()((set, get) => ({
   selection: null,
   dialog: null,
   notice: null,
+  update: null,
+  updating: null,
   busy: null,
 
   async load() {

@@ -107,8 +107,11 @@ limits are listed below.
 
 - Embedded (serverless) databases, and engines other than Firebird.
 - A language other than English; adjustable fonts; remapping keys.
-- Windows and Linux installers are unsigned. There is no in-app updater;
-  download a new version and install it over the old one.
+- Windows and Linux installers are unsigned.
+- The app updates itself from the latest release: it asks when it opens,
+  and offers the new version in the status bar (the version shown there
+  asks again when clicked). On Linux only the AppImage replaces itself; a
+  `.deb` install is told where the new version is.
 - `nbackup`, shutting a database down, changing its header settings.
 - The server's CPU, memory and lock table are not shown: Firebird does not
   report them to a client.
@@ -186,13 +189,23 @@ scripts/build-release.sh --release          # on a Mac with the certificate
 ```
 
 The tag has the workflow build the Windows and Linux installers into a
-**draft** pre-release. The script builds the universal `.dmg`, signs it and
+**draft** release. The script builds the universal `.dmg`, signs it and
 the app with the Developer ID, has Apple notarize it and staples the answer;
 then it adds the `.dmg` to that draft and publishes it. It refuses a commit
 that is not the tagged one, an installer Apple has not notarized, and a draft
 the Windows installer has not reached, so a release is never seen with a
 system missing. `--release-only` adds the `.dmg` already in `dist/`, for when
 the workflow was still running.
+
+Publishing is also what offers the version to every install. Each installer
+an install updates itself from (the Windows setup, the AppImage, and the
+macOS app as an archive) is signed with the updater's key: the workflow's
+`TAURI_SIGNING_PRIVATE_KEY` secret, and the same key in a file on the Mac
+(`UPDATER_KEY_PATH`, `~/.tauri/n-studio-updater.key` by default). The script
+writes `latest.json`, with each system's file and signature, adds it and
+publishes the release as the latest one; installs ask for that file. The key
+is made once (`tauri signer generate`) and kept: an update signed with
+another is refused by every install there is.
 
 Without arguments the script only builds, signs and notarizes, into `dist/`
 (`cp scripts/build-release.env.example scripts/build-release.env` once, and
