@@ -383,6 +383,13 @@ Left out: a `.deb` install does not replace itself (it is told where the
 new version is); nothing is fetched before the user says so; and versions
 before this one have no updater, so they are updated by hand one last time.
 
+### M10 — Script Executive — planned
+
+A tool for scripts as work in themselves: many statements run all or in
+part, from the editor or straight from a file, with a list of them to pick
+from and a tree of what they touch, as IBExpert's has. The plan, with what
+exists and what is missing, is `docs/SCRIPT-EXECUTIVE.md`.
+
 ---
 
 ## 5. Testing
