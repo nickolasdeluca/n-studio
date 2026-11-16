@@ -775,6 +775,27 @@ pub async fn trace_sessions(app: AppHandle, id: String) -> AppResult<Vec<Recorde
     .await
 }
 
+/// Shows the folder a registration's logs are kept in, in the system's
+/// file manager; made first if nothing was recorded yet
+#[tauri::command]
+pub async fn trace_folder(app: AppHandle, id: String) -> AppResult<()> {
+    blocking(app, move |state| {
+        let dir = state.traces.dir.join(&id);
+        let shown = fs::create_dir_all(&dir).and_then(|()| {
+            let opener = if cfg!(target_os = "macos") {
+                "open"
+            } else if cfg!(target_os = "windows") {
+                "explorer"
+            } else {
+                "xdg-open"
+            };
+            std::process::Command::new(opener).arg(&dir).spawn().map(drop)
+        });
+        shown.map_err(|e| AppError::storage(&dir, e))
+    })
+    .await
+}
+
 /// What a log holds, read back
 fn read_log(bytes: &[u8]) -> Store {
     let lines = || bytes.split_inclusive(|&b| b == b'\n');

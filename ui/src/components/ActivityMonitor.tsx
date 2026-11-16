@@ -6,6 +6,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   api,
+  errorText,
   type TraceDetail,
   type TraceFilter,
   type TraceMemory,
@@ -17,6 +18,7 @@ import {
 import type { AdminPanel } from "../admin";
 import { openEditor } from "../dock";
 import { t } from "../i18n";
+import { Icon } from "../icons";
 import { openRecorded, startMonitor, stopMonitor, useMonitor, type MonitorSession } from "../monitor";
 import { useStore } from "../store";
 import { TextButton } from "./ObjectViewer";
@@ -1038,8 +1040,14 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
             <span className={`${mono} text-muted select-text`} title={session.tick.log}>
               {session.tick.log.split(/[\\/]/).slice(-1)[0]}
             </span>
+            <IconButton icon="copy" label={t("Copy the Log's Path")} onClick={() => navigator.clipboard.writeText(session.tick.log)} />
           </>
         )}
+        <IconButton
+          icon="folder"
+          label={t("Open the Folder of This Database's Logs")}
+          onClick={() => api.traceFolder(panel.registration).catch((e) => useStore.getState().setNotice(errorText(e)))}
+        />
       </div>
       {(error || session?.tick.error) && (
         <p className="shrink-0 border-b border-line px-2 py-1.5 whitespace-pre-wrap text-danger select-text" role="alert">
@@ -1066,5 +1074,20 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
       </div>
       <div className="min-h-0 flex-1">{pane}</div>
     </div>
+  );
+}
+
+/** A toolbar button that is its icon alone */
+function IconButton(props: { icon: string; label: string; onClick(): unknown }) {
+  return (
+    <button
+      type="button"
+      title={props.label}
+      aria-label={props.label}
+      onClick={() => void props.onClick()}
+      className="grid size-6 shrink-0 place-items-center rounded text-fg hover:bg-hover"
+    >
+      <Icon name={props.icon} size={13} />
+    </button>
   );
 }

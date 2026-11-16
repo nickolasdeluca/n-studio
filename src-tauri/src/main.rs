@@ -125,6 +125,7 @@ fn main() {
             trace::trace_memory,
             trace::trace_sessions,
             trace::trace_open,
+            trace::trace_folder,
             files::script_read,
             files::script_write,
             history::history_add,

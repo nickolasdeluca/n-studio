@@ -912,6 +912,8 @@ export const api = {
   traceMemory: (run: number) => invoke<TraceMemory | null>("trace_memory", { run }),
   traceSessions: (id: string) => invoke<TraceRecorded[]>("trace_sessions", { id }),
   /** Opens a recorded session's log as the session `run` */
+  /** Shows the folder of a registration's logs in the file manager */
+  traceFolder: (id: string) => invoke<void>("trace_folder", { id }),
   traceOpen: (run: number, path: string) => invoke<TraceTick>("trace_open", { run, path }),
   /** The tables named and what is within `depth` references of them; the
    *  whole database's when none is named */
