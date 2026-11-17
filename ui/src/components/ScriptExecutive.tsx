@@ -5,17 +5,24 @@
 import { Compartment, EditorState, Prec, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, gutterLineClass, keymap, type DecorationSet } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ExecutiveOptions, ScriptBlock } from "../api";
+import type { ExecutiveOptions, ExecutiveStep, ScriptBlock } from "../api";
+import { ms } from "../editors";
 import {
+  checkedOf,
+  checkOnly,
   endExecutive,
   executiveEdited,
   openExecutiveFile,
+  operationLabel,
+  outlineExecutive,
   patchExecutive,
   runExecutive,
   saveExecutive,
   stopExecutive,
   texts,
+  toggleChecked,
   useExecutives,
   type Executive,
   type ExecutiveTab,
@@ -23,14 +30,25 @@ import {
 import { t } from "../i18n";
 import { Icon } from "../icons";
 import { sqlExtensions } from "../sqlView";
+import { useContextMenu } from "./ContextMenu";
 import { TextButton } from "./ObjectViewer";
 
 /** Editor states by panel, so a panel that remounts keeps its text and undo */
 const saved = new Map<string, EditorState>();
 /** What the keys call, by panel: the mounted panel's callbacks */
 const keys = new Map<string, { run(): void; save(): void }>();
+/** Outlining again after typing, by panel */
+const outlines = new Map<string, ReturnType<typeof setTimeout>>();
+const OUTLINE_AFTER_MS = 300;
+
+function outlineSoon(id: string) {
+  clearTimeout(outlines.get(id));
+  outlines.set(id, setTimeout(() => void outlineExecutive(id), OUTLINE_AFTER_MS));
+}
 
 export function forgetExecutive(id: string) {
+  clearTimeout(outlines.get(id));
+  outlines.delete(id);
   saved.delete(id);
   keys.delete(id);
 }
@@ -118,7 +136,9 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
           marksField,
           editable.of([]),
           EditorView.updateListener.of((u) => {
-            if (u.docChanged) executiveEdited(id);
+            if (!u.docChanged) return;
+            executiveEdited(id);
+            outlineSoon(id);
           }),
           ...sqlExtensions(() => useExecutives.getState().panels[id]?.registration),
         ],
@@ -133,6 +153,7 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
       },
     });
     v.focus();
+    if (v.state.doc.length > 0) outlineSoon(id);
     return () => {
       saved.set(id, v.state);
       v.destroy();
@@ -210,6 +231,11 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
         <div className="relative min-h-0" style={{ height: `${split * 100}%` }}>
           {/* The editor stays mounted on the other tabs: its text is the script */}
           <div ref={host} className={`h-full overflow-hidden ${panel.tab === "script" ? "" : "invisible"}`} />
+          {panel.tab === "statements" && (
+            <div className="absolute inset-0 bg-panel">
+              <StatementsTab panel={panel} select={select} />
+            </div>
+          )}
           {panel.tab === "options" && (
             <div className="absolute inset-0 overflow-auto bg-panel">
               <OptionsTab panel={panel} />
@@ -237,6 +263,12 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
       <TextButton icon="save" label={t("Save")} onClick={() => saveExecutive(panel.id)} />
       <span className="mx-1 h-4 w-px bg-line" />
       <TextButton icon="run" accent label={t("Run (F9)")} disabled={running || panel.active !== null} onClick={run} />
+      <TextButton
+        icon="run"
+        label={t("Run Checked")}
+        disabled={running || panel.active !== null || panel.blocks.length === 0}
+        onClick={() => runExecutive(panel.id, checkedOf(panel))}
+      />
       <TextButton icon="stop" label={t("Stop")} disabled={!running} onClick={() => stopExecutive(panel.id)} />
       <span className="flex-1" />
       {r && (
@@ -311,7 +343,6 @@ function OptionsTab({ panel }: { panel: Executive }) {
 
 function Messages({ panel, select }: { panel: Executive; select(index: number): void }) {
   const end = useRef<HTMLDivElement>(null);
-  const lineOf = new Map(panel.blocks.map((b) => [b.index, b.line]));
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
   }, [panel.messages.length]);
@@ -326,7 +357,7 @@ function Messages({ panel, select }: { panel: Executive; select(index: number): 
         </thead>
         <tbody>
           {panel.messages.map((m, i) => {
-            const line = m.index === undefined ? undefined : lineOf.get(m.index);
+            const line = m.line;
             return (
               <tr
                 key={i}
@@ -344,6 +375,169 @@ function Messages({ panel, select }: { panel: Executive; select(index: number): 
         </tbody>
       </table>
       <div ref={end} />
+    </div>
+  );
+}
+
+// ── Statements ────────────────────────────────────────────────────────────
+
+const ROW_H = 24;
+
+type RowState = "waiting" | "running" | ExecutiveStep["status"] | null;
+
+function stateOf(panel: Executive, index: number): RowState {
+  const step = panel.steps[index];
+  if (step) return step.status;
+  const run = panel.run;
+  if (!run) return null;
+  if (run.chosen[run.at] === index) return "running";
+  return run.chosen.includes(index) ? "waiting" : null;
+}
+
+const stateLabels: Record<Exclude<RowState, null>, string> = {
+  waiting: "Waiting",
+  running: "Running",
+  done: "Done",
+  applied: "Applied",
+  skipped: "Skipped",
+  failed: "Failed",
+};
+
+const stateClass: Record<Exclude<RowState, null>, string> = {
+  waiting: "text-faint",
+  running: "text-accent",
+  done: "text-ok",
+  applied: "text-ok",
+  skipped: "text-muted",
+  failed: "text-danger",
+};
+
+function rowsAffected(step: ExecutiveStep | undefined): string {
+  if (step?.status !== "done") return "";
+  const r = step.records;
+  const changed = r.inserted + r.updated + r.deleted;
+  return changed > 0 ? changed.toLocaleString() : "";
+}
+
+function StatementsTab({ panel, select }: { panel: Executive; select(index: number): void }) {
+  const scroll = useRef<HTMLDivElement>(null);
+  const showMenu = useContextMenu((m) => m.show);
+  const blocks = panel.blocks;
+  const rows = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => scroll.current,
+    estimateSize: () => ROW_H,
+    overscan: 20,
+  });
+  const checked = blocks.length - Object.keys(panel.unchecked).length;
+  const anyFailed = Object.values(panel.steps).some((s) => s.status === "failed");
+  const running = !!panel.run;
+
+  // The statement running stays in sight
+  const at = panel.run ? panel.run.chosen[panel.run.at] : undefined;
+  useEffect(() => {
+    if (at === undefined) return;
+    const row = blocks.findIndex((b) => b.index === at);
+    if (row >= 0) rows.scrollToIndex(row, { align: "auto" });
+  }, [at, blocks, rows]);
+
+  const menu = (e: React.MouseEvent, block: ScriptBlock) => {
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, [
+      { label: t("Go to Statement"), icon: "sql", onSelect: () => select(block.index) },
+      "separator",
+      { label: t("Check from Here"), disabled: running, onSelect: () => checkOnly(panel.id, (i) => i >= block.index) },
+      { label: t("Check Only This"), disabled: running, onSelect: () => checkOnly(panel.id, (i) => i === block.index) },
+    ]);
+  };
+
+  const cols = "grid grid-cols-[28px_56px_minmax(10rem,18rem)_minmax(0,1fr)_72px_72px_64px] items-center";
+  return (
+    <div className="flex h-full flex-col text-[12px]">
+      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-1.5">
+        <TextButton icon="commit" label={t("Check All")} disabled={running} onClick={() => checkOnly(panel.id, () => true)} />
+        <TextButton icon="stop" label={t("Check None")} disabled={running} onClick={() => checkOnly(panel.id, () => false)} />
+        <TextButton
+          icon="exception"
+          label={t("Check Only Failed")}
+          disabled={running || !anyFailed}
+          onClick={() => checkOnly(panel.id, (i) => panel.steps[i]?.status === "failed")}
+        />
+        <span className="flex-1" />
+        <span className="px-2 text-muted tabular-nums">
+          {t("{checked} of {total} checked", { checked: checked.toLocaleString(), total: blocks.length.toLocaleString() })}
+        </span>
+      </div>
+      <div className={`${cols} h-6 shrink-0 border-b border-line bg-panel-2 text-muted`}>
+        <span className="grid place-items-center">
+          <input
+            type="checkbox"
+            aria-label={t("Check All")}
+            className="accent-[var(--accent)]"
+            disabled={running || blocks.length === 0}
+            checked={blocks.length > 0 && checked === blocks.length}
+            ref={(el) => {
+              if (el) el.indeterminate = checked > 0 && checked < blocks.length;
+            }}
+            onChange={(e) => checkOnly(panel.id, () => e.target.checked)}
+          />
+        </span>
+        <span className="px-1.5 text-right">{t("Line")}</span>
+        <span className="px-1.5">{t("Operation")}</span>
+        <span className="px-1.5">{t("Statement")}</span>
+        <span className="px-1.5">{t("State")}</span>
+        <span className="px-1.5 text-right">{t("Time")}</span>
+        <span className="px-1.5 text-right">{t("Rows")}</span>
+      </div>
+      {blocks.length === 0 ? (
+        <div className="grid flex-1 place-items-center text-muted">{t("The script has no statements yet.")}</div>
+      ) : (
+        <div ref={scroll} className="min-h-0 flex-1 overflow-auto">
+          <div className="relative w-full" style={{ height: rows.getTotalSize() }}>
+            {rows.getVirtualItems().map((item) => {
+              const block = blocks[item.index];
+              const step = panel.steps[block.index];
+              const state = stateOf(panel, block.index);
+              return (
+                <div
+                  key={block.index}
+                  data-index={item.index}
+                  ref={rows.measureElement}
+                  className="absolute left-0 w-full border-b border-line/50"
+                  style={{ transform: `translateY(${item.start}px)` }}
+                >
+                  <div
+                    className={`${cols} h-6 cursor-pointer hover:bg-hover ${state === "running" ? "bg-accent/10" : ""}`}
+                    onClick={() => select(block.index)}
+                    onContextMenu={(e) => menu(e, block)}
+                  >
+                    <span className="grid place-items-center" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={t("Run statement {n}", { n: block.index + 1 })}
+                        className="accent-[var(--accent)]"
+                        disabled={running}
+                        checked={!panel.unchecked[block.index]}
+                        onChange={() => toggleChecked(panel.id, block.index)}
+                      />
+                    </span>
+                    <span className="px-1.5 text-right text-muted tabular-nums">{block.line}</span>
+                    <span className="truncate px-1.5">{operationLabel(block) || <span className="text-faint">{block.kind === "isql" ? t("isql command") : ""}</span>}</span>
+                    <span className="truncate px-1.5 font-mono text-[11.5px] text-muted">{block.summary}</span>
+                    <span className={`px-1.5 ${state ? stateClass[state] : ""}`}>{state ? t(stateLabels[state]) : ""}</span>
+                    <span className="px-1.5 text-right text-muted tabular-nums">{step ? ms(step.ms) : ""}</span>
+                    <span className="px-1.5 text-right tabular-nums">{rowsAffected(step)}</span>
+                  </div>
+                  {step?.status === "failed" && (
+                    <div className="py-1 pr-2 pl-[84px] whitespace-pre-wrap text-danger">{step.message}</div>
+                  )}
+                  {step?.status === "skipped" && step.note && <div className="py-1 pr-2 pl-[84px] text-muted">{step.note}</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

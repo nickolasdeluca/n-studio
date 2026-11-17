@@ -13,7 +13,9 @@ import {
   type ExecutiveProgress,
   type ExecutiveStep,
   type FileFormat,
+  type Operation,
   type ScriptBlock,
+  type SubjectKind,
 } from "./api";
 import { metadataChanged } from "./changes";
 import { baseName, openAdminPanel, panelTitle, setPanelTitle } from "./dock";
@@ -26,8 +28,9 @@ export type ExecutiveTab = "script" | "statements" | "options";
 export interface ExecutiveMessage {
   level: "info" | "error";
   text: string;
-  /** The statement it is about, by index */
+  /** The statement it is about, by index, and its line when it was run */
   index?: number;
+  line?: number;
 }
 
 export interface ExecutiveRun {
@@ -49,6 +52,8 @@ export interface Executive {
   options: ExecutiveOptions;
   /** The script's statements, as last outlined */
   blocks: ScriptBlock[];
+  /** Statements left out of Run Checked, by index; all are checked at first */
+  unchecked: Record<number, true>;
   /** What happened to each statement in the last run, by index */
   steps: Record<number, ExecutiveStep>;
   run: ExecutiveRun | null;
@@ -97,6 +102,7 @@ export function openExecutive(registration: string | null): string {
     charset: null,
     options: defaultOptions,
     blocks: [],
+    unchecked: {},
     steps: {},
     run: null,
     active: null,
@@ -160,11 +166,13 @@ function log(id: string, messages: ExecutiveMessage[]) {
 }
 
 /** The messages a run's steps call for */
-function stepMessages(steps: ExecutiveStep[]): ExecutiveMessage[] {
+function stepMessages(id: string, steps: ExecutiveStep[]): ExecutiveMessage[] {
   const out: ExecutiveMessage[] = [];
+  const blocks = get(id)?.blocks ?? [];
+  const line = (index: number) => blocks[index]?.index === index ? blocks[index].line : blocks.find((b) => b.index === index)?.line;
   for (const step of steps) {
-    if (step.status === "failed") out.push({ level: "error", text: step.message, index: step.index });
-    else if (step.status === "skipped" && step.note) out.push({ level: "info", text: step.note, index: step.index });
+    if (step.status === "failed") out.push({ level: "error", text: step.message, index: step.index, line: line(step.index) });
+    else if (step.status === "skipped" && step.note) out.push({ level: "info", text: step.note, index: step.index, line: line(step.index) });
   }
   return out;
 }
@@ -177,7 +185,7 @@ function take(id: string, run: number, steps: ExecutiveStep[], at?: number) {
     steps: { ...p.steps, ...Object.fromEntries(steps.map((s) => [s.index, s])) },
     run: p.run && { ...p.run, at: at ?? p.run.at + steps.length, failed: p.run.failed + failed },
   }));
-  log(id, stepMessages(steps));
+  log(id, stepMessages(id, steps));
 }
 
 const n = (v: number) => v.toLocaleString();
@@ -205,7 +213,14 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
       log(id, [{ level: "error", text: errorText(e) }]);
       return;
     }
-    const chosen = only ? blocks.map((b) => b.index).filter((i) => only.includes(i)) : blocks.map((b) => b.index);
+    if (only && blocks.length !== get(id)?.blocks.length) {
+      // What was checked was another text's statements
+      patchExecutive(id, { blocks, unchecked: {} });
+      log(id, [{ level: "error", text: t("The script changed since its statements were listed: check them again.") }]);
+      return;
+    }
+    const picked = new Set(only ?? []);
+    const chosen = only ? blocks.map((b) => b.index).filter((i) => picked.has(i)) : blocks.map((b) => b.index);
     if (chosen.length === 0) {
       patchExecutive(id, { blocks });
       log(id, [{ level: "info", text: t("No statement is checked.") }]);
@@ -307,6 +322,97 @@ export function closeExecutive(id: string) {
     delete panels[id];
     return { panels };
   });
+}
+
+// ── The statements ────────────────────────────────────────────────────────
+
+/** Outlines the panel's text again: after typing, debounced by the panel */
+export async function outlineExecutive(id: string): Promise<void> {
+  const panel = get(id);
+  if (!panel || panel.run) return;
+  try {
+    const blocks = await api.executiveOutline(texts.get(id)?.read() ?? "");
+    const before = get(id);
+    if (!before || before.run) return;
+    // Other statements: what was checked and what ran were about the old ones
+    const same = blocks.length === before.blocks.length;
+    patchExecutive(id, { blocks, ...(same ? {} : { unchecked: {}, steps: {} }) });
+  } catch {
+    // Outlining again is for show; the run outlines what it sends
+  }
+}
+
+/** The statements checked, by index */
+export function checkedOf(panel: Executive): number[] {
+  return panel.blocks.map((b) => b.index).filter((i) => !panel.unchecked[i]);
+}
+
+/** Checks the statements `which` says, unchecking the rest */
+export function checkOnly(id: string, which: (index: number) => boolean) {
+  patchExecutive(id, (p) => ({ unchecked: Object.fromEntries(p.blocks.filter((b) => !which(b.index)).map((b) => [b.index, true])) }));
+}
+
+export function toggleChecked(id: string, index: number) {
+  patchExecutive(id, (p) => {
+    const unchecked = { ...p.unchecked };
+    if (unchecked[index]) delete unchecked[index];
+    else unchecked[index] = true;
+    return { unchecked };
+  });
+}
+
+const verbs: Record<Operation, string> = {
+  create: "Create",
+  alter: "Alter",
+  createOrAlter: "Create or alter",
+  recreate: "Recreate",
+  drop: "Drop",
+  comment: "Comment",
+  grant: "Grant",
+  revoke: "Revoke",
+  insert: "Insert into",
+  update: "Update",
+  updateOrInsert: "Update or insert into",
+  delete: "Delete from",
+  merge: "Merge into",
+  select: "Select",
+  execute: "Execute",
+  commit: "Commit",
+  rollback: "Roll back",
+  setGenerator: "Set generator",
+  connect: "Connect",
+  other: "",
+};
+
+const kindNames: Record<SubjectKind, string> = {
+  table: "table",
+  view: "view",
+  procedure: "procedure",
+  function: "function",
+  package: "package",
+  trigger: "trigger",
+  domain: "domain",
+  generator: "generator",
+  exception: "exception",
+  index: "index",
+  role: "role",
+  user: "user",
+  udf: "UDF",
+  database: "database",
+  block: "block",
+};
+
+/** What a statement does, in a few words: "Alter procedure P",
+ *  "Comment table T.C"; empty when it is not known */
+export function operationLabel(block: ScriptBlock): string {
+  const { operation, kind, name, member } = block.subject;
+  if (operation === "other") return "";
+  const verb = t(verbs[operation]);
+  // DML names its table without saying "table"
+  const dml = ["insert", "update", "updateOrInsert", "delete", "merge", "setGenerator"].includes(operation);
+  const what = kind && !dml && !(operation === "execute" && kind === "procedure") ? t(kindNames[kind]) : "";
+  const object = name ? (member && kind !== "index" && kind !== "trigger" ? `${name}.${member}` : name) : "";
+  return [verb, what, object].filter(Boolean).join(" ");
 }
 
 // ── Files ─────────────────────────────────────────────────────────────────
