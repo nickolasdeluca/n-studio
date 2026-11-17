@@ -61,6 +61,8 @@ export interface Executive {
   active: number | null;
   messages: ExecutiveMessage[];
   tab: ExecutiveTab;
+  /** The explorer of what the script touches is shown */
+  explorer: boolean;
   /** The file the text is from, and how it is written */
   file: { path: string; format: FileFormat } | null;
   changed: boolean;
@@ -108,6 +110,7 @@ export function openExecutive(registration: string | null): string {
     active: null,
     messages: [],
     tab: "script",
+    explorer: true,
     file: null,
     changed: false,
   };

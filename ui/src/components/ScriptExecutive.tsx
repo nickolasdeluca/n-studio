@@ -6,8 +6,8 @@ import { Compartment, EditorState, Prec, RangeSet, StateEffect, StateField } fro
 import { Decoration, EditorView, GutterMarker, gutterLineClass, keymap, type DecorationSet } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { ExecutiveOptions, ExecutiveStep, ScriptBlock } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ExecutiveOptions, ExecutiveStep, Operation, ScriptBlock, SubjectKind } from "../api";
 import { ms } from "../editors";
 import {
   checkedOf,
@@ -28,7 +28,8 @@ import {
   type ExecutiveTab,
 } from "../executive";
 import { t } from "../i18n";
-import { Icon } from "../icons";
+import { Icon, kindColor } from "../icons";
+import { scriptTree, type TreeItem } from "../scriptTree";
 import { sqlExtensions } from "../sqlView";
 import { useContextMenu } from "./ContextMenu";
 import { TextButton } from "./ObjectViewer";
@@ -216,39 +217,48 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
     <div className="flex h-full flex-col bg-panel">
       <Toolbar panel={panel} run={run} />
       {panel.active !== null && <ActiveBar id={id} />}
-      <div className="flex h-7 shrink-0 items-end gap-0.5 border-b border-line bg-panel-2 px-2">
-        {tabs.map(([tab, label]) => (
-          <button
-            key={tab}
-            className={`h-6 rounded-t px-3 ${panel.tab === tab ? "border border-b-0 border-line bg-panel text-fg" : "text-muted hover:text-fg"}`}
-            onClick={() => patchExecutive(id, { tab })}
-          >
-            {t(label)}
-          </button>
-        ))}
-      </div>
-      <div ref={body} className="flex min-h-0 flex-1 flex-col">
-        <div className="relative min-h-0" style={{ height: `${split * 100}%` }}>
-          {/* The editor stays mounted on the other tabs: its text is the script */}
-          <div ref={host} className={`h-full overflow-hidden ${panel.tab === "script" ? "" : "invisible"}`} />
-          {panel.tab === "statements" && (
-            <div className="absolute inset-0 bg-panel">
-              <StatementsTab panel={panel} select={select} />
+      <div className="flex min-h-0 flex-1">
+        {panel.explorer && (
+          <div className="w-60 shrink-0 overflow-auto border-r border-line bg-panel-2/40">
+            <Explorer panel={panel} select={select} />
+          </div>
+        )}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex h-7 shrink-0 items-end gap-0.5 border-b border-line bg-panel-2 px-2">
+            {tabs.map(([tab, label]) => (
+              <button
+                key={tab}
+                className={`h-6 rounded-t px-3 ${panel.tab === tab ? "border border-b-0 border-line bg-panel text-fg" : "text-muted hover:text-fg"}`}
+                onClick={() => patchExecutive(id, { tab })}
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
+          <div ref={body} className="flex min-h-0 flex-1 flex-col">
+            <div className="relative min-h-0" style={{ height: `${split * 100}%` }}>
+              {/* The editor stays mounted on the other tabs: its text is the script */}
+              <div ref={host} className={`h-full overflow-hidden ${panel.tab === "script" ? "" : "invisible"}`} />
+              {panel.tab === "statements" && (
+                <div className="absolute inset-0 bg-panel">
+                  <StatementsTab panel={panel} select={select} />
+                </div>
+              )}
+              {panel.tab === "options" && (
+                <div className="absolute inset-0 overflow-auto bg-panel">
+                  <OptionsTab panel={panel} />
+                </div>
+              )}
             </div>
-          )}
-          {panel.tab === "options" && (
-            <div className="absolute inset-0 overflow-auto bg-panel">
-              <OptionsTab panel={panel} />
-            </div>
-          )}
+            <div
+              className="h-[5px] shrink-0 cursor-row-resize border-y border-line bg-panel-2 hover:bg-accent/40"
+              onMouseDown={startSplit}
+              role="separator"
+              aria-orientation="horizontal"
+            />
+            <Messages panel={panel} select={select} />
+          </div>
         </div>
-        <div
-          className="h-[5px] shrink-0 cursor-row-resize border-y border-line bg-panel-2 hover:bg-accent/40"
-          onMouseDown={startSplit}
-          role="separator"
-          aria-orientation="horizontal"
-        />
-        <Messages panel={panel} select={select} />
       </div>
     </div>
   );
@@ -270,6 +280,13 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
         onClick={() => runExecutive(panel.id, checkedOf(panel))}
       />
       <TextButton icon="stop" label={t("Stop")} disabled={!running} onClick={() => stopExecutive(panel.id)} />
+      <span className="mx-1 h-4 w-px bg-line" />
+      <TextButton
+        icon="panel"
+        accent={panel.explorer}
+        label={t("Explorer")}
+        onClick={() => patchExecutive(panel.id, (p) => ({ explorer: !p.explorer }))}
+      />
       <span className="flex-1" />
       {r && (
         <span className="px-2 text-muted tabular-nums">
@@ -538,6 +555,116 @@ function StatementsTab({ panel, select }: { panel: Executive; select(index: numb
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Explorer ──────────────────────────────────────────────────────────────
+
+const groupLabels: Record<SubjectKind, string> = {
+  table: "Tables",
+  view: "Views",
+  procedure: "Procedures",
+  function: "Functions",
+  package: "Packages",
+  trigger: "Triggers",
+  domain: "Domains",
+  generator: "Generators",
+  exception: "Exceptions",
+  index: "Indices",
+  role: "Roles",
+  user: "Users",
+  udf: "UDFs",
+  block: "Firebird blocks",
+  database: "Database",
+};
+
+const groupIcons: Partial<Record<SubjectKind, string>> = { user: "role", block: "sql" };
+
+const shortVerbs: Record<Operation, string> = {
+  create: "Create",
+  alter: "Alter",
+  createOrAlter: "Create or alter",
+  recreate: "Recreate",
+  drop: "Drop",
+  comment: "Comment",
+  grant: "Grant",
+  revoke: "Revoke",
+  insert: "Insert",
+  update: "Update",
+  updateOrInsert: "Update or insert",
+  delete: "Delete",
+  merge: "Merge",
+  select: "Select",
+  execute: "Execute",
+  commit: "Commit",
+  rollback: "Roll back",
+  setGenerator: "Set",
+  connect: "Connect",
+  other: "Other",
+};
+
+function itemLabel(item: TreeItem) {
+  const verb = t(shortVerbs[item.operation]);
+  if (item.index_on) return `${verb} ${t("index")} ${item.detail}`;
+  return item.detail ? `${verb} ${item.detail}` : verb;
+}
+
+function Explorer({ panel, select }: { panel: Executive; select(index: number): void }) {
+  const tree = useMemo(() => scriptTree(panel.blocks), [panel.blocks]);
+  const lineOf = useMemo(() => new Map(panel.blocks.map((b) => [b.index, b.line])), [panel.blocks]);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const toggle = (key: string) => setOpen((o) => ({ ...o, [key]: !o[key] }));
+  const failed = (index: number) => panel.steps[index]?.status === "failed";
+
+  const row = "flex h-[22px] w-full items-center gap-1 pr-2 text-left hover:bg-hover";
+  const chevron = (isOpen: boolean) => (
+    <Icon name="chevron" size={11} className={`shrink-0 text-muted transition-transform ${isOpen ? "rotate-90" : ""}`} />
+  );
+  const leaf = (item: TreeItem, depth: number, extra = "") => (
+    <button
+      key={`${item.index}-${item.detail}`}
+      className={`${row} ${failed(item.index) ? "text-danger" : ""}`}
+      style={{ paddingLeft: depth * 14 + 8 }}
+      title={t("Line {line}", { line: lineOf.get(item.index) ?? "" })}
+      onClick={() => select(item.index)}
+    >
+      <span className="truncate">{itemLabel(item)}{extra}</span>
+    </button>
+  );
+
+  return (
+    <div className="py-1 text-[12px] select-none">
+      {tree.map((group) => {
+        const count = group.objects.length + group.loose.length;
+        const isOpen = !!open[group.kind] && count > 0;
+        return (
+          <div key={group.kind}>
+            <button className={`${row} pl-1 ${count === 0 ? "text-faint" : ""}`} onClick={() => toggle(group.kind)} disabled={count === 0}>
+              {chevron(isOpen)}
+              <Icon name={groupIcons[group.kind] ?? group.kind} size={13} className={`shrink-0 ${count > 0 ? (kindColor[group.kind] ?? "") : ""}`} />
+              <span className="truncate">{t(groupLabels[group.kind])}</span>
+              {count > 0 && <span className="text-muted">({count.toLocaleString()})</span>}
+            </button>
+            {isOpen &&
+              group.objects.map((object) => {
+                const key = `${group.kind}:${object.name}`;
+                const objectOpen = !!open[key];
+                return (
+                  <div key={key}>
+                    <button className={row} style={{ paddingLeft: 18 }} onClick={() => toggle(key)}>
+                      {chevron(objectOpen)}
+                      <span className={`truncate ${object.items.some((i) => failed(i.index)) ? "text-danger" : ""}`}>{object.name}</span>
+                      <span className="text-muted">({object.items.length.toLocaleString()})</span>
+                    </button>
+                    {objectOpen && object.items.map((item) => leaf(item, 3))}
+                  </div>
+                );
+              })}
+            {isOpen && group.loose.map((item) => leaf(item, 2, ` · ${t("line {line}", { line: lineOf.get(item.index) ?? "" })}`))}
+          </div>
+        );
+      })}
     </div>
   );
 }
