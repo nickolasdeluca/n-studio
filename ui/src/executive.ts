@@ -183,8 +183,10 @@ function stepMessages(id: string, steps: ExecutiveStep[]): ExecutiveMessage[] {
   const blocks = get(id)?.blocks ?? [];
   const line = (index: number) => blocks[index]?.index === index ? blocks[index].line : blocks.find((b) => b.index === index)?.line;
   for (const step of steps) {
-    if (step.status === "failed") out.push({ level: "error", text: step.message, index: step.index, line: line(step.index) });
-    else if (step.status === "skipped" && step.note) out.push({ level: "info", text: step.note, index: step.index, line: line(step.index) });
+    // In a file an INPUT reads: said with its file and line, placed on the INPUT
+    const where = step.within ? `${baseName(step.within.file)}, ${t("line {n}", { n: step.within.line })}: ` : "";
+    if (step.status === "failed") out.push({ level: "error", text: where + step.message, index: step.index, line: line(step.index) });
+    else if (step.status === "skipped" && step.note) out.push({ level: "info", text: where + step.note, index: step.index, line: line(step.index) });
   }
   return out;
 }
@@ -192,10 +194,12 @@ function stepMessages(id: string, steps: ExecutiveStep[]): ExecutiveMessage[] {
 function take(id: string, run: number, steps: ExecutiveStep[], at?: number) {
   const panel = get(id);
   if (!panel?.run || panel.run.id !== run) return;
-  const failed = steps.filter((s) => s.status === "failed").length;
+  // The script's own statements: those of an INPUT's file are told, not counted
+  const own = steps.filter((s) => !s.within);
+  const failed = own.filter((s) => s.status === "failed").length;
   patchExecutive(id, (p) => ({
-    steps: { ...p.steps, ...Object.fromEntries(steps.map((s) => [s.index, s])) },
-    run: p.run && { ...p.run, at: at ?? p.run.at + steps.length, failed: p.run.failed + failed },
+    steps: { ...p.steps, ...Object.fromEntries(own.map((s) => [s.index, s])) },
+    run: p.run && { ...p.run, at: at ?? p.run.at + own.length, failed: p.run.failed + failed },
   }));
   log(id, stepMessages(id, steps));
 }
@@ -245,7 +249,7 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
     progress.set(run, (e) => take(id, run, e.steps, e.at));
     try {
       const options = get(id)?.options ?? defaultOptions;
-      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "text", text }, only, options);
+      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "text", text, path: panel.file?.path ?? null }, only, options);
       take(id, run, end.steps);
       finish(id, run, end);
     } catch (e) {
@@ -396,7 +400,8 @@ function finish(id: string, run: number, end: ExecutiveEnd) {
   if (passed > 0) {
     messages.push({ level: "info", text: t("{n} isql command(s) passed over: they are isql's, not the server's.", { n: n(passed) }) });
   }
-  messages.push({ level: end.failed > 0 ? "error" : "info", text: `${how}: ${counts}` });
+  const included = end.included > 0 ? t(" (and {n} from the files INPUT read)", { n: n(end.included) }) : "";
+  messages.push({ level: end.failed > 0 ? "error" : "info", text: `${how}: ${counts}${included}` });
   if (end.endError) messages.push({ level: "error", text: t("The commit failed and was rolled back: {error}", { error: end.endError }) });
   else if (end.ended === "commit") messages.push({ level: "info", text: t("Committed.") });
   else if (end.ended === "rollback") messages.push({ level: "info", text: t("Rolled back.") });

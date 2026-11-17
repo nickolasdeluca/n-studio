@@ -469,11 +469,23 @@ fn execute(
     only: Option<&[usize]>,
     options: RunOptions,
 ) -> (Vec<RunStep>, RunSummary) {
+    execute_in(target, script, None, only, options)
+}
+
+/// As [`execute`], for a script whose `INPUT`s are found in `folder`
+fn execute_in(
+    target: &std::sync::Mutex<Target>,
+    script: &str,
+    folder: Option<&std::path::Path>,
+    only: Option<&[usize]>,
+    options: RunOptions,
+) -> (Vec<RunStep>, RunSummary) {
     let never = std::sync::atomic::AtomicBool::new(false);
     let mut steps = Vec::new();
     let mut connector = FromEnv(ConnectParams::from_env().unwrap());
     let summary =
-        run_executive(target, script, only, options, &mut connector, &never, |s, _| steps.push(s.clone())).unwrap();
+        run_executive(target, script, folder, only, options, &mut connector, &never, |s, _| steps.push(s.clone()))
+            .unwrap();
     (steps, summary)
 }
 
@@ -509,6 +521,38 @@ COMMIT;
     let (steps, _) = execute(&target, "DROP TABLE EXEC_A;", None, executive_options());
     assert!(matches!(steps[0].outcome, RunOutcome::Done { .. }), "{steps:?}");
     assert_eq!(tables(&conn, "'EXEC_A'"), 0);
+}
+
+/// Writes, so only against the fixture database; what it creates it drops
+#[test]
+fn fixture_an_executive_runs_the_files_its_inputs_name() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(conn) = connect() else { return };
+    let _catalog = catalog();
+    let folder = std::env::temp_dir().join(format!("n-studio-input-{}", std::process::id()));
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    std::fs::write(folder.join("a.sql"), "CREATE TABLE EXEC_IN (ID INTEGER);\nINPUT 'sub/b.sql';\n").unwrap();
+    std::fs::write(
+        folder.join("sub/b.sql"),
+        "INSERT INTO EXEC_IN VALUES (1);\n\nINSERT INTO EXEC_IN VALUES (1, 2);\nINSERT INTO EXEC_IN VALUES (3);\n",
+    )
+    .unwrap();
+    let target = std::sync::Mutex::new(Target::new(Some(connect().unwrap())));
+    let (steps, summary) = execute_in(&target, "INPUT 'a.sql';\nCOMMIT;", Some(&folder), None, executive_options());
+    std::fs::remove_dir_all(&folder).unwrap();
+    // The insert of two values into one column, at its line in b.sql
+    let within: Vec<(usize, usize)> =
+        steps.iter().filter_map(|s| s.within.as_ref().map(|w| (s.index, w.line))).collect();
+    assert_eq!(within, [(0, 3)], "{steps:?}");
+    assert!(steps.iter().any(|s| s.within.as_ref().is_some_and(|w| w.file.ends_with("b.sql"))), "{steps:?}");
+    assert!(matches!(&steps[within.len()].outcome, RunOutcome::Failed { .. }), "{steps:?}");
+    assert_eq!((summary.statements, summary.failed, summary.included, summary.ddl), (2, 1, 5, 1), "{steps:?}");
+    // What ran around the failure is there, and committed
+    assert_eq!(conn.query("select count(*) from EXEC_IN", vec![]).unwrap().rows[0][0].as_i64(), Some(2));
+    let (steps, _) = execute(&target, "DROP TABLE EXEC_IN;", None, executive_options());
+    assert!(matches!(steps[0].outcome, RunOutcome::Done { .. }), "{steps:?}");
 }
 
 /// Writes nothing that lasts: the DDL is held back, then rolled back

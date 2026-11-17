@@ -107,6 +107,9 @@ without loading it (Shift+F9, up to 256 MB). Each statement shows its state,
 time and rows as it runs; failures are listed by line, and an explorer shows
 what the script touches, by object kind, before anything runs.
 
+`INPUT 'file'` runs another script where it stands, found beside the one
+that names it; a failure in it is told with its file and line.
+
 A script can name its own database with `CONNECT` and `SET NAMES`; Add
 CONNECT writes those lines for a registered database. The password is not
 written unless you ask: the run takes it from the keychain, or asks for it.

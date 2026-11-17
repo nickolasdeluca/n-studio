@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fb_core::{
-    run_executive, split_database, ConnectParams, Connection, Connector, RunOptions, RunOutcome, RunStep, RunSummary,
+    run_executive, split_database, Within, ConnectParams, Connection, Connector, RunOptions, RunOutcome, RunStep, RunSummary,
     Target, TxEnd, TxOptions,
 };
 use fb_sql::isql::Connect;
@@ -228,7 +228,13 @@ pub async fn executive_outline_file(path: String, charset: Option<String>) -> Ap
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Source {
-    Text { text: String },
+    /// The editor's text, and the file it was opened from or saved to,
+    /// whose folder relative `INPUT`s are found in
+    Text {
+        text: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
     File { path: String },
 }
 
@@ -277,11 +283,14 @@ pub struct StepOut {
     ms: f64,
     #[serde(flatten)]
     outcome: RunOutcome,
+    /// For a statement of a file an `INPUT` reads: which, and where
+    #[serde(skip_serializing_if = "Option::is_none")]
+    within: Option<Within>,
 }
 
 impl From<&RunStep> for StepOut {
     fn from(step: &RunStep) -> Self {
-        Self { index: step.index, ms: step.ms, outcome: step.outcome.clone() }
+        Self { index: step.index, ms: step.ms, outcome: step.outcome.clone(), within: step.within.clone() }
     }
 }
 
@@ -382,6 +391,12 @@ impl AppConnector {
 }
 
 impl Connector for AppConnector {
+    /// As a file run from disk is read: in the panel's character set
+    fn read(&mut self, path: &std::path::Path) -> fb_core::Result<String> {
+        let read = read_script(&path.to_string_lossy(), self.charset.as_deref());
+        read.map(|(text, _, _)| text).map_err(|e| fb_core::Error::Client { message: e.to_string() })
+    }
+
     fn connect(&mut self, to: &Connect, charset: Option<&str>) -> fb_core::Result<Connection> {
         let state = self.app.state::<AppState>();
         let registrations = state.registry.lock().unwrap().all().to_vec();
@@ -501,10 +516,11 @@ pub async fn executive_run(
     let worker = this.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> AppResult<RunEnd> {
         let state = events.state::<AppState>();
-        let text = match source {
-            Source::Text { text } => text,
-            Source::File { path } => read_script(&path, charset.as_deref())?.0,
+        let (text, path) = match source {
+            Source::Text { text, path } => (text, path),
+            Source::File { path } => (read_script(&path, charset.as_deref())?.0, Some(path)),
         };
+        let folder = path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|p| p.to_path_buf());
         let mut connector = AppConnector { app: events.clone(), id: run, run: worker.clone(), charset: charset.clone() };
         if let Some(registration) = &registration {
             let mut params = starting_params(&state, registration, &connector)?;
@@ -519,12 +535,14 @@ pub async fn executive_run(
         let summary = run_executive(
             &worker.target,
             &text,
+            folder.as_deref(),
             only.as_deref(),
             options.run_options(),
             &mut connector,
             &worker.cancel,
             |step, total| {
-                offsets.at += 1;
+                // A statement of a file an INPUT reads is within the INPUT
+                offsets.at += usize::from(step.within.is_none());
                 offsets.total = total;
                 offsets.steps.push(step.into());
                 // Often enough to watch, seldom enough not to be the work

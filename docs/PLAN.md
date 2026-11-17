@@ -434,15 +434,28 @@ else WIN1252). A byte the chosen set has no character for is an error that
 says to choose another, not a guess; the panel says what the file was read
 as, and reads it again when the set is changed.
 
+`INPUT 'file'` runs the file where it stands, all of it, read as a file
+from disk is: a relative name is found in the folder of the script (the
+editor's file, or the one run from disk) and, inside a file read so, in
+that file's. `INPUT`s nest up to 16 deep, and a file that would read
+itself is a failure, not a loop. `SET AUTODDL` and `SET NAMES` in it go on
+holding after it, as in isql. Of its statements only what fails, or is not
+run for a reason, is listed, with its file and line, on the `INPUT`'s row;
+the `INPUT` fails when any of them did, and stops the script with them
+when the options say to stop at errors. A script in no folder can only
+name files in full.
+
 What it cannot do, and says: a file is run from disk up to 256 MB, and
 only its first 200,000 statements are listed (the run goes through all;
-only those listed can be left out). A `CONNECT` cannot stop to ask what to
-do with the transaction it leaves: it commits, unless the options say to
-roll back at the end. The database cannot be changed while a transaction a
-run left is active; the panel says to end it first rather than asking.
+only those listed can be left out). The owner decided this stays: a
+script that large is run from the file, not picked through. A `CONNECT`
+cannot stop to ask what to do with the transaction it leaves: it
+commits, unless the options say to roll back at the end. The database
+cannot be changed while a transaction a run left is active; the panel says
+to end it first. The owner decided this stays too, rather than asking.
 
-Left out: IBExpert's own language (`IBEBlock`, `ibec_*`); following
-`INPUT` (reported as not followed); `CREATE DATABASE` and `DROP DATABASE`
+Left out: IBExpert's own language (`IBEBlock`, `ibec_*`); the statements of
+an `INPUT`'s file in the Statements tab, to pick from; `CREATE DATABASE` and `DROP DATABASE`
 (reported as not run); `SHELL`, `OUTPUT`, `SHOW` and the rest of isql's
 interactive commands (passed over, said once); parameters and showing a
 select's rows; comparing the script with the database before running it.

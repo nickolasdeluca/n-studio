@@ -21,7 +21,9 @@ pub use editor::{
     Performance, Records, StatementType, TablePerformance, TxEnd, TxId, TxOptions,
 };
 pub use error::{Error, Result};
-pub use executive::{run_executive, Connector, RunOptions, RunOutcome, RunStep, RunSummary, Target, NO_CONNECTION};
+pub use executive::{
+    run_executive, Connector, RunOptions, RunOutcome, RunStep, RunSummary, Target, Within, DEEPEST_INPUT, NO_CONNECTION,
+};
 pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
 pub use service::{
     run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask, ServiceUser,

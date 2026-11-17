@@ -698,7 +698,10 @@ export type RunOutcome =
   | { status: "skipped"; note: string | null }
   | { status: "failed"; sqlcode: number; message: string };
 
-export type ExecutiveStep = { index: number; ms: number } & RunOutcome;
+/** A statement once run. One of a file an INPUT reads carries the INPUT's
+ *  index, and `within` says which file and line: of those only failures and
+ *  what was not run for a reason are told, the INPUT itself following. */
+export type ExecutiveStep = { index: number; ms: number; within?: { file: string; line: number } } & RunOutcome;
 
 export interface ExecutiveProgress {
   run: number;
@@ -726,6 +729,8 @@ export interface ExecutiveEnd {
   stopped: boolean;
   /** A transaction is left for the panel to end */
   active: boolean;
+  /** Statements run from the files INPUTs read, beside `statements` */
+  included: number;
   elapsedMs: number;
   /** Since the last progress event */
   steps: ExecutiveStep[];
@@ -744,7 +749,8 @@ export interface FileOutline {
 }
 
 /** What a run runs */
-export type ExecutiveSource = { type: "text"; text: string } | { type: "file"; path: string };
+/** What a run runs; a text's path is the folder its relative INPUTs are in */
+export type ExecutiveSource = { type: "text"; text: string; path: string | null } | { type: "file"; path: string };
 
 /** The run asks for a CONNECT's password */
 export interface ExecutivePasswordAsk {
