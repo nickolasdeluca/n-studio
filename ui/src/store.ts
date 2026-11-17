@@ -42,6 +42,8 @@ export type Dialog =
   | { type: "password"; id: string; error?: string }
   /** A Script Executive's run waits for a CONNECT's password */
   | { type: "scriptPassword"; run: number; database: string; user: string; title: string }
+  /** Where a Script Executive's script is to connect, written at its top */
+  | { type: "connectStatement"; panel: string }
   | { type: "delete"; id: string }
   /** Editors whose transactions an action would end: commit or roll back? */
   | { type: "pending"; tabs: string[]; action: PendingAction }

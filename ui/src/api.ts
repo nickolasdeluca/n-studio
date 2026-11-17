@@ -1004,6 +1004,8 @@ export const api = {
     only: number[] | null,
     options: ExecutiveOptions,
   ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, source, only, options }),
+  executiveConnectLines: (registration: string, withPassword: boolean) =>
+    invoke<string>("executive_connect_lines", { registration, withPassword }),
   executiveOutlineFile: (path: string) => invoke<FileOutline>("executive_outline_file", { path }),
   executiveCancel: (run: number) => invoke<boolean>("executive_cancel", { run }),
   executivePassword: (run: number, password: string | null) => invoke<void>("executive_password", { run, password }),

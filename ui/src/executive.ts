@@ -87,7 +87,7 @@ export const defaultOptions: ExecutiveOptions = { stopOnError: true, autoDdl: tr
 const MAX_MESSAGES = 2000;
 
 /** The text of each mounted panel's editor, and how to put text in it */
-export const texts = new Map<string, { read(): string; write(text: string): void }>();
+export const texts = new Map<string, { read(): string; write(text: string): void; prepend(text: string): void }>();
 
 export function patchExecutive(id: string, p: Partial<Executive> | ((e: Executive) => Partial<Executive>)) {
   useExecutives.setState((s) => {
@@ -525,6 +525,31 @@ export function operationLabel(block: ScriptBlock): string {
   const what = kind && !dml && !(operation === "execute" && kind === "procedure") ? t(kindNames[kind]) : "";
   const object = name ? (member && kind !== "index" && kind !== "trigger" ? `${name}.${member}` : name) : "";
   return [verb, what, object].filter(Boolean).join(" ");
+}
+
+/** Writes a registration's SET NAMES and CONNECT at the top of the script.
+ *  The error, if the lines could not be made. */
+export async function addConnect(id: string, registration: string, withPassword: boolean): Promise<string | null> {
+  try {
+    const lines = await api.executiveConnectLines(registration, withPassword);
+    texts.get(id)?.prepend(lines);
+    // The script says where it connects now
+    patchExecutive(id, { registration: null, tab: "script" });
+    return null;
+  } catch (e) {
+    return errorText(e);
+  }
+}
+
+/** Whether the script names its database with a CONNECT */
+export const connectsItself = (panel: Executive) => panel.blocks.some((b) => b.subject.operation === "connect");
+
+/** The database a panel starts on */
+export function chooseDatabase(id: string, registration: string | null) {
+  const panel = get(id);
+  if (!panel || panel.run || panel.active !== null) return;
+  patchExecutive(id, { registration });
+  if (!panel.file) retitle(id);
 }
 
 // ── Files ─────────────────────────────────────────────────────────────────

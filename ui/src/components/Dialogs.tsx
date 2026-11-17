@@ -5,6 +5,7 @@ import { useEditors } from "../editors";
 import { panelTitle } from "../dock";
 import { t } from "../i18n";
 import type { ParamRequest, ParamValue } from "../params";
+import { addConnect } from "../executive";
 import { activeTabs, request, resolve, type PendingAction } from "../pending";
 import { saveEditor } from "../scripts";
 import { useStore } from "../store";
@@ -26,6 +27,8 @@ export function Dialogs() {
       return <PasswordDialog id={dialog.id} error={dialog.error} />;
     case "scriptPassword":
       return <ScriptPasswordDialog {...dialog} />;
+    case "connectStatement":
+      return <ConnectStatementDialog panel={dialog.panel} />;
     case "delete":
       return <DeleteDialog id={dialog.id} />;
     case "pending":
@@ -270,6 +273,84 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
       </ul>
       <p className="mt-2.5">{t("{what}: commit or roll back first?", { what })}</p>
       {error && <p className="mt-3 rounded border border-danger/40 px-2.5 py-1.5 whitespace-pre-wrap text-danger">{error}</p>}
+    </Modal>
+  );
+}
+
+/** Writes a registered database's SET NAMES and CONNECT at the top of a
+ *  Script Executive's script. Without its password unless asked: the run
+ *  finds it in the keychain, and a script file is no place to keep one. */
+function ConnectStatementDialog({ panel }: { panel: string }) {
+  const registrations = useStore((s) => s.registrations);
+  const [chosen, setChosen] = useState(registrations[0]?.id ?? "");
+  const [withPassword, setWithPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const close = () => useStore.getState().openDialog(null);
+  const add = async () => {
+    if (!chosen) return;
+    setBusy(true);
+    setError(null);
+    const failed = await addConnect(panel, chosen, withPassword);
+    setBusy(false);
+    if (failed) setError(failed);
+    else close();
+  };
+  return (
+    <Modal
+      title={t("Add CONNECT Statement")}
+      width="w-[30rem]"
+      onCancel={close}
+      onSubmit={() => void add()}
+      footer={
+        <>
+          <span className="flex-1" />
+          <Button onClick={close} disabled={busy}>
+            {t("Cancel")}
+          </Button>
+          <Button primary submit disabled={busy || !chosen}>
+            {t("Add")}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-2.5">
+        <p>{t("The script will start with SET NAMES and CONNECT for:")}</p>
+        {registrations.length === 0 ? (
+          <p className="text-muted">{t("No database is registered.")}</p>
+        ) : (
+          <div className="max-h-56 overflow-auto rounded border border-line">
+            {registrations.map((r) => (
+              <label key={r.id} className={`flex cursor-pointer items-center gap-2 px-2.5 py-1.5 hover:bg-hover ${chosen === r.id ? "bg-hover" : ""}`}>
+                <input type="radio" className="accent-[var(--accent)]" checked={chosen === r.id} onChange={() => setChosen(r.id)} />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate">{r.name}</span>
+                  <span className="truncate text-[11.5px] text-muted">
+                    {r.user}@{r.host}/{r.port}:{r.database}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+        <label className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-[var(--accent)]"
+            checked={withPassword}
+            onChange={(e) => setWithPassword(e.target.checked)}
+          />
+          <span>
+            {t("Write the password in the script")}
+            <span className="block text-muted">
+              {withPassword
+                ? t("The script, and any file it is saved to, will hold the password in plain text.")
+                : t("Without it, the run takes the password from the keychain, or asks.")}
+            </span>
+          </span>
+        </label>
+        {error && <p className="rounded border border-danger/40 px-2.5 py-1.5 text-danger">{error}</p>}
+      </div>
     </Modal>
   );
 }

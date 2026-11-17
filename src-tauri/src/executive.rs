@@ -398,6 +398,45 @@ impl Connector for AppConnector {
     }
 }
 
+/// A string literal of SQL
+fn quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// What Add CONNECT statement writes at the top of a script for a
+/// registration: its character set, then where to connect and as whom.
+/// No `SET CLIENTLIB`: there is no client library to name. The password
+/// only when `password` is given.
+fn connect_lines(settings: &crate::registry::FirebirdSettings, password: Option<&str>) -> String {
+    let database = format!("{}/{}:{}", settings.host.trim(), settings.port, settings.database.trim());
+    let mut connect = format!("CONNECT {} USER {}", quoted(&database), quoted(settings.user.trim()));
+    if let Some(password) = password {
+        connect.push_str(&format!(" PASSWORD {}", quoted(password)));
+    }
+    if !settings.role.trim().is_empty() {
+        connect.push_str(&format!(" ROLE {}", quoted(settings.role.trim())));
+    }
+    format!("SET NAMES {};\n\n{connect};\n\n", settings.charset)
+}
+
+/// The lines Add CONNECT statement writes for a registration, with its
+/// password only when `with_password` asks for it: then from its session
+/// when connected, else from the keychain
+#[tauri::command]
+pub fn executive_connect_lines(state: State<'_, AppState>, registration: String, with_password: bool) -> AppResult<String> {
+    let r = state.registry.lock().unwrap().get(&registration)?.clone();
+    let Engine::Firebird(settings) = &r.engine;
+    let password = if with_password {
+        let known = state.params(&r.id).ok().map(|p| p.password).or(if r.save_password { secrets::get(&r.id)? } else { None });
+        Some(known.ok_or_else(|| AppError::Invalid {
+            message: format!("{} has no saved password: connect to it once, or save its password, to write it.", r.name),
+        })?)
+    } else {
+        None
+    };
+    Ok(connect_lines(settings, password.as_deref()))
+}
+
 /// Where a run starts: the registration's parameters, the password found as
 /// a `CONNECT` would find it
 fn starting_params(state: &AppState, registration: &str, connector: &AppConnector) -> AppResult<ConnectParams> {
@@ -638,6 +677,27 @@ mod tests {
             password: password.map(Into::into),
             role: None,
         }
+    }
+
+    #[test]
+    fn connect_lines_name_the_database_and_the_password_only_when_asked() {
+        let mut r = registration("a", "srv", 3050, "C:\\data\\x.fdb", true);
+        let Engine::Firebird(settings) = &mut r.engine;
+        settings.charset = "WIN1252".into();
+        assert_eq!(
+            connect_lines(settings, None),
+            "SET NAMES WIN1252;\n\nCONNECT 'srv/3050:C:\\data\\x.fdb' USER 'SYSDBA';\n\n"
+        );
+        settings.role = "R_ADMIN".into();
+        assert_eq!(
+            connect_lines(settings, Some("it's")),
+            "SET NAMES WIN1252;\n\nCONNECT 'srv/3050:C:\\data\\x.fdb' USER 'SYSDBA' PASSWORD 'it''s' ROLE 'R_ADMIN';\n\n"
+        );
+        // What it writes, a script's CONNECT reads back
+        let lines = connect_lines(settings, Some("it's"));
+        let connect = lines.lines().find(|l| l.starts_with("CONNECT")).unwrap().trim_end_matches(';');
+        let fb_sql::isql::Command::Connect(c) = fb_sql::isql::command(connect) else { panic!() };
+        assert_eq!((c.database.as_str(), c.password.as_deref(), c.role.as_deref()), ("srv/3050:C:\\data\\x.fdb", Some("it's"), Some("R_ADMIN")));
     }
 
     #[test]

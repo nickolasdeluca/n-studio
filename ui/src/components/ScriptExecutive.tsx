@@ -12,6 +12,8 @@ import { ms } from "../editors";
 import {
   checkedOf,
   checkOnly,
+  chooseDatabase,
+  connectsItself,
   endExecutive,
   executiveEdited,
   openExecutiveFile,
@@ -34,6 +36,7 @@ import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { scriptTree, type TreeItem } from "../scriptTree";
 import { sqlExtensions } from "../sqlView";
+import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import { TextButton } from "./ObjectViewer";
 
@@ -153,6 +156,12 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
       write: (text) => {
         const current = view.current;
         if (current) current.dispatch({ changes: { from: 0, to: current.state.doc.length, insert: text }, selection: { anchor: 0 } });
+      },
+      prepend: (text) => {
+        const current = view.current;
+        if (!current) return;
+        current.dispatch({ changes: { from: 0, insert: text }, selection: { anchor: text.length }, scrollIntoView: true });
+        current.focus();
       },
     });
     v.focus();
@@ -287,15 +296,42 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
   );
 }
 
+const selectClass = "h-6 max-w-[14rem] rounded border border-line bg-panel px-1 text-fg disabled:text-faint";
+
 function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
   const running = !!panel.run;
   const r = panel.run;
+  const registrations = useStore((s) => s.registrations);
+  const charsets = useStore((s) => s.charsets);
+  const locked = running || panel.active !== null;
   return (
-    <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-1.5">
+    <div className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-line px-1.5 [&>button]:shrink-0 [&>button]:whitespace-nowrap">
+      <select
+        className={selectClass}
+        aria-label={t("Database")}
+        title={panel.active !== null ? t("Commit or roll back first.") : t("The database the script runs on")}
+        disabled={locked}
+        value={panel.registration ?? ""}
+        onChange={(e) => chooseDatabase(panel.id, e.target.value || null)}
+      >
+        <option value="">{connectsItself(panel) ? t("(from the script)") : t("(no database)")}</option>
+        {registrations.map((reg) => (
+          <option key={reg.id} value={reg.id}>
+            {reg.name}
+          </option>
+        ))}
+      </select>
+      <TextButton
+        icon="plug"
+        label={t("Add CONNECT…")}
+        disabled={running || !!panel.disk}
+        onClick={() => useStore.getState().openDialog({ type: "connectStatement", panel: panel.id })}
+      />
+      <span className="mx-1 h-4 w-px bg-line" />
       <TextButton icon="folder" label={t("Open…")} disabled={running} onClick={() => openExecutiveFile(panel.id)} />
       <TextButton icon="save" label={t("Save")} onClick={() => saveExecutive(panel.id)} />
       <span className="mx-1 h-4 w-px bg-line" />
-      <TextButton icon="run" accent label={t("Run (F9)")} disabled={running || panel.active !== null} onClick={run} />
+      <TextButton icon="run" accent label={t("Run")} disabled={running || panel.active !== null} onClick={run} />
       <TextButton
         icon="run"
         label={t("Run Checked")}
@@ -304,7 +340,7 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
       />
       <TextButton
         icon="open"
-        label={t("Run from File… (Shift+F9)")}
+        label={t("Run from File…")}
         disabled={running || panel.active !== null}
         onClick={() => runFromFile(panel.id)}
       />
@@ -317,6 +353,23 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
         onClick={() => patchExecutive(panel.id, (p) => ({ explorer: !p.explorer }))}
       />
       <span className="flex-1" />
+      <label className="flex shrink-0 items-center gap-1 px-1 text-muted">
+        {t("Charset")}
+        <select
+          className={selectClass}
+          disabled={locked}
+          title={t("The character set the script's text is sent in")}
+          value={panel.charset ?? ""}
+          onChange={(e) => patchExecutive(panel.id, { charset: e.target.value || null })}
+        >
+          <option value="">{t("(the database's)")}</option>
+          {charsets.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
       {r && (
         <span className="px-2 text-muted tabular-nums">
           {r.at.toLocaleString()} / {r.total.toLocaleString()}

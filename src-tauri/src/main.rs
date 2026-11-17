@@ -133,6 +133,7 @@ fn main() {
             executive::executive_cancel,
             executive::executive_password,
             executive::executive_end,
+            executive::executive_connect_lines,
             admin::admin_view,
             admin::admin_form,
             admin::admin_script,
