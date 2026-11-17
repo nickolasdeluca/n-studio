@@ -422,7 +422,7 @@ part, from the editor or straight from a file.
   Opened with Ctrl+F12, as in IBExpert, from the toolbar, or from a
   registration's menu.
 
-Decided by default, for the owner to confirm: Add CONNECT writes no
+Decided, and confirmed by the owner: Add CONNECT writes no
 password unless asked (IBExpert writes it in plain text); a transaction
 still active at the end is asked about (always committing is what
 unattended runs would want, and is an option); Run Checked applies only
