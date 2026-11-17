@@ -60,18 +60,18 @@ pub struct ScriptEnd {
 
 /// Byte offsets into a text as UTF-16 offsets, for offsets that only grow:
 /// each is counted from the one before, not from the start
-struct Utf16<'a> {
+pub(crate) struct Utf16<'a> {
     text: &'a str,
     byte: usize,
     units: usize,
 }
 
 impl<'a> Utf16<'a> {
-    fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
         Self { text, byte: 0, units: 0 }
     }
 
-    fn at(&mut self, byte: usize) -> usize {
+    pub(crate) fn at(&mut self, byte: usize) -> usize {
         let byte = byte.min(self.text.len());
         if byte < self.byte {
             (self.byte, self.units) = (0, 0);

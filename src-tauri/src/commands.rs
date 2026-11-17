@@ -17,6 +17,7 @@ use crate::admin::Services;
 use crate::editor::Results;
 use crate::error::{AppError, AppResult};
 use crate::registry::{Engine, Registration, Registry};
+use crate::executive::Executives;
 use crate::script::Scripts;
 use crate::history::History;
 use crate::secrets;
@@ -32,6 +33,7 @@ pub struct AppState {
     sessions: Mutex<HashMap<String, Arc<Connection>>>,
     pub(crate) results: Results,
     pub(crate) scripts: Scripts,
+    pub(crate) executives: Executives,
     pub(crate) services: Services,
     pub(crate) comparisons: Comparisons,
     pub(crate) debuggers: Debuggers,
@@ -58,6 +60,7 @@ impl AppState {
             sessions: Mutex::default(),
             results: Results::default(),
             scripts: Scripts::default(),
+            executives: Executives::default(),
             services: Services::default(),
             comparisons: Comparisons::default(),
             debuggers: Debuggers::default(),

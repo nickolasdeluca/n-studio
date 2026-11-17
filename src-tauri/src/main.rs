@@ -7,6 +7,7 @@ mod commands;
 mod debugger;
 mod editor;
 mod error;
+mod executive;
 mod export;
 mod files;
 mod formatter;
@@ -126,6 +127,11 @@ fn main() {
             editor::statement_parameters,
             script::script_run,
             script::script_cancel,
+            executive::executive_outline,
+            executive::executive_run,
+            executive::executive_cancel,
+            executive::executive_password,
+            executive::executive_end,
             admin::admin_view,
             admin::admin_form,
             admin::admin_script,
