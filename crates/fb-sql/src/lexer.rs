@@ -46,10 +46,32 @@ pub struct Token {
 }
 
 pub fn tokenize(text: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
+    Tokens::new(text).collect()
+}
+
+/// The tokens of a text one at a time, for texts too big to hold all of
+/// them at once
+pub struct Tokens<'a> {
+    text: &'a str,
+    at: usize,
+}
+
+impl<'a> Tokens<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self { text, at: 0 }
+    }
+}
+
+impl Iterator for Tokens<'_> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Token> {
+        let text = self.text;
+        let bytes = text.as_bytes();
+        let mut i = self.at;
+        if i >= bytes.len() {
+            return None;
+        }
         let start = i;
         let rest = &text[i..];
         let c = rest.chars().next().expect("i is on a char boundary");
@@ -107,9 +129,9 @@ pub fn tokenize(text: &str) -> Vec<Token> {
             i += c.len_utf8();
             TokenKind::Punct
         };
-        tokens.push(Token { kind, range: start..i, unterminated });
+        self.at = i;
+        Some(Token { kind, range: start..i, unterminated })
     }
-    tokens
 }
 
 /// The length of `'…'` or `"…"` at the start of `s`, where a doubled quote

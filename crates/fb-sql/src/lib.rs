@@ -11,9 +11,10 @@ pub mod lexer;
 pub mod psql;
 mod subject;
 
+use std::collections::VecDeque;
 use std::ops::Range;
 
-use lexer::{tokenize, Token, TokenKind};
+use lexer::{tokenize, Token, TokenKind, Tokens};
 use serde::Serialize;
 pub use subject::{classify, ObjectKind, Operation, Subject};
 
@@ -43,42 +44,100 @@ pub enum StatementKind {
 
 /// Splits a script into statements, `;`-terminated until a `SET TERM`.
 pub fn split(text: &str) -> Vec<Statement> {
-    let tokens = tokenize(text);
-    // Byte by byte, whether it is code: only code can hold a terminator
-    let mut code = vec![false; text.len()];
-    for t in &tokens {
-        if t.kind.is_code() {
-            code[t.range.clone()].fill(true);
+    Splitter::new(text).collect()
+}
+
+/// A script's statements one at a time, as [`split`] gives them, holding
+/// only the tokens of the statement being read: a script of hundreds of
+/// megabytes costs no more than its text.
+pub struct Splitter<'a> {
+    text: &'a str,
+    tokens: Tokens<'a>,
+    terminator: String,
+    /// Where the statement being read starts
+    start: usize,
+    /// Its tokens so far, in text order
+    pending: Vec<Token>,
+    /// The run of code the last code token is in: only code can hold a
+    /// terminator. Scanned for one from `scan` on, as far as it goes.
+    run_end: usize,
+    scan: usize,
+    found: VecDeque<Statement>,
+    done: bool,
+}
+
+impl<'a> Splitter<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            tokens: Tokens::new(text),
+            terminator: ";".into(),
+            start: 0,
+            pending: Vec::new(),
+            run_end: usize::MAX,
+            scan: 0,
+            found: VecDeque::new(),
+            done: false,
         }
     }
 
-    let mut statements = Vec::new();
-    let mut terminator = ";".to_string();
-    let mut start = 0;
-    let mut at = 0;
-    while at < text.len() {
-        if !text.is_char_boundary(at) || !code[at] || !text[at..].starts_with(&terminator) {
-            at += 1;
-            continue;
-        }
-        let end = at + terminator.len();
-        if !code[at..end].iter().all(|&c| c) {
-            at += 1;
-            continue;
-        }
-        if let Some(statement) = statement(text, &tokens, start..at, end) {
-            if let StatementKind::SetTerm { terminator: next } = &statement.kind {
-                terminator = next.clone();
+    /// Looks for the terminator in the run of code, as far as it is known
+    fn scan_run(&mut self) {
+        let text = self.text;
+        while self.scan + self.terminator.len() <= self.run_end {
+            let at = self.scan;
+            if !text.is_char_boundary(at) || !text[at..].starts_with(self.terminator.as_str()) {
+                self.scan += 1;
+                continue;
             }
-            statements.push(statement);
+            let end = at + self.terminator.len();
+            if let Some(statement) = statement(text, &self.pending, self.start..at, end) {
+                if let StatementKind::SetTerm { terminator } = &statement.kind {
+                    self.terminator = terminator.clone();
+                }
+                self.found.push_back(statement);
+            }
+            self.start = end;
+            let start = end;
+            self.pending.retain(|t| t.range.start >= start);
+            self.scan = end;
         }
-        start = end;
-        at = end;
     }
-    if let Some(last) = statement(text, &tokens, start..text.len(), text.len()) {
-        statements.push(last);
+}
+
+impl Iterator for Splitter<'_> {
+    type Item = Statement;
+
+    fn next(&mut self) -> Option<Statement> {
+        loop {
+            if let Some(statement) = self.found.pop_front() {
+                return Some(statement);
+            }
+            if self.done {
+                return None;
+            }
+            match self.tokens.next() {
+                Some(token) if token.kind.is_code() => {
+                    // A new run of code when something that is not code
+                    // came between
+                    if token.range.start != self.run_end {
+                        self.scan = token.range.start;
+                    }
+                    self.run_end = token.range.end;
+                    self.pending.push(token);
+                    self.scan_run();
+                }
+                Some(token) => self.pending.push(token),
+                None => {
+                    self.done = true;
+                    let len = self.text.len();
+                    if let Some(last) = statement(self.text, &self.pending, self.start..len, len) {
+                        return Some(last);
+                    }
+                }
+            }
+        }
     }
-    statements
 }
 
 /// The statement the cursor is in or, between statements, the one before

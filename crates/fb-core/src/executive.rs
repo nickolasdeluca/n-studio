@@ -135,14 +135,17 @@ pub fn run_executive(
 ) -> Result<RunSummary> {
     let started = Instant::now();
     let only: Option<HashSet<usize>> = only.map(|o| o.iter().copied().collect());
-    let statements: Vec<(usize, fb_sql::Statement)> = fb_sql::split(text)
-        .into_iter()
-        .filter(|s| !matches!(s.kind, StatementKind::SetTerm { .. }))
-        .enumerate()
-        .filter(|(i, _)| only.as_ref().is_none_or(|o| o.contains(i)))
-        .collect();
+    // Read as they run rather than all at once: a file run from disk can be
+    // hundreds of megabytes. Counted first, for the caller to say how far.
+    let statements = || {
+        fb_sql::Splitter::new(text)
+            .filter(|s| !matches!(s.kind, StatementKind::SetTerm { .. }))
+            .enumerate()
+            .filter(|(i, _)| only.as_ref().is_none_or(|o| o.contains(i)))
+    };
+    let total = statements().count();
     let mut summary = RunSummary {
-        statements: statements.len(),
+        statements: total,
         done: 0,
         failed: 0,
         skipped: 0,
@@ -157,7 +160,7 @@ pub fn run_executive(
     let mut names: Option<String> = None;
     let lock = || target.lock().unwrap_or_else(|e| e.into_inner());
 
-    for (index, statement) in &statements {
+    for (index, statement) in statements() {
         if cancel.load(Ordering::Relaxed) {
             summary.cancelled = true;
             break;
@@ -204,7 +207,7 @@ pub fn run_executive(
         }
         let failed = matches!(outcome, RunOutcome::Failed { .. });
         let step =
-            RunStep { index: *index, range: statement.range.clone(), ms: at.elapsed().as_secs_f64() * 1000.0, outcome };
+            RunStep { index, range: statement.range.clone(), ms: at.elapsed().as_secs_f64() * 1000.0, outcome };
         on_step(&step, summary.statements);
         if failed && options.stop_on_error {
             summary.stopped = true;
