@@ -9,6 +9,7 @@ import type { MenuItem } from "./components/ContextMenu";
 import { openBuilder } from "./builder";
 import { openDiagram } from "./diagram";
 import { openAdminPanel } from "./dock";
+import { openExecutive } from "./executive";
 import { closeMonitor } from "./monitor";
 import { t } from "./i18n";
 import { useStore, type Dialog } from "./store";
@@ -273,6 +274,8 @@ export function adminActions(id: string): (MenuItem | "separator")[] {
   return [
     { label: t("Activity Monitor"), icon: "search", disabled: !connected, onSelect: () => openAdminView(id, "monitor") },
     { label: t("Users"), icon: "role", disabled: !connected, onSelect: () => openAdminView(id, "users") },
+    // A connection of its own, opened when it runs: no need to be connected
+    { label: t("Script Executive"), icon: "run", onSelect: () => openExecutive(id) },
     { label: t("Diagram"), icon: "table", disabled: !connected, onSelect: () => openDiagram(id) },
     { label: t("Query Builder"), icon: "sql", disabled: !connected, onSelect: () => void openBuilder(id) },
     "separator",

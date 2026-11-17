@@ -654,6 +654,92 @@ export interface ServiceResult {
 }
 
 /** The `script-progress` event */
+// ── The Script Executive ────────────────────────────────────────────────
+
+export type Operation =
+  | "create" | "alter" | "createOrAlter" | "recreate" | "drop" | "comment" | "grant" | "revoke"
+  | "insert" | "update" | "updateOrInsert" | "delete" | "merge" | "select" | "execute"
+  | "commit" | "rollback" | "setGenerator" | "connect" | "other";
+
+export type SubjectKind =
+  | "table" | "view" | "procedure" | "function" | "package" | "trigger" | "domain" | "generator"
+  | "exception" | "index" | "role" | "user" | "udf" | "database" | "block";
+
+/** What a statement is about, read from its first words */
+export interface Subject {
+  operation: Operation;
+  kind: SubjectKind | null;
+  /** As the catalog stores it */
+  name: string | null;
+  /** The column of a COMMENT ON COLUMN, the table of an index or trigger */
+  member: string | null;
+}
+
+/** One statement of a script, as the Script Executive lists it */
+export interface ScriptBlock {
+  /** Among the script's statements, from 0 */
+  index: number;
+  /** In the text, in UTF-16 code units */
+  from: number;
+  to: number;
+  /** Where it starts, from 1, and how many lines it spans */
+  line: number;
+  lines: number;
+  kind: "sql" | "isql";
+  subject: Subject;
+  /** Its first characters, on one line */
+  summary: string;
+}
+
+export type RunOutcome =
+  | { status: "done"; statementType: string; records: Records }
+  /** An isql command followed: SET AUTODDL, SET NAMES, CONNECT */
+  | { status: "applied" }
+  | { status: "skipped"; note: string | null }
+  | { status: "failed"; sqlcode: number; message: string };
+
+export type ExecutiveStep = { index: number; ms: number } & RunOutcome;
+
+export interface ExecutiveProgress {
+  run: number;
+  steps: ExecutiveStep[];
+  /** Statements gone through, of `total` chosen */
+  at: number;
+  total: number;
+}
+
+export interface ExecutiveOptions {
+  stopOnError: boolean;
+  autoDdl: boolean;
+  rollbackOnStop: boolean;
+  /** A transaction still active at the end */
+  atEnd: "ask" | "commit" | "rollback";
+}
+
+export interface ExecutiveEnd {
+  statements: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  ddl: number;
+  cancelled: boolean;
+  stopped: boolean;
+  /** A transaction is left for the panel to end */
+  active: boolean;
+  elapsedMs: number;
+  /** Since the last progress event */
+  steps: ExecutiveStep[];
+  ended: "commit" | "rollback" | null;
+  endError: string | null;
+}
+
+/** The run asks for a CONNECT's password */
+export interface ExecutivePasswordAsk {
+  run: number;
+  database: string;
+  user: string;
+}
+
 export interface ScriptProgress {
   run: number;
   at: number;
@@ -897,6 +983,18 @@ export const api = {
   scriptRun: (id: string, run: number, tx: number | null, txOptions: TxOptions, text: string, options: ScriptOptions) =>
     invoke<ScriptEnd>("script_run", { id, run, tx, txOptions, text, options }),
   scriptCancel: (id: string, run: number) => invoke<boolean>("script_cancel", { id, run }),
+  executiveOutline: (text: string) => invoke<ScriptBlock[]>("executive_outline", { text }),
+  executiveRun: (
+    run: number,
+    registration: string | null,
+    charset: string | null,
+    text: string,
+    only: number[] | null,
+    options: ExecutiveOptions,
+  ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, text, only, options }),
+  executiveCancel: (run: number) => invoke<boolean>("executive_cancel", { run }),
+  executivePassword: (run: number, password: string | null) => invoke<void>("executive_password", { run, password }),
+  executiveEnd: (run: number, how: "commit" | "rollback") => invoke<void>("executive_end", { run, how }),
   /** The grids of the activity monitor ("monitor", `idle` for the idle
    *  statements too) or of the server's users ("users") */
   adminView: (id: string, view: AdminView, idle: boolean) => invoke<GridSection[]>("admin_view", { id, view, idle }),

@@ -1,6 +1,6 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
-import { errorText, type ExportOptions } from "../api";
+import { api, errorText, type ExportOptions } from "../api";
 import { useEditors } from "../editors";
 import { panelTitle } from "../dock";
 import { t } from "../i18n";
@@ -24,6 +24,8 @@ export function Dialogs() {
       return <RegistrationDialog registration={dialog.registration} />;
     case "password":
       return <PasswordDialog id={dialog.id} error={dialog.error} />;
+    case "scriptPassword":
+      return <ScriptPasswordDialog {...dialog} />;
     case "delete":
       return <DeleteDialog id={dialog.id} />;
     case "pending":
@@ -227,7 +229,7 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
     else close();
   };
   const what = {
-    close: t("Close the editor"),
+    close: action.kind === "close" && action.tab.startsWith("adm-exe-") ? t("Close the Script Executive") : t("Close the editor"),
     disconnect: t("Disconnect"),
     quit: t("Quit N Studio"),
     update: t("Update and restart"),
@@ -255,9 +257,11 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
       }
     >
       <p>
-        {tabs.length === 1
-          ? t("This editor has an active transaction:")
-          : t("These editors have active transactions:")}
+        {tabs.some((tab) => tab.startsWith("adm-exe-"))
+          ? t("A script is running, or left a transaction active, in:")
+          : tabs.length === 1
+            ? t("This editor has an active transaction:")
+            : t("These editors have active transactions:")}
       </p>
       <ul className="mt-1.5 list-disc pl-5 text-muted">
         {tabs.map((tab) => (
@@ -266,6 +270,41 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
       </ul>
       <p className="mt-2.5">{t("{what}: commit or roll back first?", { what })}</p>
       {error && <p className="mt-3 rounded border border-danger/40 px-2.5 py-1.5 whitespace-pre-wrap text-danger">{error}</p>}
+    </Modal>
+  );
+}
+
+/** A Script Executive's run waits for the password of a database its
+ *  script connects to. Never kept: the next run asks again, unless the
+ *  database is registered with a saved password. */
+function ScriptPasswordDialog({ run, database, user, title }: { run: number; database: string; user: string; title: string }) {
+  const [password, setPassword] = useState("");
+  const answer = (given: string | null) => {
+    void api.executivePassword(run, given);
+    useStore.getState().openDialog(null);
+  };
+  return (
+    <Modal
+      title={t("Password for {database}", { database })}
+      width="w-[24rem]"
+      onCancel={() => answer(null)}
+      onSubmit={() => answer(password)}
+      footer={
+        <>
+          <span className="flex-1" />
+          <Button onClick={() => answer(null)}>{t("Cancel")}</Button>
+          <Button primary submit>
+            {t("Connect")}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-2.5">
+        <p className="text-muted">{t("{title} connects as {user}.", { title, user })}</p>
+        <Field label={t("Password")}>
+          <input className={inputClass} type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
+        </Field>
+      </div>
     </Modal>
   );
 }

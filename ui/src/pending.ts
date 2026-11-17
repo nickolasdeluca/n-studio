@@ -5,6 +5,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closePanel, panelTitle } from "./dock";
 import { useEditors } from "./editors";
+import { busyExecutives, settleExecutive } from "./executive";
 import { flushSession } from "./session";
 import { useStore } from "./store";
 import { installUpdate } from "./update";
@@ -58,12 +59,13 @@ export function request(action: PendingAction, anyway = false): void {
 function affected(action: PendingAction): string[] {
   switch (action.kind) {
     case "close":
-      return activeTabs((_, tab) => tab === action.tab);
+      return action.tab.startsWith("adm-exe-") ? busyExecutives(action.tab) : activeTabs((_, tab) => tab === action.tab);
     case "disconnect":
+      // A Script Executive's connection is its own
       return activeTabs((registration) => registration === action.id);
     case "quit":
     case "update":
-      return activeTabs();
+      return [...activeTabs(), ...busyExecutives()];
   }
 }
 
@@ -71,7 +73,13 @@ function affected(action: PendingAction): string[] {
  *  transaction that fails to end keeps the dialog open, with the error. */
 export async function resolve(action: PendingAction, how: "commit" | "rollback"): Promise<string | null> {
   const editors = useEditors.getState();
-  for (const tab of affected(action)) await editors.end(tab, how);
+  for (const tab of affected(action)) {
+    // A Script Executive running is stopped first, then what it left ended
+    if (tab.startsWith("adm-exe-")) {
+      const error = await settleExecutive(tab, how);
+      if (error) return `${panelTitle(tab)}: ${error}`;
+    } else await editors.end(tab, how);
+  }
   const failed = affected(action);
   if (failed.length > 0) {
     const last = useEditors.getState().tabs[failed[0]]?.messages.at(-1);
@@ -104,7 +112,7 @@ async function perform(action: PendingAction) {
 export async function guardQuit(): Promise<void> {
   try {
     await getCurrentWindow().onCloseRequested(async (event) => {
-      if (activeTabs().length === 0 && unsavedViewers().length === 0) {
+      if (activeTabs().length === 0 && busyExecutives().length === 0 && unsavedViewers().length === 0) {
         // The window closes once this is written
         await flushSession();
         return;

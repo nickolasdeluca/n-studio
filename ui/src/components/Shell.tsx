@@ -37,6 +37,8 @@ import { Explorer } from "./Explorer";
 import { ObjectList } from "./ObjectList";
 import { ObjectViewer } from "./ObjectViewer";
 import { forgetEditor, SqlEditor } from "./SqlEditor";
+import { forgetExecutive, ScriptExecutive } from "./ScriptExecutive";
+import { closeExecutive, openExecutive } from "../executive";
 
 const theme: DockviewTheme = { name: "n", className: "dockview-theme-n" };
 const LAYOUT = "n-studio.layout.v1";
@@ -53,6 +55,7 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   compare: (props) => <CompareView {...(props as IDockviewPanelProps<{ id: string }>)} />,
   builder: (props) => <QueryBuilder {...(props as IDockviewPanelProps<{ id: string }>)} />,
   debug: (props) => <DebugView {...(props as IDockviewPanelProps<{ id: string }>)} />,
+  executive: (props) => <ScriptExecutive {...(props as IDockviewPanelProps<{ id: string }>)} />,
 };
 
 const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = {
@@ -68,6 +71,9 @@ const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeader
     />
   ),
   sql: (props) => (
+    <DockviewDefaultTab {...props} closeActionOverride={() => request({ kind: "close", tab: props.api.id })} />
+  ),
+  executive: (props) => (
     <DockviewDefaultTab {...props} closeActionOverride={() => request({ kind: "close", tab: props.api.id })} />
   ),
 };
@@ -129,6 +135,10 @@ export function Shell() {
       else if (panel.id.startsWith("adm-cmp-")) forgetComparison(panel.id);
       else if (panel.id.startsWith("adm-qry-")) useBuilders.getState().close(panel.id);
       else if (panel.id.startsWith("adm-dbg-")) forgetDebug(panel.id);
+      else if (panel.id.startsWith("adm-exe-")) {
+        closeExecutive(panel.id);
+        forgetExecutive(panel.id);
+      }
       else if (panel.id.startsWith("adm-")) useAdmin.getState().close(panel.id);
       if (!panel.id.startsWith("sql-")) return;
       forgetEditor(panel.id);
@@ -239,6 +249,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <Separator />
       <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
       <ToolButton icon="folder" label={t("Open Script… (Ctrl+O)")} disabled={!connected} onClick={() => id && openScripts(id)} />
+      <ToolButton icon="run" label={t("Script Executive")} onClick={() => openExecutive(id ?? null)} />
       <Separator />
       <ToolButton
         icon="edit"

@@ -114,14 +114,25 @@ export function openObject(registration: string, kind: ObjectKind, name: string)
 }
 
 /** Shows a tool's panel: the one with that id, or a new one */
-export function openAdminPanel(id: string, component: "admin" | "service" | "diagram" | "compare" | "builder" | "debug", title: string) {
+export function openAdminPanel(
+  id: string,
+  component: "admin" | "service" | "diagram" | "compare" | "builder" | "debug" | "executive",
+  title: string,
+) {
   if (!dock) return;
   const panel = dock.getPanel(id);
   if (panel) {
     panel.api.setActive();
     return;
   }
-  dock.addPanel({ id, component, title, params: { id }, position: beside(dock) });
+  // A Script Executive's close button asks first while it runs or has a
+  // transaction active
+  const tabComponent = component === "executive" ? "executive" : undefined;
+  dock.addPanel({ id, component, tabComponent, title, params: { id }, position: beside(dock) });
+}
+
+export function setPanelTitle(id: string, title: string) {
+  dock?.getPanel(id)?.api.setTitle(title);
 }
 
 export function closePanel(id: string) {

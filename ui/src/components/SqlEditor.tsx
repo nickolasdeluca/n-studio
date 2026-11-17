@@ -1,31 +1,18 @@
 // The SQL editor: one tab per editor, each with its own transaction.
 // The text on top, what the last statement did below.
-import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, indentOnInput } from "@codemirror/language";
-import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
-import {
-  Decoration,
-  drawSelection,
-  EditorView,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  keymap,
-  lineNumbers,
-  type DecorationSet,
-} from "@codemirror/view";
+import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type TxEnd } from "../api";
 import { drafts, isolations, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
-import { catalogCompletion, completionList, prepareCompletion } from "../complete";
-import { editorLook, firebirdSql } from "../firebird";
+import { prepareCompletion } from "../complete";
 import { t } from "../i18n";
 import { Icon } from "../icons";
 import { formatEditor } from "../format";
 import { formatLabel, saveEditor } from "../scripts";
 import { sessionChanged } from "../session";
+import { sqlExtensions } from "../sqlView";
 import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import type { GridCursor } from "./ResultGrid";
@@ -183,16 +170,6 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
         extensions: [
           runKeys(id),
           formatKey(id),
-          lineNumbers(),
-          highlightActiveLineGutter(),
-          highlightActiveLine(),
-          history(),
-          drawSelection(),
-          indentOnInput(),
-          bracketMatching(),
-          closeBrackets(),
-          completionList,
-          highlightSelectionMatches(),
           errorField,
           // Typing makes the text other than its file's, and the session's
           EditorView.updateListener.of((update) => {
@@ -200,11 +177,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
             useEditors.getState().edited(id);
             sessionChanged();
           }),
-          firebirdSql,
-          catalogCompletion(() => useEditors.getState().tabs[id]?.registration),
-          editorLook,
-          EditorState.tabSize.of(2),
-          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
+          ...sqlExtensions(() => useEditors.getState().tabs[id]?.registration),
         ],
       });
     const v = new EditorView({

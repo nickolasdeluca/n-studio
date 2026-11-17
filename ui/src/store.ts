@@ -40,6 +40,8 @@ export const keys = {
 export type Dialog =
   | { type: "registration"; registration: Registration | null }
   | { type: "password"; id: string; error?: string }
+  /** A Script Executive's run waits for a CONNECT's password */
+  | { type: "scriptPassword"; run: number; database: string; user: string; title: string }
   | { type: "delete"; id: string }
   /** Editors whose transactions an action would end: commit or roll back? */
   | { type: "pending"; tabs: string[]; action: PendingAction }

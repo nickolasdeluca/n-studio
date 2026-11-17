@@ -207,5 +207,8 @@ export const editorLook = [
     ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
     ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--accent) 25%, transparent)" },
     ".cm-error-statement": { backgroundColor: "color-mix(in srgb, var(--danger) 14%, transparent)" },
+    // The Script Executive's: the statement running, the ones that failed
+    ".cm-gutterElement.cm-exe-running": { backgroundColor: "color-mix(in srgb, var(--accent) 30%, transparent)", color: "var(--fg)" },
+    ".cm-gutterElement.cm-exe-failed": { backgroundColor: "color-mix(in srgb, var(--danger) 35%, transparent)", color: "var(--fg)" },
   }),
 ];
