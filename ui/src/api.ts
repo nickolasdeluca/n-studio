@@ -913,16 +913,17 @@ export interface UpdateAvailable {
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
-  saveRegistration: (registration: Registration, password: string | null) =>
-    invoke<Registration>("save_registration", { registration, password }),
+  /** `passwordOf`: a registration whose password to keep, when none is given */
+  saveRegistration: (registration: Registration, password: string | null, passwordOf: string | null = null) =>
+    invoke<Registration>("save_registration", { registration, password, passwordOf }),
   /** Puts a registration in a folder: before or after `anchor`, or last in it */
   placeRegistration: (id: string, folder: string[], anchor: string | null, after: boolean) =>
     invoke<void>("place_registration", { id, folder, anchor, after }),
   /** Renames or moves an explorer folder: how many registrations went along */
   moveFolder: (from: string[], to: string[]) => invoke<number>("move_folder", { from, to }),
   deleteRegistration: (id: string) => invoke<void>("delete_registration", { id }),
-  testConnection: (registration: Registration, password: string | null) =>
-    invoke<ServerInfo>("test_connection", { registration, password }),
+  testConnection: (registration: Registration, password: string | null, passwordOf: string | null = null) =>
+    invoke<ServerInfo>("test_connection", { registration, password, passwordOf }),
   connect: (id: string, password: string | null, remember: boolean) =>
     invoke<ServerInfo>("connect", { id, password, remember }),
   disconnect: (id: string) => invoke<void>("disconnect", { id }),

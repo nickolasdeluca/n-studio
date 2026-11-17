@@ -23,14 +23,20 @@ const blank: Registration = {
 
 type Test = { state: "idle" } | { state: "running" } | { state: "ok"; text: string } | { state: "failed"; text: string };
 
-/** Register a database, or edit a registration */
-export function RegistrationDialog({ registration }: { registration: Registration | null }) {
+/** Register a database, edit a registration, or register a database filled
+ *  in from another registration (`cloneOf`): nothing is saved until the user
+ *  registers it */
+export function RegistrationDialog({ registration, cloneOf }: { registration: Registration | null; cloneOf?: Registration }) {
   const charsets = useStore((s) => s.charsets);
   const registrations = useStore((s) => s.registrations);
   const editing = !!registration;
-  const [r, setR] = useState<Registration>(registration ?? blank);
+  const [r, setR] = useState<Registration>(
+    registration ?? (cloneOf ? { ...cloneOf, id: "", name: t("{name} (copy)", { name: cloneOf.name }) } : blank),
+  );
   // As typed: "Customers / North". It is a path once saved.
-  const [folder, setFolder] = useState((registration?.folder ?? []).join(" / "));
+  const [folder, setFolder] = useState((registration?.folder ?? cloneOf?.folder ?? []).join(" / "));
+  // Its source's password, kept unless another is typed
+  const passwordOf = cloneOf && !editing ? cloneOf.id : null;
   const [password, setPassword] = useState("");
   // Until the user edits the name, it follows the database file name
   const [nameTouched, setNameTouched] = useState(editing);
@@ -50,7 +56,7 @@ export function RegistrationDialog({ registration }: { registration: Registratio
   const runTest = async () => {
     setTest({ state: "running" });
     try {
-      const server = await api.testConnection(r, passwordArg);
+      const server = await api.testConnection(r, passwordArg || null, password ? null : passwordOf);
       setTest({ state: "ok", text: t("Connected: {summary}", { summary: serverSummary(server) }) });
     } catch (e) {
       setTest({ state: "failed", text: errorText(e) });
@@ -62,7 +68,13 @@ export function RegistrationDialog({ registration }: { registration: Registratio
     try {
       // An empty field saves nothing: the password is asked on connect
       const placed = { ...r, folder: folder.split("/").map((name) => name.trim()).filter(Boolean) };
-      const saved = await useStore.getState().saveRegistration(placed, r.savePassword && password ? password : null);
+      const saved = await useStore
+        .getState()
+        .saveRegistration(placed, r.savePassword && password ? password : null, r.savePassword && !password ? passwordOf : null);
+      // A clone goes beside its source, when it stays in the same folder
+      if (cloneOf && placed.folder.join("/") === cloneOf.folder.join("/")) {
+        await useStore.getState().placeRegistration(saved.id, placed.folder, cloneOf.id, true);
+      }
       close();
       useStore.getState().select({ id: saved.id });
     } catch (e) {
@@ -74,7 +86,13 @@ export function RegistrationDialog({ registration }: { registration: Registratio
 
   return (
     <Modal
-      title={editing ? t("Database Registration — {name}", { name: registration.name }) : t("Register Database")}
+      title={
+        editing
+          ? t("Database Registration — {name}", { name: registration.name })
+          : cloneOf
+            ? t("Clone Registration — {name}", { name: cloneOf.name })
+            : t("Register Database")
+      }
       width="w-[34rem]"
       onCancel={close}
       onSubmit={save}
@@ -173,7 +191,13 @@ export function RegistrationDialog({ registration }: { registration: Registratio
             className={inputClass}
             type="password"
             value={password}
-            placeholder={editing && registration.savePassword ? t("unchanged") : ""}
+            placeholder={
+              editing && registration.savePassword
+                ? t("unchanged")
+                : passwordOf && cloneOf?.savePassword
+                  ? t("as {name}'s", { name: cloneOf.name })
+                  : ""
+            }
             onChange={(e) => {
               setPassword(e.target.value);
               setTest({ state: "idle" });

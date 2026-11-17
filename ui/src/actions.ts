@@ -31,6 +31,12 @@ export function registrationActions(id: string): (MenuItem | "separator")[] {
       icon: "edit",
       onSelect: () => s.openDialog({ type: "registration", registration }),
     },
+    {
+      label: t("Clone Registration…"),
+      icon: "copy",
+      disabled: !registration,
+      onSelect: () => registration && s.openDialog({ type: "registration", registration: null, cloneOf: registration }),
+    },
     { label: t("Move to Folder…"), icon: "folder", onSelect: () => registration && moveToFolder(registration.id) },
     ...(registration?.folder.length
       ? [{ label: t("Remove from Folder"), onSelect: () => void s.placeRegistration(id, []) }]

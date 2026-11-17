@@ -22,7 +22,7 @@ export function Dialogs() {
   if (!dialog) return null;
   switch (dialog.type) {
     case "registration":
-      return <RegistrationDialog registration={dialog.registration} />;
+      return <RegistrationDialog registration={dialog.registration} cloneOf={dialog.cloneOf} />;
     case "password":
       return <PasswordDialog id={dialog.id} error={dialog.error} />;
     case "scriptPassword":

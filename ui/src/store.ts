@@ -38,7 +38,9 @@ export const keys = {
 };
 
 export type Dialog =
-  | { type: "registration"; registration: Registration | null }
+  /** Register a database, edit a registration, or register one filled in
+   *  from `cloneOf`'s: its password too, unless another is typed */
+  | { type: "registration"; registration: Registration | null; cloneOf?: Registration }
   | { type: "password"; id: string; error?: string }
   /** A Script Executive's run waits for a CONNECT's password */
   | { type: "scriptPassword"; run: number; database: string; user: string; title: string }
@@ -120,7 +122,8 @@ interface State {
   disconnect(id: string, force?: boolean): Promise<void>;
   refresh(id: string): Promise<void>;
   loadObjects(id: string, kind: ObjectKind): Promise<void>;
-  saveRegistration(registration: Registration, password: string | null): Promise<Registration>;
+  /** `passwordOf`: a registration whose password to keep, when none is given */
+  saveRegistration(registration: Registration, password: string | null, passwordOf?: string | null): Promise<Registration>;
   deleteRegistration(id: string): Promise<void>;
   /** Puts a registration in a folder: beside `anchor`, or last in it */
   placeRegistration(id: string, folder: string[], anchor?: string | null, after?: boolean): Promise<void>;
@@ -269,8 +272,8 @@ export const useStore = create<State>()((set, get) => ({
     }
   },
 
-  async saveRegistration(registration, password) {
-    const saved = await api.saveRegistration(registration, password);
+  async saveRegistration(registration, password, passwordOf = null) {
+    const saved = await api.saveRegistration(registration, password, passwordOf);
     await refreshRegistrations();
     return saved;
   },

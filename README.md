@@ -73,7 +73,9 @@ or hex. Save the full value to a file when you need it outside the app.
 
 ### Explore and change a schema
 
-Register a database once; saved passwords go in the system keychain. The
+Register a database once; saved passwords go in the system keychain. Clone
+a registration to register another database on the same server: the form
+opens filled in, password included, for you to change the path or alias. The
 explorer lists object kinds with their counts, and object viewers expose
 fields, constraints, indices, dependencies, triggers, grants, DDL and data.
 

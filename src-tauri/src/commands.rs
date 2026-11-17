@@ -155,8 +155,14 @@ pub async fn save_registration(
     app: AppHandle,
     registration: Registration,
     password: Option<String>,
+    password_of: Option<String>,
 ) -> AppResult<Registration> {
     blocking(app, move |state| {
+        // A clone keeps its source's password unless another is typed
+        let password = match (password, &password_of) {
+            (None, Some(source)) => known_password(state, source)?,
+            (password, _) => password,
+        };
         let saved = state.registry.lock().unwrap().save(registration)?;
         match (saved.save_password, password) {
             (true, Some(password)) => secrets::set(&saved.id, &password)?,
@@ -166,6 +172,20 @@ pub async fn save_registration(
         Ok(saved)
     })
     .await
+}
+
+/// The password a registration connects with: its open session's, else
+/// the keychain's when it saves one
+fn known_password(state: &AppState, id: &str) -> AppResult<Option<String>> {
+    if let Ok(params) = state.params(id) {
+        return Ok(Some(params.password));
+    }
+    let saves = state.registry.lock().unwrap().get(id).is_ok_and(|r| r.save_password);
+    if saves {
+        secrets::get(id)
+    } else {
+        Ok(None)
+    }
 }
 
 /// Puts a registration in a folder, before or after another one, or last
@@ -205,12 +225,14 @@ pub async fn test_connection(
     app: AppHandle,
     registration: Registration,
     password: Option<String>,
+    password_of: Option<String>,
 ) -> AppResult<ServerInfo> {
-    blocking(app, move |_| {
-        let password = match password {
-            Some(p) => p,
-            None if !registration.id.is_empty() => secrets::get(&registration.id)?.unwrap_or_default(),
-            None => String::new(),
+    blocking(app, move |state| {
+        let password = match (password, &password_of) {
+            (Some(p), _) => p,
+            (None, Some(source)) => known_password(state, source)?.unwrap_or_default(),
+            (None, None) if !registration.id.is_empty() => secrets::get(&registration.id)?.unwrap_or_default(),
+            (None, None) => String::new(),
         };
         let conn = open(&registration, password)?;
         Ok(conn.info().clone())
