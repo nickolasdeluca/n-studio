@@ -173,9 +173,29 @@ pub(crate) fn charset_by_name(name: &str) -> Option<Charset> {
         .map(|(_, c)| c.clone())
 }
 
+/// Text in `charset`, one of [`charset_names`], read strictly: a byte the
+/// character set has no character for is an error, not a guess
+pub fn decode_as(charset: &str, bytes: Vec<u8>) -> crate::Result<String> {
+    use crate::Error;
+    let found = charset_by_name(charset)
+        .ok_or_else(|| Error::Client { message: format!("unknown character set {charset:?}") })?;
+    found.decode(bytes).map_err(|_| Error::Client {
+        message: format!("the text is not valid {}", charset.trim().to_uppercase()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_is_read_in_the_charset_named() {
+        assert_eq!(decode_as("ISO8859_2", vec![0xB1, 0xE6]).unwrap(), "ąć");
+        assert_eq!(decode_as("WIN1252", vec![0xE7, 0xE3]).unwrap(), "çã");
+        assert_eq!(decode_as("UTF8", "çã".as_bytes().to_vec()).unwrap(), "çã");
+        assert!(decode_as("UTF8", vec![0xE7]).is_err());
+        assert!(decode_as("NONE", vec![0x41]).is_err());
+    }
 
     #[test]
     fn every_listed_charset_resolves() {

@@ -31,6 +31,6 @@ pub use trace::{
     run_trace, trace_config, trace_database, TableCounts, TraceEnd, TraceEvent, TraceItem, TraceOptions, TraceOutcome,
     TraceReader,
 };
-pub use params::{charset_names, split_database, AuthPlugin, ConnectParams, Dialect};
+pub use params::{charset_names, decode_as, split_database, AuthPlugin, ConnectParams, Dialect};
 pub use rsfbclient_core::Decimal;
 pub use value::Value;

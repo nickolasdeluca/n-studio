@@ -165,8 +165,12 @@ const LARGEST_FILE: u64 = 256 * 1024 * 1024;
 /// cost the panel more than the file; the run still goes through them all
 const FILE_LISTED: usize = 200_000;
 
-/// A script read from disk to run, never sent to the panel whole
-fn read_script(path: &str) -> AppResult<(String, Encoding, u64)> {
+/// A script read from disk to run, never sent to the panel whole, with
+/// the name of what it was read as. A byte order mark says how a file is
+/// written whatever the panel says; without one the panel's character set
+/// is taken when it chose one, else the file is read as the editor reads
+/// files (UTF-8, or WIN1252 when it is not).
+fn read_script(path: &str, charset: Option<&str>) -> AppResult<(String, String, u64)> {
     let path = std::path::Path::new(path);
     let size = std::fs::metadata(path).map_err(|e| AppError::storage(path, e))?.len();
     if size > LARGEST_FILE {
@@ -180,8 +184,20 @@ fn read_script(path: &str) -> AppResult<(String, Encoding, u64)> {
         });
     }
     let bytes = std::fs::read(path).map_err(|e| AppError::storage(path, e))?;
+    let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]) || bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]);
+    if let Some(charset) = charset.filter(|_| !bom) {
+        let text = fb_core::decode_as(charset, bytes).map_err(|e| AppError::Invalid {
+            message: format!("{} cannot be read as {charset}: {e}. Choose its character set.", path.display()),
+        })?;
+        return Ok((text, charset.trim().to_uppercase(), size));
+    }
     let (text, encoding) = files::decode_owned(bytes);
-    Ok((text, encoding, size))
+    let name = match encoding {
+        Encoding::Utf8 | Encoding::Utf8Bom => "UTF8",
+        Encoding::Utf16Le | Encoding::Utf16Be => "UTF-16",
+        Encoding::Win1252 => "WIN1252",
+    };
+    Ok((text, name.into(), size))
 }
 
 /// A file's statements, for the panel to list before running it
@@ -193,15 +209,16 @@ pub struct FileOutline {
     /// How many it has
     total: usize,
     size: u64,
-    encoding: Encoding,
+    /// The character set it was read as
+    read_as: String,
 }
 
 #[tauri::command]
-pub async fn executive_outline_file(path: String) -> AppResult<FileOutline> {
+pub async fn executive_outline_file(path: String, charset: Option<String>) -> AppResult<FileOutline> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (text, encoding, size) = read_script(&path)?;
+        let (text, read_as, size) = read_script(&path, charset.as_deref())?;
         let (blocks, total) = outline_some(&text, FILE_LISTED);
-        Ok(FileOutline { blocks, total, size, encoding })
+        Ok(FileOutline { blocks, total, size, read_as })
     })
     .await
     .map_err(|e| AppError::Connection { message: format!("The script's worker failed: {e}") })?
@@ -486,7 +503,7 @@ pub async fn executive_run(
         let state = events.state::<AppState>();
         let text = match source {
             Source::Text { text } => text,
-            Source::File { path } => read_script(&path)?.0,
+            Source::File { path } => read_script(&path, charset.as_deref())?.0,
         };
         let mut connector = AppConnector { app: events.clone(), id: run, run: worker.clone(), charset: charset.clone() };
         if let Some(registration) = &registration {
@@ -640,8 +657,31 @@ mod tests {
 
     #[test]
     fn a_file_that_cannot_be_read_says_where() {
-        let error = read_script("/no/such/file.sql").unwrap_err();
+        let error = read_script("/no/such/file.sql", None).unwrap_err();
         assert!(matches!(error, AppError::Storage { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_file_is_read_in_the_charset_chosen_unless_it_has_a_bom() {
+        let dir = std::env::temp_dir().join(format!("n-studio-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        // 'ąć' in ISO8859_2: neither UTF-8 nor what WIN1252 would make of it
+        let latin2 = file("latin2.sql", b"COMMENT ON TABLE T IS '\xB1\xE6';");
+        assert_eq!(read_script(&latin2, None).unwrap().1, "WIN1252");
+        let (text, read_as, _) = read_script(&latin2, Some("iso8859_2")).unwrap();
+        assert_eq!((text.as_str(), read_as.as_str()), ("COMMENT ON TABLE T IS 'ąć';", "ISO8859_2"));
+        // Not valid in the one chosen: said, not guessed
+        let error = read_script(&latin2, Some("UTF8")).unwrap_err();
+        assert!(error.to_string().contains("cannot be read as UTF8"), "{error}");
+        // A byte order mark says how the file is written
+        let bom = file("bom.sql", "\u{FEFF}SELECT 'ç' FROM RDB$DATABASE;".as_bytes());
+        assert_eq!(read_script(&bom, Some("WIN1252")).unwrap().1, "UTF8");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

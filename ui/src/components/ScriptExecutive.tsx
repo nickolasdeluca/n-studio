@@ -12,6 +12,7 @@ import { ms } from "../editors";
 import {
   checkedOf,
   checkOnly,
+  chooseCharset,
   chooseDatabase,
   connectsItself,
   endExecutive,
@@ -366,9 +367,9 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
         <select
           className={selectClass}
           disabled={locked}
-          title={t("The character set the script's text is sent in")}
+          title={t("The character set the script is sent in, and a file from disk read in")}
           value={panel.charset ?? ""}
-          onChange={(e) => patchExecutive(panel.id, { charset: e.target.value || null })}
+          onChange={(e) => void chooseCharset(panel.id, e.target.value || null)}
         >
           <option value="">{t("(the database's)")}</option>
           {charsets.map((c) => (
@@ -402,7 +403,11 @@ function DiskNotice({ panel }: { panel: Executive }) {
       <p>{t("This script is run from disk, without loading it into the editor.")}</p>
       <p className="font-mono text-[12px] break-all text-muted">{disk.path}</p>
       <p className="text-muted">
-        {t("{size} · {n} statement(s)", { size: size(disk.size), n: disk.total.toLocaleString() })}
+        {t("{size} · {n} statement(s) · read as {charset}", {
+          size: size(disk.size),
+          n: disk.total.toLocaleString(),
+          charset: disk.readAs,
+        })}
       </p>
       <div className="mt-2 flex gap-1">
         <TextButton icon="run" accent label={t("Run Again")} disabled={!!panel.run || panel.active !== null} onClick={() => runExecutive(panel.id)} />

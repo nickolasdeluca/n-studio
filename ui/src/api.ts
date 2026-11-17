@@ -739,7 +739,8 @@ export interface FileOutline {
   blocks: ScriptBlock[];
   total: number;
   size: number;
-  encoding: FileFormat["encoding"];
+  /** The character set it was read as */
+  readAs: string;
 }
 
 /** What a run runs */
@@ -1006,7 +1007,8 @@ export const api = {
   ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, source, only, options }),
   executiveConnectLines: (registration: string, withPassword: boolean) =>
     invoke<string>("executive_connect_lines", { registration, withPassword }),
-  executiveOutlineFile: (path: string) => invoke<FileOutline>("executive_outline_file", { path }),
+  executiveOutlineFile: (path: string, charset: string | null) =>
+    invoke<FileOutline>("executive_outline_file", { path, charset }),
   executiveCancel: (run: number) => invoke<boolean>("executive_cancel", { run }),
   executivePassword: (run: number, password: string | null) => invoke<void>("executive_password", { run, password }),
   executiveEnd: (run: number, how: "commit" | "rollback") => invoke<void>("executive_end", { run, how }),

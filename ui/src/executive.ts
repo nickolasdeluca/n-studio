@@ -69,7 +69,7 @@ export interface Executive {
   explorer: boolean;
   /** A file run from disk, not loaded in the editor: what is run while
    *  there is one */
-  disk: { path: string; size: number; total: number } | null;
+  disk: { path: string; size: number; total: number; readAs: string } | null;
   /** The file the text is from, and how it is written */
   file: { path: string; format: FileFormat } | null;
   changed: boolean;
@@ -317,9 +317,9 @@ export async function runFromFile(id: string): Promise<void> {
   if (!path) return;
   patchExecutive(id, { messages: [{ level: "info", text: t("Reading {file}…", { file: baseName(path) }) }] });
   try {
-    const outline = await api.executiveOutlineFile(path);
+    const outline = await api.executiveOutlineFile(path, panel.charset);
     patchExecutive(id, {
-      disk: { path, size: outline.size, total: outline.total },
+      disk: { path, size: outline.size, total: outline.total, readAs: outline.readAs },
       blocks: outline.blocks,
       unchecked: {},
       steps: {},
@@ -342,6 +342,29 @@ export async function runFromFile(id: string): Promise<void> {
     return;
   }
   await runDisk(id, null);
+}
+
+/** The character set a script is sent in, and a file from disk read in */
+export async function chooseCharset(id: string, charset: string | null) {
+  const panel = get(id);
+  if (!panel || panel.run) return;
+  patchExecutive(id, { charset });
+  if (!panel.disk) return;
+  // The file is read again in it: its statements may read differently
+  const path = panel.disk.path;
+  try {
+    const outline = await api.executiveOutlineFile(path, charset);
+    if (get(id)?.disk?.path !== path) return;
+    patchExecutive(id, {
+      disk: { path, size: outline.size, total: outline.total, readAs: outline.readAs },
+      blocks: outline.blocks,
+      unchecked: {},
+      steps: {},
+      messages: [],
+    });
+  } catch (e) {
+    log(id, [{ level: "error", text: errorText(e) }]);
+  }
 }
 
 /** Back to the script in the editor */

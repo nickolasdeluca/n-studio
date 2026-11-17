@@ -428,6 +428,12 @@ still active at the end is asked about (always committing is what
 unattended runs would want, and is an option); Run Checked applies only
 the `SET`s and `CONNECT`s checked.
 
+A file from disk is read in the character set the panel chose, unless it
+has a byte order mark; with none chosen, as the editor reads files (UTF-8,
+else WIN1252). A byte the chosen set has no character for is an error that
+says to choose another, not a guess; the panel says what the file was read
+as, and reads it again when the set is changed.
+
 What it cannot do, and says: a file is run from disk up to 256 MB, and
 only its first 200,000 statements are listed (the run goes through all;
 only those listed can be left out). A `CONNECT` cannot stop to ask what to
