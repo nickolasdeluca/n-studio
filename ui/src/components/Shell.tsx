@@ -111,6 +111,13 @@ export function Shell() {
       const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
       const script = mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "o";
       if (e.key !== "F12" && !script) return;
+      // Ctrl+F12, as in IBExpert: the Script Executive, on the selected
+      // database or on none (Cmd+F12 too on a Mac)
+      if (e.key === "F12" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        openExecutive(useStore.getState().selection?.id ?? null);
+        return;
+      }
       const id = useStore.getState().selection?.id;
       if (!id) return;
       e.preventDefault();
@@ -249,7 +256,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <Separator />
       <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
       <ToolButton icon="folder" label={t("Open Script… (Ctrl+O)")} disabled={!connected} onClick={() => id && openScripts(id)} />
-      <ToolButton icon="run" label={t("Script Executive")} onClick={() => openExecutive(id ?? null)} />
+      <ToolButton icon="run" label={t("Script Executive (Ctrl+F12)")} onClick={() => openExecutive(id ?? null)} />
       <Separator />
       <ToolButton
         icon="edit"

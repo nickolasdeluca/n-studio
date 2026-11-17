@@ -100,8 +100,8 @@ read; the monitor counts those gaps.
 
 The Script Executive runs scripts as work in themselves, such as the
 upgrade scripts tools generate, with each statement in its own `SET TERM`
-pair. It opens from the toolbar or a database's menu, on a connection of its
-own, so a long script does not hold up the editors. Run the whole script
+pair. It opens from the toolbar, a database's menu or Ctrl+F12, on a connection
+of its own, so a long script does not hold up the editors. Run the whole script
 (F9), only the statements checked in its list, or a file straight from disk
 without loading it (Shift+F9, up to 256 MB). Each statement shows its state,
 time and rows as it runs; failures are listed by line, and an explorer shows

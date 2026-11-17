@@ -419,6 +419,8 @@ part, from the editor or straight from a file.
   Check Only Failed, check from a row), Options, an explorer of what the
   script touches by kind, messages by line, Run (F9), Run Checked, Run from
   File (Shift+F9), Stop, Add CONNECT, the database and the character set.
+  Opened with Ctrl+F12, as in IBExpert, from the toolbar, or from a
+  registration's menu.
 
 Decided by default, for the owner to confirm: Add CONNECT writes no
 password unless asked (IBExpert writes it in plain text); a transaction
