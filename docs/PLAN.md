@@ -446,9 +446,9 @@ Left out: IBExpert's own language (`IBEBlock`, `ibec_*`); following
 (reported as not run); `SHELL`, `OUTPUT`, `SHOW` and the rest of isql's
 interactive commands (passed over, said once); parameters and showing a
 select's rows; comparing the script with the database before running it.
-Like the editor's grid edits, it has not been run against a real database
-in the real window: everything that writes was tried on the docker
-fixture, and the panel in the browser preview.
+Tried by the live tests on the docker fixture, the panel in the browser
+preview, and by the owner against a real database in the app; a file near
+the 256 MB limit has been split, not run.
 
 ---
 

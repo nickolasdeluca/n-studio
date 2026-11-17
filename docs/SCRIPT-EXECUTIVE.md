@@ -19,11 +19,9 @@ people will notice.
 
 ## Not yet tried
 
-- A run against a real database in the real window. Everything that writes
-  was tried on the docker fixture (the live tests, `FB_FIXTURE=1`) and the
-  panel in the browser preview; real databases are read-only to us.
 - A file near the 256 MB limit run end to end: splitting one was measured
-  (about 2.4 s, little beyond the text held), the run was not.
+  (about 2.4 s, little beyond the text held), the run was not. The owner
+  has run scripts against a real database in the app; none that large.
 
 ## Later steps
 
