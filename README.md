@@ -96,6 +96,23 @@ connected now, with actions to disconnect an attachment or cancel a
 statement. The server may drop events when it is busier than they can be
 read; the monitor counts those gaps.
 
+### Run scripts
+
+The Script Executive runs scripts as work in themselves, such as the
+upgrade scripts tools generate, with each statement in its own `SET TERM`
+pair. It opens from the toolbar or a database's menu, on a connection of its
+own, so a long script does not hold up the editors. Run the whole script
+(F9), only the statements checked in its list, or a file straight from disk
+without loading it (Shift+F9, up to 256 MB). Each statement shows its state,
+time and rows as it runs; failures are listed by line, and an explorer shows
+what the script touches, by object kind, before anything runs.
+
+A script can name its own database with `CONNECT` and `SET NAMES`; Add
+CONNECT writes those lines for a registered database. The password is not
+written unless you ask: the run takes it from the keychain, or asks for it.
+Options decide whether to stop at the first error, commit DDL as it runs,
+and what to do with a transaction still active at the end.
+
 ### Work across tables and routines
 
 View tables and foreign keys in a diagram, assemble SQL with the query

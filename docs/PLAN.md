@@ -383,12 +383,64 @@ Left out: a `.deb` install does not replace itself (it is told where the
 new version is); nothing is fetched before the user says so; and versions
 before this one have no updater, so they are updated by hand one last time.
 
-### M10 — Script Executive — planned
+### M10 — Script Executive — done
 
-A tool for scripts as work in themselves: many statements run all or in
-part, from the editor or straight from a file, with a list of them to pick
-from and a tree of what they touch, as IBExpert's has. The plan, with what
-exists and what is missing, is `docs/SCRIPT-EXECUTIVE.md`.
+A tool for scripts as work in themselves, with IBExpert's Script Executive
+as the reference for what it does (not for how it looks): generated scripts
+of thousands of statements, each in its own `SET TERM` pair, run all or in
+part, from the editor or straight from a file.
+
+- **What a statement is about** (`fb-sql::classify`): the operation, the
+  object kind, its name as the catalog stores it and the member below it
+  (a comment's column, an index's or a trigger's table), from the first
+  words alone; what is not recognised is `Other`, never an error.
+  `fb-sql::isql` reads the isql commands a runner follows: `CONNECT`,
+  `SET NAMES`, `SET AUTODDL`, `SET SQL DIALECT`, `SET CLIENTLIB`, `INPUT`,
+  and IBExpert's `DESCRIBE`, run as the `COMMENT ON` it means.
+- **Splitting as it reads** (`fb-sql::Splitter`): one statement's tokens
+  held at a time. `split` is the splitter collected; a 256 MB script splits
+  in about 2.4 s holding little beyond its text, where whole it took about
+  eleven times its size.
+- **The runner** (`fb-core::run_executive`): a sibling of the editor's
+  `run_script`. It runs the statements chosen and no others (an unchecked
+  `SET` or `CONNECT` does not apply), reports every one, and gets its
+  connections from a `Connector`, so a script's own `CONNECT` works: the
+  transaction on the connection left is ended as the options say, and a
+  `CONNECT` that fails leaves no connection rather than the old one. The
+  connection and its transaction live in a `Target` the caller shares, to
+  cancel the statement running and to end what a run left.
+- **A connection of its own** (`src-tauri/src/executive.rs`): a run neither
+  queues behind the editors nor they behind it. A `CONNECT`'s password is
+  the one it wrote, else that of the registration naming the same server,
+  port, database and user (its session's, then the keychain's), else the
+  user's, asked while the run waits; it is never logged or kept.
+- **The panel**: the script in the editors' CodeMirror view (one factory
+  for both now), Statements (checkboxes, state, time and rows of each,
+  Check Only Failed, check from a row), Options, an explorer of what the
+  script touches by kind, messages by line, Run (F9), Run Checked, Run from
+  File (Shift+F9), Stop, Add CONNECT, the database and the character set.
+
+Decided by default, for the owner to confirm: Add CONNECT writes no
+password unless asked (IBExpert writes it in plain text); a transaction
+still active at the end is asked about (always committing is what
+unattended runs would want, and is an option); Run Checked applies only
+the `SET`s and `CONNECT`s checked.
+
+What it cannot do, and says: a file is run from disk up to 256 MB, and
+only its first 200,000 statements are listed (the run goes through all;
+only those listed can be left out). A `CONNECT` cannot stop to ask what to
+do with the transaction it leaves: it commits, unless the options say to
+roll back at the end. The database cannot be changed while a transaction a
+run left is active; the panel says to end it first rather than asking.
+
+Left out: IBExpert's own language (`IBEBlock`, `ibec_*`); following
+`INPUT` (reported as not followed); `CREATE DATABASE` and `DROP DATABASE`
+(reported as not run); `SHELL`, `OUTPUT`, `SHOW` and the rest of isql's
+interactive commands (passed over, said once); parameters and showing a
+select's rows; comparing the script with the database before running it.
+Like the editor's grid edits, it has not been run against a real database
+in the real window: everything that writes was tried on the docker
+fixture, and the panel in the browser preview.
 
 ---
 
