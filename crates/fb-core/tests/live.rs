@@ -13,7 +13,7 @@ use fb_core::{
     run_script, ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait,
     ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
 };
-use fb_core::{run_executive, RunOptions, RunOutcome, RunStep, RunSummary, Target};
+use fb_core::{run_executive, Connector, RunOptions, RunOutcome, RunStep, RunSummary, Target};
 
 /// Held by the tests that change the catalog, and by the one that backs the
 /// database up: a backup reads every table by its id, and fails when one
@@ -445,7 +445,22 @@ fn an_atomic_script_that_fails_leaves_nothing() {
 }
 
 fn executive_options() -> RunOptions {
-    RunOptions { stop_on_error: false, auto_ddl: true, rollback_on_stop: true, tx_options: TxOptions::default() }
+    RunOptions {
+        stop_on_error: false,
+        auto_ddl: true,
+        rollback_on_stop: true,
+        on_switch: TxEnd::Commit,
+        tx_options: TxOptions::default(),
+    }
+}
+
+/// Opens what a script's CONNECT names, the rest from the environment
+struct FromEnv(ConnectParams);
+
+impl Connector for FromEnv {
+    fn connect(&mut self, target: &fb_sql::isql::Connect, charset: Option<&str>) -> fb_core::Result<Connection> {
+        Connection::open(&self.0.with_connect(target, charset))
+    }
 }
 
 fn execute(
@@ -456,7 +471,9 @@ fn execute(
 ) -> (Vec<RunStep>, RunSummary) {
     let never = std::sync::atomic::AtomicBool::new(false);
     let mut steps = Vec::new();
-    let summary = run_executive(target, script, only, options, &never, |s, _| steps.push(s.clone())).unwrap();
+    let mut connector = FromEnv(ConnectParams::from_env().unwrap());
+    let summary =
+        run_executive(target, script, only, options, &mut connector, &never, |s, _| steps.push(s.clone())).unwrap();
     (steps, summary)
 }
 
@@ -534,6 +551,38 @@ CREATE TABLE EXEC_E (ID INTEGER);
     assert!(matches!(steps[2].outcome, RunOutcome::Failed { sqlcode: -204, .. }), "{steps:?}");
     assert!(summary.stopped && !summary.active, "{summary:?}");
     assert_eq!(tables(&conn, "'EXEC_D', 'EXEC_E'"), 0);
+}
+
+/// Writes nothing: the script finds the fixture by its own CONNECT, with
+/// the fixture's public credentials
+#[test]
+fn fixture_a_script_connects_by_its_own_connect() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let target = std::sync::Mutex::new(Target::new(None));
+    let script = format!(
+        "select 1 from rdb$database;\n\
+         SET NAMES UTF8;\n\
+         CONNECT '{}/{}:{}' USER 'SYSDBA' PASSWORD 'masterkey';\n\
+         select cast('ação' as varchar(10) character set utf8) from rdb$database;\n\
+         CONNECT 'localhost/1:nowhere' USER 'SYSDBA' PASSWORD 'masterkey';\n\
+         select 1 from rdb$database;",
+        params.host, params.port, params.database
+    );
+    let (steps, summary) = execute(&target, &script, None, executive_options());
+    let outcomes: Vec<&RunOutcome> = steps.iter().map(|s| &s.outcome).collect();
+    assert!(matches!(outcomes[0], RunOutcome::Failed { message, .. } if message == fb_core::NO_CONNECTION));
+    assert_eq!(outcomes[1], &RunOutcome::Applied);
+    assert_eq!(outcomes[2], &RunOutcome::Applied, "{outcomes:?}");
+    assert!(matches!(outcomes[3], RunOutcome::Done { .. }), "{outcomes:?}");
+    // A CONNECT that fails leaves nothing to run on
+    assert!(matches!(outcomes[4], RunOutcome::Failed { .. }), "{outcomes:?}");
+    assert!(matches!(outcomes[5], RunOutcome::Failed { message, .. } if message == fb_core::NO_CONNECTION));
+    assert_eq!((summary.done, summary.failed, summary.active), (3, 3, false));
+    // No password in what is reported
+    assert!(steps.iter().all(|s| !format!("{s:?}").contains("masterkey")));
 }
 
 /// Asks only who the server is: fine against any server

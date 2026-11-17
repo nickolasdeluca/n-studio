@@ -21,7 +21,7 @@ pub use editor::{
     Performance, Records, StatementType, TablePerformance, TxEnd, TxId, TxOptions,
 };
 pub use error::{Error, Result};
-pub use executive::{run_executive, RunOptions, RunOutcome, RunStep, RunSummary, Target, NO_CONNECTION};
+pub use executive::{run_executive, Connector, RunOptions, RunOutcome, RunStep, RunSummary, Target, NO_CONNECTION};
 pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
 pub use service::{
     run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask, ServiceUser,
@@ -31,6 +31,6 @@ pub use trace::{
     run_trace, trace_config, trace_database, TableCounts, TraceEnd, TraceEvent, TraceItem, TraceOptions, TraceOutcome,
     TraceReader,
 };
-pub use params::{charset_names, AuthPlugin, ConnectParams, Dialect};
+pub use params::{charset_names, split_database, AuthPlugin, ConnectParams, Dialect};
 pub use rsfbclient_core::Decimal;
 pub use value::Value;

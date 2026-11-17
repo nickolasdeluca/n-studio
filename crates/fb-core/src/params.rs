@@ -80,6 +80,59 @@ impl ConnectParams {
     }
 }
 
+impl ConnectParams {
+    /// These parameters pointed at what a script's `CONNECT` names: its
+    /// database, and its user, password and role where it says them; the
+    /// rest (auth, dialect, and what it leaves out) stays. `charset` is the
+    /// script's `SET NAMES`, if it had one.
+    pub fn with_connect(&self, target: &fb_sql::isql::Connect, charset: Option<&str>) -> Self {
+        let (host, port, database) = split_database(&target.database);
+        let mut params = self.clone();
+        params.host = host.unwrap_or_else(|| "localhost".into());
+        params.port = port.unwrap_or(Self::default().port);
+        params.database = database;
+        if let Some(user) = &target.user {
+            params.user = user.clone();
+        }
+        if let Some(password) = &target.password {
+            params.password = password.clone();
+        }
+        if target.role.is_some() {
+            params.role = target.role.clone();
+        }
+        if let Some(charset) = charset {
+            params.charset = charset.to_string();
+        }
+        params
+    }
+}
+
+/// A connection string as isql takes it, as host, port and the database's
+/// path or alias: `host/port:path`, `host:path`, `inet://host:port/path`,
+/// or a path or alias alone (on this machine). `C:\…` is a drive, not a
+/// host.
+pub fn split_database(s: &str) -> (Option<String>, Option<u16>, String) {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("inet://").or_else(|| s.strip_prefix("inet4://")).or_else(|| s.strip_prefix("inet6://")) {
+        let (server, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let (host, port) = match server.rsplit_once(':') {
+            Some((host, port)) if port.parse::<u16>().is_ok() => (host, port.parse().ok()),
+            _ => (server, None),
+        };
+        return (Some(host.to_string()).filter(|h| !h.is_empty()), port, path.to_string());
+    }
+    let Some((server, path)) = s.split_once(':') else { return (None, None, s.to_string()) };
+    // A drive letter: C:\data or C:/data
+    if server.len() == 1 && server.chars().all(|c| c.is_ascii_alphabetic()) {
+        return (None, None, s.to_string());
+    }
+    let (host, port) = match server.split_once('/') {
+        Some((host, port)) => (host, port.parse().ok()),
+        None => (server, None),
+    };
+    (Some(host.to_string()), port, path.to_string())
+}
+
 /// Connection character sets, by Firebird name. `NONE` is not among them:
 /// with it the server sends bytes untranslated and the client has to guess.
 const CHARSETS: &[(&str, Charset)] = &[
@@ -131,5 +184,34 @@ mod tests {
         }
         assert!(charset_by_name("win1252").is_some());
         assert!(charset_by_name("NONE").is_none());
+    }
+
+    #[test]
+    fn connection_strings_split_as_isql_reads_them() {
+        let split = |s: &str| {
+            let (host, port, path) = split_database(s);
+            (host.unwrap_or_default(), port, path)
+        };
+        assert_eq!(split("srv/3051:C:\\data\\x.fdb"), ("srv".into(), Some(3051), "C:\\data\\x.fdb".into()));
+        assert_eq!(split("srv:/var/db/x.fdb"), ("srv".into(), None, "/var/db/x.fdb".into()));
+        assert_eq!(split("C:\\data\\x.fdb"), ("".into(), None, "C:\\data\\x.fdb".into()));
+        assert_eq!(split("employee"), ("".into(), None, "employee".into()));
+        assert_eq!(split("inet://srv:3052/employee"), ("srv".into(), Some(3052), "employee".into()));
+        assert_eq!(split("10.0.0.1:employee"), ("10.0.0.1".into(), None, "employee".into()));
+    }
+
+    #[test]
+    fn a_connect_overrides_what_it_says() {
+        let base = ConnectParams { password: "kept".into(), auth: AuthPlugin::Legacy, ..Default::default() };
+        let target = fb_sql::isql::Connect {
+            database: "srv/3051:db".into(),
+            user: Some("u".into()),
+            password: None,
+            role: Some("r".into()),
+        };
+        let p = base.with_connect(&target, Some("UTF8"));
+        assert_eq!((p.host.as_str(), p.port, p.database.as_str()), ("srv", 3051, "db"));
+        assert_eq!((p.user.as_str(), p.password.as_str(), p.role.as_deref()), ("u", "kept", Some("r")));
+        assert_eq!((p.charset.as_str(), p.auth), ("UTF8", AuthPlugin::Legacy));
     }
 }
