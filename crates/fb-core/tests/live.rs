@@ -13,6 +13,7 @@ use fb_core::{
     run_script, ColumnKind, ConnectParams, Connection, Decimal, Error, ExecuteOptions, Isolation, LockWait,
     ScriptOptions, StatementType, StepOutcome, TxEnd, TxOptions, Value,
 };
+use fb_core::{run_executive, RunOptions, RunOutcome, RunStep, RunSummary, Target};
 
 /// Held by the tests that change the catalog, and by the one that backs the
 /// database up: a backup reads every table by its id, and fails when one
@@ -441,6 +442,98 @@ fn an_atomic_script_that_fails_leaves_nothing() {
     let cancelled = std::sync::atomic::AtomicBool::new(true);
     let summary = run_script(&conn, None, TxOptions::default(), script, options, &cancelled, |_, _| {}).unwrap();
     assert_eq!((summary.done, summary.failed, summary.cancelled, summary.ended), (0, 0, true, None));
+}
+
+fn executive_options() -> RunOptions {
+    RunOptions { stop_on_error: false, auto_ddl: true, rollback_on_stop: true, tx_options: TxOptions::default() }
+}
+
+fn execute(
+    target: &std::sync::Mutex<Target>,
+    script: &str,
+    only: Option<&[usize]>,
+    options: RunOptions,
+) -> (Vec<RunStep>, RunSummary) {
+    let never = std::sync::atomic::AtomicBool::new(false);
+    let mut steps = Vec::new();
+    let summary = run_executive(target, script, only, options, &never, |s, _| steps.push(s.clone())).unwrap();
+    (steps, summary)
+}
+
+fn tables(conn: &Connection, names: &str) -> i64 {
+    let sql = format!("select count(*) from rdb$relations where rdb$relation_name in ({names})");
+    conn.query(&sql, vec![]).unwrap().rows[0][0].as_i64().unwrap()
+}
+
+/// Writes, so only against the fixture database; what it creates it drops
+#[test]
+fn fixture_an_executive_runs_only_the_statements_chosen() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(conn) = connect() else { return };
+    let _catalog = catalog();
+    let target = std::sync::Mutex::new(Target::new(Some(connect().unwrap())));
+    let script = "\
+CREATE TABLE EXEC_A (ID INTEGER);
+CREATE TABLE EXEC_B (ID INTEGER);
+INSERT INTO EXEC_A VALUES (1);
+INSERT INTO EXEC_A VALUES (2);
+COMMIT;
+";
+    let (steps, summary) = execute(&target, script, Some(&[0, 2, 4]), executive_options());
+    assert_eq!(steps.iter().map(|s| s.index).collect::<Vec<_>>(), [0, 2, 4], "{steps:?}");
+    assert_eq!((summary.statements, summary.done, summary.failed, summary.active), (3, 3, 0, false), "{steps:?}");
+    assert!(matches!(&steps[1].outcome, RunOutcome::Done { records, .. } if records.inserted == 1), "{steps:?}");
+    assert_eq!(tables(&conn, "'EXEC_A'"), 1);
+    assert_eq!(tables(&conn, "'EXEC_B'"), 0);
+    assert_eq!(conn.query("select count(*) from EXEC_A", vec![]).unwrap().rows[0][0].as_i64(), Some(1));
+
+    let (steps, _) = execute(&target, "DROP TABLE EXEC_A;", None, executive_options());
+    assert!(matches!(steps[0].outcome, RunOutcome::Done { .. }), "{steps:?}");
+    assert_eq!(tables(&conn, "'EXEC_A'"), 0);
+}
+
+/// Writes nothing that lasts: the DDL is held back, then rolled back
+#[test]
+fn fixture_set_autoddl_off_holds_an_executives_ddl_back() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(conn) = connect() else { return };
+    let _catalog = catalog();
+    let target = std::sync::Mutex::new(Target::new(Some(connect().unwrap())));
+    let (steps, summary) = execute(&target, "SET AUTODDL OFF; CREATE TABLE EXEC_C (ID INTEGER);", None, executive_options());
+    assert_eq!(steps[0].outcome, RunOutcome::Applied, "{steps:?}");
+    assert!(summary.active, "{steps:?}");
+    // Not committed: no one else sees it
+    assert_eq!(tables(&conn, "'EXEC_C'"), 0);
+    target.lock().unwrap().end(TxEnd::Rollback).unwrap();
+    assert_eq!(tables(&conn, "'EXEC_C'"), 0);
+    assert_eq!(target.lock().unwrap().tx, None);
+}
+
+/// Writes nothing that lasts: the failure stops it and what ran is undone
+#[test]
+fn fixture_an_executive_stops_at_a_failure_and_rolls_back() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(conn) = connect() else { return };
+    let _catalog = catalog();
+    let target = std::sync::Mutex::new(Target::new(Some(connect().unwrap())));
+    let script = "\
+SET AUTODDL OFF;
+CREATE TABLE EXEC_D (ID INTEGER);
+INSERT INTO NO_SUCH_TABLE VALUES (1);
+CREATE TABLE EXEC_E (ID INTEGER);
+";
+    let options = RunOptions { stop_on_error: true, ..executive_options() };
+    let (steps, summary) = execute(&target, script, None, options);
+    assert_eq!(steps.len(), 3, "{steps:?}");
+    assert!(matches!(steps[2].outcome, RunOutcome::Failed { sqlcode: -204, .. }), "{steps:?}");
+    assert!(summary.stopped && !summary.active, "{summary:?}");
+    assert_eq!(tables(&conn, "'EXEC_D', 'EXEC_E'"), 0);
 }
 
 /// Asks only who the server is: fine against any server

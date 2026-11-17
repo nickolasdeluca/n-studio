@@ -8,6 +8,7 @@
 mod connection;
 mod editor;
 mod error;
+mod executive;
 mod params;
 mod script;
 mod service;
@@ -20,6 +21,7 @@ pub use editor::{
     Performance, Records, StatementType, TablePerformance, TxEnd, TxId, TxOptions,
 };
 pub use error::{Error, Result};
+pub use executive::{run_executive, RunOptions, RunOutcome, RunStep, RunSummary, Target, NO_CONNECTION};
 pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
 pub use service::{
     run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask, ServiceUser,

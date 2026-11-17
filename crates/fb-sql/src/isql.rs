@@ -98,6 +98,39 @@ pub fn command(sql: &str) -> Command {
     }
 }
 
+/// IBExpert's `DESCRIBE`, as the `COMMENT ON` it means: `DESCRIBE <kind>
+/// name 'text'`, `DESCRIBE FIELD c TABLE t 'text'` and `DESCRIBE PARAMETER
+/// p PROCEDURE x 'text'`. Names are kept as written. `None` for anything
+/// else.
+pub fn describe_as_comment(sql: &str) -> Option<String> {
+    let tokens = tokenize(sql);
+    let tokens: Vec<&Token> = tokens.iter().filter(|t| !t.kind.is_trivia()).collect();
+    let text = |t: &Token| &sql[t.range.clone()];
+    let (first, rest) = tokens.split_first()?;
+    let (comment, middle) = rest.split_last()?;
+    if !text(first).eq_ignore_ascii_case("DESCRIBE") || comment.kind != TokenKind::String || comment.unterminated {
+        return None;
+    }
+    let is_name = |t: &&Token| matches!(t.kind, TokenKind::Word | TokenKind::Quoted);
+    let upper = |t: &Token| text(t).to_ascii_uppercase();
+    match middle {
+        [what, member, kind, name] if is_name(member) && is_name(name) => {
+            let on = match (upper(what).as_str(), upper(kind).as_str()) {
+                ("FIELD", "TABLE" | "VIEW") => "COLUMN",
+                ("PARAMETER", "PROCEDURE") => "PARAMETER",
+                ("PARAMETER", "FUNCTION") => "FUNCTION PARAMETER",
+                _ => return None,
+            };
+            Some(format!("COMMENT ON {on} {}.{} IS {}", text(name), text(member), text(comment)))
+        }
+        [kinds @ .., name] if !kinds.is_empty() && is_name(name) && kinds.iter().all(|t| t.kind == TokenKind::Word) => {
+            let kind: Vec<String> = kinds.iter().map(|t| upper(t)).collect();
+            Some(format!("COMMENT ON {} {} IS {}", kind.join(" "), text(name), text(comment)))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +164,24 @@ mod tests {
     fn a_connect_never_shows_its_password() {
         let Command::Connect(c) = command("CONNECT 'db' USER 'u' PASSWORD 'secret'") else { panic!() };
         assert!(!format!("{c:?}").contains("secret"));
+    }
+
+    #[test]
+    fn describe_is_a_comment() {
+        assert_eq!(
+            describe_as_comment("DESCRIBE TABLE CLIENTE 'it''s'").unwrap(),
+            "COMMENT ON TABLE CLIENTE IS 'it''s'"
+        );
+        assert_eq!(
+            describe_as_comment("describe field nome table \"Cliente\" 'x'").unwrap(),
+            "COMMENT ON COLUMN \"Cliente\".nome IS 'x'"
+        );
+        assert_eq!(
+            describe_as_comment("DESCRIBE PARAMETER A PROCEDURE P 'x'").unwrap(),
+            "COMMENT ON PARAMETER P.A IS 'x'"
+        );
+        assert_eq!(describe_as_comment("DESCRIBE TABLE CLIENTE"), None);
+        assert_eq!(describe_as_comment("SHOW TABLE CLIENTE 'x'"), None);
     }
 
     #[test]
