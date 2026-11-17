@@ -6,13 +6,16 @@
 //! PSQL bodies full of `;`. Ranges are byte offsets into the text.
 
 pub mod format;
+pub mod isql;
 pub mod lexer;
 pub mod psql;
+mod subject;
 
 use std::ops::Range;
 
 use lexer::{tokenize, Token, TokenKind};
 use serde::Serialize;
+pub use subject::{classify, ObjectKind, Operation, Subject};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Statement {
@@ -104,12 +107,12 @@ fn statement(text: &str, tokens: &[Token], range: Range<usize>, span_end: usize)
         .take(3)
         .map(|t| text[t.range.clone()].to_ascii_uppercase())
         .collect();
-    let kind = classify(text, &range, &inside, &words);
+    let kind = kind_of(text, &range, &inside, &words);
     let unterminated_literal = tokens.iter().any(|t| t.unterminated && t.range.start < range.end && t.range.end > range.start);
     Some(Statement { range, span_end, kind, unterminated_literal })
 }
 
-fn classify(text: &str, range: &Range<usize>, tokens: &[&Token], words: &[String]) -> StatementKind {
+fn kind_of(text: &str, range: &Range<usize>, tokens: &[&Token], words: &[String]) -> StatementKind {
     let word = |i: usize| words.get(i).map(String::as_str);
     // The leading words must be the statement's first tokens
     let leading = |n: usize| tokens.iter().take(n).all(|t| t.kind == TokenKind::Word);
@@ -126,7 +129,7 @@ fn classify(text: &str, range: &Range<usize>, tokens: &[&Token], words: &[String
             const ISQL: &[&str] = &[
                 "SQL", "AUTODDL", "AUTO", "NAMES", "PLAN", "PLANONLY", "EXPLAIN", "STATS", "COUNT", "ECHO", "LIST",
                 "HEADING", "BAIL", "WARNINGS", "WNG", "BLOB", "BLOBDISPLAY", "ROWCOUNT", "MAXROWS", "WIDTH",
-                "KEEP_TRAN_PARAMS", "PER_TABLE_STATS", "EXEC_PATH_DISPLAY", "CONNECT",
+                "KEEP_TRAN_PARAMS", "PER_TABLE_STATS", "EXEC_PATH_DISPLAY", "CONNECT", "CLIENTLIB",
             ];
             // SET TIME is isql's; SET TIME ZONE is SQL (Firebird 4)
             if ISQL.contains(&w) || (w == "TIME" && next != Some("ZONE")) {
@@ -135,7 +138,10 @@ fn classify(text: &str, range: &Range<usize>, tokens: &[&Token], words: &[String
                 StatementKind::Sql
             }
         }
-        (Some("SHOW" | "INPUT" | "OUTPUT" | "QUIT" | "EXIT" | "SHELL" | "EDIT" | "HELP"), _, _) if leading(1) => {
+        // CONNECT is isql's; DESCRIBE is IBExpert's, and means a COMMENT ON
+        (Some("SHOW" | "INPUT" | "OUTPUT" | "QUIT" | "EXIT" | "SHELL" | "EDIT" | "HELP" | "CONNECT" | "DESCRIBE"), _, _)
+            if leading(1) =>
+        {
             StatementKind::Isql
         }
         _ => StatementKind::Sql,
@@ -275,6 +281,9 @@ COMMIT;";
         let kinds = |s: &str| split(s).into_iter().map(|s| s.kind).collect::<Vec<_>>();
         assert_eq!(kinds("SET SQL DIALECT 3"), vec![StatementKind::Isql]);
         assert_eq!(kinds("show tables"), vec![StatementKind::Isql]);
+        assert_eq!(kinds("SET CLIENTLIB 'fbclient.dll'"), vec![StatementKind::Isql]);
+        assert_eq!(kinds("CONNECT 'db' USER 'u'"), vec![StatementKind::Isql]);
+        assert_eq!(kinds("DESCRIBE TABLE T 'text'"), vec![StatementKind::Isql]);
         assert_eq!(kinds("SET TIME ZONE 'America/Sao_Paulo'"), vec![StatementKind::Sql]);
         assert_eq!(kinds("set generator g to 5"), vec![StatementKind::Sql]);
         assert_eq!(kinds("set transaction read committed"), vec![StatementKind::Sql]);

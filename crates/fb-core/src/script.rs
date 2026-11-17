@@ -11,6 +11,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use fb_sql::isql::{self, Command};
 use fb_sql::StatementKind;
 use serde::{Deserialize, Serialize};
 
@@ -116,7 +117,7 @@ pub fn run_script(
         let sql = &text[statement.range.clone()];
         let at = Instant::now();
         let outcome = if statement.kind == StatementKind::Isql {
-            if let Some(on) = set_auto_ddl(sql) {
+            if let Command::SetAutoDdl(on) = isql::command(sql) {
                 auto_ddl = on && !options.atomic;
             }
             StepOutcome::Skipped
@@ -189,34 +190,4 @@ pub fn run_script(
     }
     summary.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(summary)
-}
-
-/// What a `SET AUTODDL` or `SET AUTO` command sets it to; it toggles when
-/// it does not say
-fn set_auto_ddl(command: &str) -> Option<bool> {
-    let mut words = command.split_whitespace().map(str::to_ascii_uppercase);
-    if words.next().as_deref() != Some("SET") || !matches!(words.next().as_deref(), Some("AUTODDL" | "AUTO")) {
-        return None;
-    }
-    match words.next().as_deref() {
-        Some("OFF") => Some(false),
-        // isql toggles without an argument; a script that bothers to say it
-        // nearly always means to turn it on
-        _ => Some(true),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::set_auto_ddl;
-
-    #[test]
-    fn autoddl_is_the_one_isql_command_followed() {
-        assert_eq!(set_auto_ddl("SET AUTODDL OFF"), Some(false));
-        assert_eq!(set_auto_ddl("set autoddl on"), Some(true));
-        assert_eq!(set_auto_ddl("SET AUTO  off"), Some(false));
-        assert_eq!(set_auto_ddl("SET AUTODDL"), Some(true));
-        assert_eq!(set_auto_ddl("SET NAMES UTF8"), None);
-        assert_eq!(set_auto_ddl("SHOW TABLES"), None);
-    }
 }
