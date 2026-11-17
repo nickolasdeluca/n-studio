@@ -128,6 +128,7 @@ fn main() {
             script::script_run,
             script::script_cancel,
             executive::executive_outline,
+            executive::executive_outline_file,
             executive::executive_run,
             executive::executive_cancel,
             executive::executive_password,

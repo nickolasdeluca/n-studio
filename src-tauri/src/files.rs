@@ -91,6 +91,19 @@ fn decode(bytes: &[u8]) -> (String, Encoding) {
     }
 }
 
+/// [`decode`], keeping the bytes as the text when they are UTF-8 already:
+/// a file run from disk can be hundreds of megabytes, not to be held twice
+pub fn decode_owned(bytes: Vec<u8>) -> (String, Encoding) {
+    let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]) || bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]);
+    if bom {
+        return decode(&bytes);
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => (text, Encoding::Utf8),
+        Err(e) => decode(e.as_bytes()),
+    }
+}
+
 /// The bytes of `text` in `encoding`, or the first character it cannot hold
 fn encode(text: &str, encoding: Encoding) -> Result<Vec<u8>, char> {
     let utf16 = |bom: [u8; 2], bytes: fn(u16) -> [u8; 2]| {
@@ -168,6 +181,18 @@ pub async fn script_write(app: AppHandle, path: PathBuf, text: String, format: F
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decoding_owned_bytes_reads_as_decoding_borrowed_ones() {
+        for bytes in [
+            "ação".as_bytes().to_vec(),
+            [&[0xEF, 0xBB, 0xBF][..], "ação".as_bytes()].concat(),
+            vec![0xE7, 0xE3, 0x80],
+            vec![0xFF, 0xFE, b'a', 0],
+        ] {
+            assert_eq!(super::decode_owned(bytes.clone()), super::decode(&bytes));
+        }
+    }
+
     use super::*;
 
     const UTF8: Format = Format { encoding: Encoding::Utf8, crlf: false };

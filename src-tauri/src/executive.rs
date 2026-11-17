@@ -26,6 +26,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::commands::AppState;
 use crate::error::{AppError, AppResult};
+use crate::files::{self, Encoding};
 use crate::registry::{Engine, Registration};
 use crate::script::Utf16;
 use crate::secrets;
@@ -124,12 +125,19 @@ fn summary(sql: &str) -> String {
 
 /// The statements of `text`, each with what it is about
 pub fn outline(text: &str) -> Vec<Block> {
+    outline_some(text, usize::MAX).0
+}
+
+/// The first `most` statements of `text`, and how many it has
+fn outline_some(text: &str, most: usize) -> (Vec<Block>, usize) {
     let mut offsets = Utf16::new(text);
     let mut lines = Lines::new(text);
-    fb_sql::split(text)
-        .into_iter()
+    let mut total = 0;
+    let blocks = fb_sql::Splitter::new(text)
         .filter(|s| !matches!(s.kind, StatementKind::SetTerm { .. }))
+        .inspect(|_| total += 1)
         .enumerate()
+        .filter(|(index, _)| *index < most)
         .map(|(index, s)| {
             let sql = &text[s.range.clone()];
             let line = lines.at(s.range.start);
@@ -145,7 +153,66 @@ pub fn outline(text: &str) -> Vec<Block> {
                 summary: summary(sql),
             }
         })
-        .collect()
+        .collect();
+    (blocks, total)
+}
+
+/// Past this a file is not run: it would be held whole, with what the run
+/// needs beside it. Statements are read from it one at a time, so a file
+/// this size costs about its own size.
+const LARGEST_FILE: u64 = 256 * 1024 * 1024;
+/// Statements of a file listed for the panel: past this the list would
+/// cost the panel more than the file; the run still goes through them all
+const FILE_LISTED: usize = 200_000;
+
+/// A script read from disk to run, never sent to the panel whole
+fn read_script(path: &str) -> AppResult<(String, Encoding, u64)> {
+    let path = std::path::Path::new(path);
+    let size = std::fs::metadata(path).map_err(|e| AppError::storage(path, e))?.len();
+    if size > LARGEST_FILE {
+        return Err(AppError::Invalid {
+            message: format!(
+                "{} has {} MB; a script is run from disk up to {} MB.",
+                path.display(),
+                size / (1024 * 1024),
+                LARGEST_FILE / (1024 * 1024)
+            ),
+        });
+    }
+    let bytes = std::fs::read(path).map_err(|e| AppError::storage(path, e))?;
+    let (text, encoding) = files::decode_owned(bytes);
+    Ok((text, encoding, size))
+}
+
+/// A file's statements, for the panel to list before running it
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileOutline {
+    /// The first [`FILE_LISTED`] of them
+    blocks: Vec<Block>,
+    /// How many it has
+    total: usize,
+    size: u64,
+    encoding: Encoding,
+}
+
+#[tauri::command]
+pub async fn executive_outline_file(path: String) -> AppResult<FileOutline> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (text, encoding, size) = read_script(&path)?;
+        let (blocks, total) = outline_some(&text, FILE_LISTED);
+        Ok(FileOutline { blocks, total, size, encoding })
+    })
+    .await
+    .map_err(|e| AppError::Connection { message: format!("The script's worker failed: {e}") })?
+}
+
+/// What a run runs: the panel's text, or a file it reads itself
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum Source {
+    Text { text: String },
+    File { path: String },
 }
 
 #[tauri::command]
@@ -348,7 +415,7 @@ fn starting_params(state: &AppState, registration: &str, connector: &AppConnecto
     Ok(settings.connect_params(password))
 }
 
-/// Runs `text`, or the statements of it numbered in `only`, on a connection
+/// Runs `source`, or the statements of it numbered in `only`, on a connection
 /// of the run's own: to `registration` when the panel chose one, else to
 /// what the script's `CONNECT` names. `charset` is the panel's execute
 /// charset, when it chose one. Every statement is reported through
@@ -361,7 +428,7 @@ pub async fn executive_run(
     run: u64,
     registration: Option<String>,
     charset: Option<String>,
-    text: String,
+    source: Source,
     only: Option<Vec<usize>>,
     options: ExecutiveOptions,
 ) -> AppResult<RunEnd> {
@@ -378,6 +445,10 @@ pub async fn executive_run(
     let worker = this.clone();
     let result = tauri::async_runtime::spawn_blocking(move || -> AppResult<RunEnd> {
         let state = events.state::<AppState>();
+        let text = match source {
+            Source::Text { text } => text,
+            Source::File { path } => read_script(&path)?.0,
+        };
         let mut connector = AppConnector { app: events.clone(), id: run, run: worker.clone(), charset: charset.clone() };
         if let Some(registration) = &registration {
             let mut params = starting_params(&state, registration, &connector)?;
@@ -518,6 +589,20 @@ mod tests {
         assert_eq!(b.from, text[..start].encode_utf16().count());
         assert_eq!((blocks[1].index, blocks[1].line, blocks[1].subject.member.as_deref()), (1, 9, Some("COLUNA")));
         assert_eq!((blocks[2].line, blocks[2].kind), (10, "isql"));
+    }
+
+    #[test]
+    fn a_file_lists_its_first_statements_and_counts_them_all() {
+        let text = "SET TERM ^ ;\nselect 1 from rdb$database^\nSET TERM ; ^\n".repeat(5);
+        let (blocks, total) = outline_some(&text, 3);
+        assert_eq!((blocks.len(), total), (3, 5));
+        assert_eq!(blocks.iter().map(|b| (b.index, b.line)).collect::<Vec<_>>(), [(0, 2), (1, 5), (2, 8)]);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_says_where() {
+        let error = read_script("/no/such/file.sql").unwrap_err();
+        assert!(matches!(error, AppError::Storage { .. }), "{error:?}");
     }
 
     #[test]

@@ -733,6 +733,18 @@ export interface ExecutiveEnd {
   endError: string | null;
 }
 
+/** A script on disk, outlined to be run without being loaded */
+export interface FileOutline {
+  /** Its first statements: past a limit they are counted, not listed */
+  blocks: ScriptBlock[];
+  total: number;
+  size: number;
+  encoding: FileFormat["encoding"];
+}
+
+/** What a run runs */
+export type ExecutiveSource = { type: "text"; text: string } | { type: "file"; path: string };
+
 /** The run asks for a CONNECT's password */
 export interface ExecutivePasswordAsk {
   run: number;
@@ -988,10 +1000,11 @@ export const api = {
     run: number,
     registration: string | null,
     charset: string | null,
-    text: string,
+    source: ExecutiveSource,
     only: number[] | null,
     options: ExecutiveOptions,
-  ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, text, only, options }),
+  ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, source, only, options }),
+  executiveOutlineFile: (path: string) => invoke<FileOutline>("executive_outline_file", { path }),
   executiveCancel: (run: number) => invoke<boolean>("executive_cancel", { run }),
   executivePassword: (run: number, password: string | null) => invoke<void>("executive_password", { run, password }),
   executiveEnd: (run: number, how: "commit" | "rollback") => invoke<void>("executive_end", { run, how }),

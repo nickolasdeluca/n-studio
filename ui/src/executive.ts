@@ -35,8 +35,10 @@ export interface ExecutiveMessage {
 
 export interface ExecutiveRun {
   id: number;
-  /** The statements chosen, by index, in order */
-  chosen: number[];
+  /** The statements chosen, by index, in order; all of them without it */
+  chosen: number[] | null;
+  picked: Set<number> | null;
+  total: number;
   /** How many of them are through */
   at: number;
   failed: number;
@@ -61,8 +63,13 @@ export interface Executive {
   active: number | null;
   messages: ExecutiveMessage[];
   tab: ExecutiveTab;
+  /** A statement to bring into sight in the Statements tab */
+  focus: number | null;
   /** The explorer of what the script touches is shown */
   explorer: boolean;
+  /** A file run from disk, not loaded in the editor: what is run while
+   *  there is one */
+  disk: { path: string; size: number; total: number } | null;
   /** The file the text is from, and how it is written */
   file: { path: string; format: FileFormat } | null;
   changed: boolean;
@@ -111,6 +118,8 @@ export function openExecutive(registration: string | null): string {
     messages: [],
     tab: "script",
     explorer: true,
+    focus: null,
+    disk: null,
     file: null,
     changed: false,
   };
@@ -196,8 +205,9 @@ const n = (v: number) => v.toLocaleString();
 /** Runs the panel's script, or the statements of it numbered in `only` */
 export async function runExecutive(id: string, only: number[] | null = null): Promise<void> {
   const panel = get(id);
-  const text = texts.get(id)?.read() ?? "";
   if (!panel || panel.run) return;
+  if (panel.disk) return runDisk(id, only);
+  const text = texts.get(id)?.read() ?? "";
   if (panel.active !== null) {
     log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
     return;
@@ -229,12 +239,13 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
       log(id, [{ level: "info", text: t("No statement is checked.") }]);
       return;
     }
-    patchExecutive(id, { blocks, steps: {}, messages: [], run: { id: run, chosen, at: 0, failed: 0, started: Date.now() } });
+    const run_ = { id: run, chosen: only ? chosen : null, picked: only ? new Set(chosen) : null, total: chosen.length };
+    patchExecutive(id, { blocks, steps: {}, messages: [], run: { ...run_, at: 0, failed: 0, started: Date.now() } });
     await listening();
     progress.set(run, (e) => take(id, run, e.steps, e.at));
     try {
       const options = get(id)?.options ?? defaultOptions;
-      const end = await api.executiveRun(run, panel.registration, panel.charset, text, only, options);
+      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "text", text }, only, options);
       take(id, run, end.steps);
       finish(id, run, end);
     } catch (e) {
@@ -247,6 +258,98 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
   ends.set(id, done);
   await done;
   if (ends.get(id) === done) ends.delete(id);
+}
+
+/** Runs the file the panel has on disk, or the statements of it in `only` */
+async function runDisk(id: string, only: number[] | null): Promise<void> {
+  const panel = get(id);
+  if (!panel?.disk || panel.run) return;
+  if (panel.active !== null) {
+    log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
+    return;
+  }
+  const run = newRun();
+  const listed = panel.blocks.map((b) => b.index);
+  // Past the statements listed, all are run unless some are left out
+  const chosen = only ? listed.filter((i) => only.includes(i)) : null;
+  const done = (async () => {
+    const run_ = { id: run, chosen, picked: chosen && new Set(chosen), total: chosen?.length ?? panel.disk!.total };
+    patchExecutive(id, { steps: {}, messages: [], run: { ...run_, at: 0, failed: 0, started: Date.now() } });
+    if (only && listed.length < panel.disk!.total) {
+      log(id, [{ level: "info", text: t("Only the statements listed can be checked: those past them are not run.") }]);
+    }
+    await listening();
+    progress.set(run, (e) => take(id, run, e.steps, e.at));
+    try {
+      const options = get(id)?.options ?? defaultOptions;
+      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "file", path: panel.disk!.path }, only, options);
+      take(id, run, end.steps);
+      finish(id, run, end);
+    } catch (e) {
+      log(id, [{ level: "error", text: errorText(e) }]);
+    } finally {
+      progress.delete(run);
+      patchExecutive(id, { run: null });
+    }
+  })();
+  ends.set(id, done);
+  await done;
+  if (ends.get(id) === done) ends.delete(id);
+}
+
+/** Asks for a script file, lists its statements and runs it from disk,
+ *  without loading it into the editor */
+export async function runFromFile(id: string): Promise<void> {
+  const panel = get(id);
+  if (!panel || panel.run) return;
+  if (panel.active !== null) {
+    log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
+    return;
+  }
+  let path: string | null;
+  try {
+    const picked = await open({ title: t("Run Script from File"), multiple: false, filters: filters() });
+    path = typeof picked === "string" ? picked : null;
+  } catch (e) {
+    useStore.getState().setNotice(errorText(e));
+    return;
+  }
+  if (!path) return;
+  patchExecutive(id, { messages: [{ level: "info", text: t("Reading {file}…", { file: baseName(path) }) }] });
+  try {
+    const outline = await api.executiveOutlineFile(path);
+    patchExecutive(id, {
+      disk: { path, size: outline.size, total: outline.total },
+      blocks: outline.blocks,
+      unchecked: {},
+      steps: {},
+      messages: [],
+      tab: "script",
+    });
+    if (outline.blocks.length < outline.total) {
+      log(id, [
+        {
+          level: "info",
+          text: t("{total} statements; the first {listed} are listed.", {
+            total: n(outline.total),
+            listed: n(outline.blocks.length),
+          }),
+        },
+      ]);
+    }
+  } catch (e) {
+    log(id, [{ level: "error", text: errorText(e) }]);
+    return;
+  }
+  await runDisk(id, null);
+}
+
+/** Back to the script in the editor */
+export function closeDisk(id: string) {
+  const panel = get(id);
+  if (!panel?.disk || panel.run) return;
+  patchExecutive(id, { disk: null, blocks: [], steps: {}, unchecked: {} });
+  void outlineExecutive(id);
 }
 
 function finish(id: string, run: number, end: ExecutiveEnd) {
@@ -327,16 +430,22 @@ export function closeExecutive(id: string) {
   });
 }
 
+/** The statement running now, by index */
+export function runningIndex(run: ExecutiveRun | null): number | undefined {
+  if (!run || run.at >= run.total) return undefined;
+  return run.chosen ? run.chosen[run.at] : run.at;
+}
+
 // ── The statements ────────────────────────────────────────────────────────
 
 /** Outlines the panel's text again: after typing, debounced by the panel */
 export async function outlineExecutive(id: string): Promise<void> {
   const panel = get(id);
-  if (!panel || panel.run) return;
+  if (!panel || panel.run || panel.disk) return;
   try {
     const blocks = await api.executiveOutline(texts.get(id)?.read() ?? "");
     const before = get(id);
-    if (!before || before.run) return;
+    if (!before || before.run || before.disk) return;
     // Other statements: what was checked and what ran were about the old ones
     const same = blocks.length === before.blocks.length;
     patchExecutive(id, { blocks, ...(same ? {} : { unchecked: {}, steps: {} }) });
@@ -431,6 +540,7 @@ export async function openExecutiveFile(id: string) {
     const path = await open({ title: t("Open Script"), multiple: false, filters: filters() });
     if (typeof path !== "string") return;
     const { text, format } = await api.scriptRead(path);
+    patchExecutive(id, { disk: null });
     texts.get(id)?.write(text);
     patchExecutive(id, { file: { path, format }, changed: false, steps: {}, messages: [] });
     retitle(id);

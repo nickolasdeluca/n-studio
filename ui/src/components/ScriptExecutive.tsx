@@ -19,6 +19,9 @@ import {
   outlineExecutive,
   patchExecutive,
   runExecutive,
+  runFromFile,
+  runningIndex,
+  closeDisk,
   saveExecutive,
   stopExecutive,
   texts,
@@ -104,7 +107,6 @@ const editable = new Compartment();
 function panelKeys(id: string) {
   return Prec.highest(
     keymap.of([
-      { key: "F9", run: () => (keys.get(id)?.run(), true) },
       { key: "Mod-s", run: () => (keys.get(id)?.save(), true) },
     ]),
   );
@@ -171,7 +173,7 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
   // The statement running and those that failed, in the text
   const steps = panel?.steps;
   const blocks = panel?.blocks;
-  const at = panel?.run ? panel.run.chosen[panel.run.at] : undefined;
+  const at = runningIndex(panel?.run ?? null);
   useEffect(() => {
     const v = view.current;
     if (!v || !blocks || !steps) return;
@@ -186,7 +188,13 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
 
   const select = useCallback(
     (index: number) => {
-      const block = useExecutives.getState().panels[id]?.blocks.find((b) => b.index === index);
+      const panel = useExecutives.getState().panels[id];
+      // A file run from disk has no text here: its statement is in the list
+      if (panel?.disk) {
+        patchExecutive(id, { tab: "statements", focus: index });
+        return;
+      }
+      const block = panel?.blocks.find((b) => b.index === index);
       const v = view.current;
       if (!block || !v) return;
       patchExecutive(id, { tab: "script" });
@@ -214,7 +222,17 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
   };
 
   return (
-    <div className="flex h-full flex-col bg-panel">
+    <div
+      className="flex h-full flex-col bg-panel"
+      onKeyDownCapture={(e) => {
+        // IBExpert's keys, wherever in the panel the keyboard is
+        if (e.key !== "F9" || e.ctrlKey || e.metaKey || e.altKey) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.shiftKey) void runFromFile(id);
+        else run();
+      }}
+    >
       <Toolbar panel={panel} run={run} />
       {panel.active !== null && <ActiveBar id={id} />}
       <div className="flex min-h-0 flex-1">
@@ -238,7 +256,12 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
           <div ref={body} className="flex min-h-0 flex-1 flex-col">
             <div className="relative min-h-0" style={{ height: `${split * 100}%` }}>
               {/* The editor stays mounted on the other tabs: its text is the script */}
-              <div ref={host} className={`h-full overflow-hidden ${panel.tab === "script" ? "" : "invisible"}`} />
+              <div ref={host} className={`h-full overflow-hidden ${panel.tab === "script" && !panel.disk ? "" : "invisible"}`} />
+              {panel.tab === "script" && panel.disk && (
+                <div className="absolute inset-0 bg-panel">
+                  <DiskNotice panel={panel} />
+                </div>
+              )}
               {panel.tab === "statements" && (
                 <div className="absolute inset-0 bg-panel">
                   <StatementsTab panel={panel} select={select} />
@@ -277,7 +300,13 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
         icon="run"
         label={t("Run Checked")}
         disabled={running || panel.active !== null || panel.blocks.length === 0}
-        onClick={() => runExecutive(panel.id, checkedOf(panel))}
+        onClick={() => runExecutive(panel.id, Object.keys(panel.unchecked).length === 0 ? null : checkedOf(panel))}
+      />
+      <TextButton
+        icon="open"
+        label={t("Run from File… (Shift+F9)")}
+        disabled={running || panel.active !== null}
+        onClick={() => runFromFile(panel.id)}
       />
       <TextButton icon="stop" label={t("Stop")} disabled={!running} onClick={() => stopExecutive(panel.id)} />
       <span className="mx-1 h-4 w-px bg-line" />
@@ -290,10 +319,34 @@ function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
       <span className="flex-1" />
       {r && (
         <span className="px-2 text-muted tabular-nums">
-          {r.at.toLocaleString()} / {r.chosen.length.toLocaleString()}
+          {r.at.toLocaleString()} / {r.total.toLocaleString()}
           {r.failed > 0 && <span className="text-danger"> · {t("{n} failed", { n: r.failed.toLocaleString() })}</span>}
         </span>
       )}
+    </div>
+  );
+}
+
+function size(bytes: number) {
+  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/** In place of the editor while a file is run from disk */
+function DiskNotice({ panel }: { panel: Executive }) {
+  const disk = panel.disk!;
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+      <Icon name="open" size={22} className="text-muted" />
+      <p>{t("This script is run from disk, without loading it into the editor.")}</p>
+      <p className="font-mono text-[12px] break-all text-muted">{disk.path}</p>
+      <p className="text-muted">
+        {t("{size} · {n} statement(s)", { size: size(disk.size), n: disk.total.toLocaleString() })}
+      </p>
+      <div className="mt-2 flex gap-1">
+        <TextButton icon="run" accent label={t("Run Again")} disabled={!!panel.run || panel.active !== null} onClick={() => runExecutive(panel.id)} />
+        <TextButton icon="sql" label={t("Back to the Editor")} disabled={!!panel.run} onClick={() => closeDisk(panel.id)} />
+      </div>
     </div>
   );
 }
@@ -407,8 +460,8 @@ function stateOf(panel: Executive, index: number): RowState {
   if (step) return step.status;
   const run = panel.run;
   if (!run) return null;
-  if (run.chosen[run.at] === index) return "running";
-  return run.chosen.includes(index) ? "waiting" : null;
+  if (runningIndex(run) === index) return "running";
+  return (run.picked ? run.picked.has(index) : index >= run.at) ? "waiting" : null;
 }
 
 const stateLabels: Record<Exclude<RowState, null>, string> = {
@@ -451,12 +504,21 @@ function StatementsTab({ panel, select }: { panel: Executive; select(index: numb
   const running = !!panel.run;
 
   // The statement running stays in sight
-  const at = panel.run ? panel.run.chosen[panel.run.at] : undefined;
+  const at = runningIndex(panel.run);
   useEffect(() => {
     if (at === undefined) return;
     const row = blocks.findIndex((b) => b.index === at);
     if (row >= 0) rows.scrollToIndex(row, { align: "auto" });
   }, [at, blocks, rows]);
+
+  // A statement asked for from a message or the explorer
+  const focus = panel.focus;
+  useEffect(() => {
+    if (focus === null) return;
+    const row = blocks.findIndex((b) => b.index === focus);
+    if (row >= 0) rows.scrollToIndex(row, { align: "center" });
+    patchExecutive(panel.id, { focus: null });
+  }, [focus, blocks, rows, panel.id]);
 
   const menu = (e: React.MouseEvent, block: ScriptBlock) => {
     e.preventDefault();
