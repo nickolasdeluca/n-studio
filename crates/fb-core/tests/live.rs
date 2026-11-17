@@ -542,12 +542,14 @@ fn fixture_an_executive_runs_the_files_its_inputs_name() {
     let target = std::sync::Mutex::new(Target::new(Some(connect().unwrap())));
     let (steps, summary) = execute_in(&target, "INPUT 'a.sql';\nCOMMIT;", Some(&folder), None, executive_options());
     std::fs::remove_dir_all(&folder).unwrap();
-    // The insert of two values into one column, at its line in b.sql
-    let within: Vec<(usize, usize)> =
-        steps.iter().filter_map(|s| s.within.as_ref().map(|w| (s.index, w.line))).collect();
-    assert_eq!(within, [(0, 3)], "{steps:?}");
-    assert!(steps.iter().any(|s| s.within.as_ref().is_some_and(|w| w.file.ends_with("b.sql"))), "{steps:?}");
-    assert!(matches!(&steps[within.len()].outcome, RunOutcome::Failed { .. }), "{steps:?}");
+    // The insert of two values into one column, at its line in b.sql; then
+    // the INPUT of b.sql, at its line in a.sql; then the script's INPUT
+    let within: Vec<(usize, bool, usize)> = steps
+        .iter()
+        .filter_map(|s| s.within.as_ref().map(|w| (s.index, w.file.ends_with("b.sql"), w.line)))
+        .collect();
+    assert_eq!(within, [(0, true, 3), (0, false, 2)], "{steps:?}");
+    assert!(matches!(&steps[2], RunStep { index: 0, within: None, outcome: RunOutcome::Failed { .. }, .. }), "{steps:?}");
     assert_eq!((summary.statements, summary.failed, summary.included, summary.ddl), (2, 1, 5, 1), "{steps:?}");
     // What ran around the failure is there, and committed
     assert_eq!(conn.query("select count(*) from EXEC_IN", vec![]).unwrap().rows[0][0].as_i64(), Some(2));
