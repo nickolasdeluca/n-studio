@@ -367,7 +367,13 @@ function finish(id: string, run: number, end: ExecutiveEnd) {
       : end.failed > 0
         ? t("Script finished with errors")
         : t("Script finished");
-  const messages: ExecutiveMessage[] = [{ level: end.failed > 0 ? "error" : "info", text: `${how}: ${counts}` }];
+  const messages: ExecutiveMessage[] = [];
+  // Said once, not for each: SHOW, SET LIST and the like mean nothing here
+  const passed = Object.values(get(id)?.steps ?? {}).filter((s) => s.status === "skipped" && !s.note).length;
+  if (passed > 0) {
+    messages.push({ level: "info", text: t("{n} isql command(s) passed over: they are isql's, not the server's.", { n: n(passed) }) });
+  }
+  messages.push({ level: end.failed > 0 ? "error" : "info", text: `${how}: ${counts}` });
   if (end.endError) messages.push({ level: "error", text: t("The commit failed and was rolled back: {error}", { error: end.endError }) });
   else if (end.ended === "commit") messages.push({ level: "info", text: t("Committed.") });
   else if (end.ended === "rollback") messages.push({ level: "info", text: t("Rolled back.") });

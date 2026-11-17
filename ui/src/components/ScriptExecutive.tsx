@@ -35,6 +35,7 @@ import {
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { scriptTree, type TreeItem } from "../scriptTree";
+import { prepareCompletion } from "../complete";
 import { sqlExtensions } from "../sqlView";
 import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
@@ -172,6 +173,13 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
       view.current = null;
     };
   }, [id, run]);
+
+  // Completion from the catalog of the database chosen, once connected
+  const registration = panel?.registration;
+  const connected = useStore((s) => !!registration && !!s.servers[registration]);
+  useEffect(() => {
+    if (registration && connected) prepareCompletion(registration);
+  }, [registration, connected]);
 
   // Read-only while it runs: the statements are numbered on the text sent
   const running = !!panel?.run;
