@@ -14,7 +14,7 @@
 **A native desktop database IDE for writing SQL, exploring schemas and managing
 Firebird servers. Built with Rust, Tauri and React.**
 
-[Download](https://github.com/nickolasdeluca/n-studio/releases) ·
+[Download](https://ndworks.dev/n-studio/download) ·
 [Features](#working-with-firebird) · [Building](#building) ·
 [Roadmap](docs/PLAN.md)
 
@@ -31,7 +31,7 @@ each built to the same depth.
 
 ## Download
 
-[![Download N Studio](https://img.shields.io/badge/Download-N%20Studio-2f6fdf?style=for-the-badge)](https://github.com/nickolasdeluca/n-studio/releases)
+[![Download N Studio](https://img.shields.io/badge/Download-N%20Studio-2f6fdf?style=for-the-badge)](https://ndworks.dev/n-studio/download)
 
 Choose the installer for your system on the releases page. The macOS build
 is signed and notarized; Windows and Linux builds are unsigned.
