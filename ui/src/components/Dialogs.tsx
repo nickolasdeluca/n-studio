@@ -15,6 +15,7 @@ import { FormatterDialog } from "./FormatterDialog";
 import { IbexpertDialog } from "./IbexpertDialog";
 import { Button, Field, inputClass, Modal } from "./Modal";
 import { RegistrationDialog } from "./RegistrationDialog";
+import { ShareDialog } from "./ShareDialog";
 
 /** Whichever dialog the store has open */
 export function Dialogs() {
@@ -39,6 +40,8 @@ export function Dialogs() {
       return <ParamsDialog request={dialog.request} />;
     case "export":
       return <ExportDialog tab={dialog.tab} />;
+    case "share":
+      return <ShareDialog tab={dialog.tab} row={dialog.row} />;
     case "formatter":
       return <FormatterDialog />;
     case "ibexpert":

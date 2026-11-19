@@ -3,6 +3,7 @@ import {
   DockviewDefaultTab,
   DockviewReact,
   type DockviewApi,
+  type DockviewGroupPanel,
   type DockviewReadyEvent,
   type DockviewTheme,
   type IDockviewPanelHeaderProps,
@@ -28,6 +29,8 @@ import { useStore } from "../store";
 import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { AdminView, ServiceOutput } from "./AdminPanels";
+import { AgentPanel } from "./AgentPanel";
+import { useAgent } from "../agent";
 import { CompareView } from "./CompareView";
 import { DebugView } from "./DebugView";
 import { DiagramView } from "./DiagramView";
@@ -47,6 +50,7 @@ const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> =
   explorer: () => <Explorer />,
   objects: () => <ObjectList />,
   start: () => <Start />,
+  agent: () => <AgentPanel />,
   sql: (props) => <SqlEditor {...(props as IDockviewPanelProps<{ tab: string }>)} />,
   object: (props) => <ObjectViewer {...(props as IDockviewPanelProps<{ viewer: string }>)} />,
   admin: (props) => <AdminView {...(props as IDockviewPanelProps<{ id: string }>)} />,
@@ -79,9 +83,10 @@ const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeader
 };
 
 /** The panels the View menu can bring back */
-const panels = [
+const panels: { id: string; title: string; right?: boolean }[] = [
   { id: "explorer", title: "Database Explorer" },
   { id: "objects", title: "Objects" },
+  { id: "agent", title: "Claude Code", right: true },
 ];
 
 export function Shell() {
@@ -135,6 +140,11 @@ export function Shell() {
     void restoreSession();
     // An editor's tab closing ends its transaction
     e.api.onDidRemovePanel((panel) => {
+      // Claude Code goes with its panel
+      if (panel.id === "agent") {
+        void useAgent.getState().stop();
+        agentClosed(e.api);
+      }
       if (panel.id.startsWith("obj-")) useViewers.getState().close(panel.id);
       // A service's tab closing stops listening to it
       if (panel.id.startsWith("adm-svc-")) forgetService(panel.id);
@@ -152,6 +162,13 @@ export function Shell() {
       void useEditors.getState().close(panel.id);
     });
     e.api.onDidLayoutChange(() => {
+      // Kept while the agent's panel is open, for when it closes, and its
+      // own width for when it opens again
+      const agent = e.api.getPanel("agent");
+      if (agent) {
+        widthsWithAgent = widthsOf(e.api);
+        rememberAgentWidth(agent.group.api.width);
+      }
       try {
         localStorage.setItem(LAYOUT, JSON.stringify(e.api.toJSON()));
       } catch {
@@ -203,10 +220,102 @@ function restore(api: DockviewApi): boolean {
     // connections are gone
     for (const panel of api.panels.filter((p) => isDocument(p.id))) panel.api.close();
     if (!api.getPanel("start")) api.addPanel({ id: "start", component: "start", title: t("Start") });
+    // The agent's panel came back: the others go back to these when it closes
+    if (api.getPanel("agent")) widthsWithAgent = widthsOf(api);
     return api.panels.length > 0;
   } catch {
     return false;
   }
+}
+
+const AGENT_WIDTH = "n-studio.agent.width";
+/** The narrowest the agent's panel opens, and what it leaves the center */
+const AGENT_MIN = 320;
+const CENTER_MIN = 240;
+
+/** The agent panel's width when it opens: the one it last had, else a
+ *  quarter of the screen */
+function agentWidth() {
+  try {
+    const saved = Number(localStorage.getItem(AGENT_WIDTH));
+    if (saved > 0) return saved;
+  } catch {
+    // Without storage it opens at the default
+  }
+  return Math.round(window.screen.width * 0.25);
+}
+
+function rememberAgentWidth(width: number) {
+  if (width <= 0) return;
+  try {
+    localStorage.setItem(AGENT_WIDTH, String(Math.round(width)));
+  } catch {
+    // The width is a convenience
+  }
+}
+
+/** The dock's groups' widths, as they last were while the agent's panel
+ *  was open: what the others go back to when it closes */
+let widthsWithAgent: Map<string, number> | null = null;
+
+const widthsOf = (api: DockviewApi) => new Map(api.groups.map((g) => [g.id, g.api.width]));
+
+/** The group of the center's documents */
+function centerGroup(api: DockviewApi) {
+  const panel =
+    api.panels.find((p) => isDocument(p.id) && p.group.api.isActive) ??
+    api.panels.find((p) => isDocument(p.id)) ??
+    api.getPanel("start");
+  return panel?.group ?? null;
+}
+
+/** Gives every group but `free` the width it had, `free` taking what is
+ *  left. The dock hands a group's change of width to its last neighbour, so
+ *  each group is held at its width once given it, until only `free` can
+ *  move, and let go after. */
+function keepWidths(api: DockviewApi, widths: Map<string, number>, free: string) {
+  const held: { group: DockviewGroupPanel; minimumWidth: number; maximumWidth: number }[] = [];
+  for (const group of api.groups) {
+    const width = widths.get(group.id);
+    if (group.id === free || width === undefined) continue;
+    held.push({ group, minimumWidth: group.minimumWidth, maximumWidth: group.maximumWidth });
+    group.api.setSize({ width });
+    group.api.setConstraints({ minimumWidth: group.api.width, maximumWidth: group.api.width });
+  }
+  for (const { group, minimumWidth, maximumWidth } of held) group.api.setConstraints({ minimumWidth, maximumWidth });
+}
+
+/** Opens a panel to the right of the center's documents, in their room only:
+ *  the other panels keep their widths */
+function openBesideCenter(api: DockviewApi, id: string, title: string) {
+  const center = centerGroup(api);
+  if (!center) {
+    api.addPanel({ id, component: id, title, position: { direction: "right" }, initialWidth: 560 });
+    return;
+  }
+  const widths = widthsOf(api);
+  const room = center.api.width;
+  api.addPanel({ id, component: id, title, position: { referenceGroup: center, direction: "right" } });
+  const added = api.getPanel(id);
+  if (!added) return;
+  // The width it last had, else a quarter of the screen; the center keeps
+  // room for its tabs
+  widths.set(added.group.id, Math.max(AGENT_MIN, Math.min(agentWidth(), room - CENTER_MIN)));
+  keepWidths(api, widths, center.id);
+  widthsWithAgent = widthsOf(api);
+}
+
+/** The agent's panel closed: the others get back the widths they had, and
+ *  the center what it gave. Its group goes after the panel, sharing its room
+ *  out evenly, so this waits for that. */
+function agentClosed(api: DockviewApi) {
+  const widths = widthsWithAgent;
+  widthsWithAgent = null;
+  if (!widths) return;
+  setTimeout(() => {
+    const center = centerGroup(api);
+    if (center && !api.getPanel("agent")) keepWidths(api, widths, center.id);
+  }, 0);
 }
 
 /** Brings a panel of the View menu to the front, or back if it was closed */
@@ -215,6 +324,7 @@ function showPanel(api: DockviewApi, id: string) {
   if (!known) return;
   const panel = api.getPanel(id);
   if (panel) panel.api.setActive();
+  else if (known.right) openBesideCenter(api, id, t(known.title));
   else api.addPanel({ id, component: id, title: t(known.title), position: { direction: "left" }, initialWidth: 300 });
 }
 
@@ -257,6 +367,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
       <ToolButton icon="folder" label={t("Open Script… (Ctrl+O)")} disabled={!connected} onClick={() => id && openScripts(id)} />
       <ToolButton icon="run" label={t("Script Executive (Ctrl+F12)")} onClick={() => openExecutive(id ?? null)} />
+      <ToolButton icon="agent" label={t("Claude Code")} onClick={() => dock.current && showPanel(dock.current, "agent")} />
       <Separator />
       <ToolButton
         icon="edit"

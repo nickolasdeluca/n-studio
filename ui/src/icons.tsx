@@ -159,6 +159,13 @@ const glyphs: Record<string, ReactNode> = {
       <path d="M10.5 5.5v-3h-8v8h3" />
     </>
   ),
+  /** The agent: a spark */
+  agent: (
+    <>
+      <path d="M7 2.2c.5 2.6 1.4 3.5 4 4-2.6.5-3.5 1.4-4 4-.5-2.6-1.4-3.5-4-4 2.6-.5 3.5-1.4 4-4z" />
+      <path d="M12 9.6c.2 1.2.7 1.7 1.9 1.9-1.2.2-1.7.7-1.9 1.9-.2-1.2-.7-1.7-1.9-1.9 1.2-.2 1.7-.7 1.9-1.9z" />
+    </>
+  ),
 };
 
 /** Per-kind color, so a long mixed list can be scanned by color alone */

@@ -6,6 +6,7 @@ import { create } from "zustand";
 import type { ColumnInfo, ColumnKind, ColumnSummary } from "../api";
 import { AGGREGATES, aggregatesFor, shortOf, valueOf, type Aggregate } from "../summary";
 import { useContextMenu } from "./ContextMenu";
+import { useAgent } from "../agent";
 import { useEditors, type EditorTab } from "../editors";
 import { t } from "../i18n";
 import { Icon } from "../icons";
@@ -73,6 +74,7 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
   const summaryShown = useSummaryRow((s) => s.shown);
   const picks = useSummaryRow((s) => s.picks[tab.id] ?? NO_PICKS);
   const summaries = useSummaries(tab, summaryShown, picks);
+  const agentRunning = useAgent((s) => s.status === "running");
   if (!outcome) return <Empty>{t("Execute a statement with F9 or Ctrl+Enter.")}</Empty>;
   const { executed, result } = outcome;
 
@@ -165,6 +167,16 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
         >
           <Icon name="sum" size={13} />
         </button>
+        {agentRunning && (
+          <Nav
+            icon="agent"
+            label={t("Share with Claude Code…")}
+            disabled={tab.running || tab.fetching || result.rows === 0}
+            onClick={() =>
+              useStore.getState().openDialog({ type: "share", tab: tab.id, row: onNew || total === 0 ? null : cursor.row - added })
+            }
+          />
+        )}
         <Nav
           icon="export"
           label={t("Export Rows… (fetches all)")}

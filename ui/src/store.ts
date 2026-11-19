@@ -56,6 +56,9 @@ export type Dialog =
   | { type: "params"; request: ParamRequest }
   /** Where and how to write an editor's rows */
   | { type: "export"; tab: string }
+  /** Rows of an editor's last select to give the agent: the current one
+   *  (`row`, of the fetched rows) or the first fetched */
+  | { type: "share"; tab: string; row: number | null }
   /** The code formatter's style */
   | { type: "formatter" }
   /** IBExpert's registered databases and formatter options, brought over */
