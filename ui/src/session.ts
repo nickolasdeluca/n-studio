@@ -2,9 +2,9 @@
 // file each is of, and which was in front. Their transactions and results
 // do not, and neither do their connections: an editor comes back on a
 // database that is connected again by hand.
-import { api, errorText, type Session, type SessionTab } from "./api";
-import { activatePanel, baseName, editorPanels, openEditor, panelTitle } from "./dock";
-import { textOf, useEditors } from "./editors";
+import { api, errorText, type Session, type SessionPage, type SessionTab } from "./api";
+import { activatePanel, baseName, editorPanels, editorTitle, openEditor } from "./dock";
+import { textOf, useEditors, type PageSeed } from "./editors";
 import { t } from "./i18n";
 import { useStore } from "./store";
 
@@ -23,12 +23,18 @@ function current(): Session {
   for (const id of ids) {
     const tab = useEditors.getState().tabs[id];
     if (!tab || tab.viewer) continue;
-    const kept = !tab.file || tab.changed;
-    const text = kept ? textOf(id) : null;
-    // An editor nothing was typed in is not worth bringing back
-    if (!tab.file && !text?.trim()) continue;
+    const pages: SessionPage[] = [];
+    let page = 0;
+    for (const p of tab.pages) {
+      const text = !p.file || p.changed ? textOf(p.id) : null;
+      // A page nothing was typed in is not worth bringing back
+      if (!p.file && !text?.trim()) continue;
+      if (p.id === tab.page) page = pages.length;
+      pages.push({ file: p.file, format: p.format, text });
+    }
+    if (pages.length === 0) continue;
     if (id === active) front = tabs.length;
-    tabs.push({ registration: tab.registration, title: panelTitle(id), file: tab.file, format: tab.format, text });
+    tabs.push({ registration: tab.registration, title: editorTitle(id), pages, page });
   }
   return { tabs, active: front };
 }
@@ -68,18 +74,16 @@ export async function restoreSession(): Promise<void> {
     const failed: string[] = [];
     let front: string | null = null;
     for (const [i, tab] of session.tabs.entries()) {
-      let text = tab.text;
-      if (text === null && tab.file) {
-        try {
-          text = (await api.scriptRead(tab.file)).text;
-        } catch {
-          // Moved or deleted since: there is nothing of it to bring back
-          failed.push(baseName(tab.file));
-          continue;
-        }
+      const seeds: PageSeed[] = [];
+      let page = 0;
+      for (const [n, p] of tab.pages.entries()) {
+        const seed = await pageSeed(p, failed);
+        if (!seed) continue;
+        if (n === tab.page) page = seeds.length;
+        seeds.push(seed);
       }
-      const file = tab.file && tab.format ? { file: tab.file, format: tab.format, changed: tab.text !== null } : undefined;
-      const id = openEditor(tab.registration, text ?? "", { file, title: tab.title, restored: true });
+      if (seeds.length === 0) continue;
+      const id = openEditor(tab.registration, undefined, { pages: seeds, front: page, title: tab.title, restored: true });
       if (id && i === session.active) front = id;
     }
     if (front) activatePanel(front);
@@ -93,6 +97,24 @@ export async function restoreSession(): Promise<void> {
   }
 }
 
+/** What a kept page opens with: its text, or its file's when it was the
+ *  file's unchanged. Null, and the file named in `failed`, when the file is
+ *  gone since. */
+async function pageSeed(page: SessionPage, failed: string[]): Promise<PageSeed | null> {
+  let text = page.text;
+  if (text === null && page.file) {
+    try {
+      text = (await api.scriptRead(page.file)).text;
+    } catch {
+      // Moved or deleted since: there is nothing of it to bring back
+      failed.push(baseName(page.file));
+      return null;
+    }
+  }
+  const file = page.file && page.format ? { file: page.file, format: page.format, changed: page.text !== null } : undefined;
+  return { text: text ?? "", file };
+}
+
 /** An editor opened or closed, a file saved, a text first changed */
 function watch(state: ReturnType<typeof useEditors.getState>, before: ReturnType<typeof useEditors.getState>) {
   if (state.tabs === before.tabs) return;
@@ -101,7 +123,7 @@ function watch(state: ReturnType<typeof useEditors.getState>, before: ReturnType
     ids.length === Object.keys(before.tabs).length &&
     ids.every((id) => {
       const [a, b] = [state.tabs[id], before.tabs[id]];
-      return b && a.file === b.file && a.changed === b.changed && a.format === b.format;
+      return b && a.pages === b.pages && a.page === b.page;
     });
   if (!same) sessionChanged();
 }

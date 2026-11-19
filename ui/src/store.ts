@@ -50,7 +50,8 @@ export type Dialog =
   /** Editors whose transactions an action would end: commit or roll back? */
   | { type: "pending"; tabs: string[]; action: PendingAction }
   /** An editor closing over text its file does not have: save it first? */
-  | { type: "unsaved"; tab: string; action: PendingAction }
+  /** `page` has unsaved changes; `answered`, the pages asked about before it */
+  | { type: "unsaved"; tab: string; page: string; answered: string[]; action: PendingAction }
   /** A statement's parameter values, which a run waits for */
   | { type: "params"; request: ParamRequest }
   /** Where and how to write an editor's rows */

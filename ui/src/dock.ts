@@ -1,7 +1,7 @@
 // The dock, for whoever opens panels in it: the toolbar, menus, shortcuts.
 import type { DockviewApi } from "dockview-react";
 import type { ObjectKind } from "./api";
-import { drafts, useEditors, type EditorFile } from "./editors";
+import { pageOf, useEditors, type EditorFile, type EditorTab, type PageSeed } from "./editors";
 import { t } from "./i18n";
 import { useStore } from "./store";
 import { useViewers } from "./viewers";
@@ -33,20 +33,30 @@ export const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
 const fileTitle = (file: EditorFile | { file: string; changed: boolean }) => baseName(file.file) + (file.changed ? CHANGED : "");
 
-/** Opens a new SQL editor on a connected registration, beside the others;
- *  `text` is what it starts with. `from` says where the text is from: a
- *  file, or the last run of the app (`restored`), whose editors come back
- *  under the titles they had and before anything is connected. */
+/** Each editor's own title, "SQL Editor 1 · Sales": what its panel is
+ *  called while the page in front has no file */
+const titles = new Map<string, string>();
+
+/** What an editor's panel is called: the file of the page in front, else its own title */
+function shownTitle(tab: EditorTab): string {
+  const page = pageOf(tab);
+  return page?.file ? fileTitle({ file: page.file, changed: page.changed }) : (titles.get(tab.id) ?? tab.id);
+}
+
+/** Opens a new SQL editor on a connected registration, beside the others.
+ *  It starts with `text`, or with `from.pages` (`from.front` in front). `from`
+ *  also says where the text is from: a file, or an editor that comes back
+ *  (`restored`) under the title it had. */
 export function openEditor(
   registration: string,
   text?: string,
-  from: { file?: EditorFile; title?: string; restored?: boolean } = {},
+  from: { file?: EditorFile; title?: string; restored?: boolean; pages?: PageSeed[]; front?: number } = {},
 ): string | null {
   if (!dock || (!from.restored && !useStore.getState().servers[registration])) return null;
   const name = useStore.getState().registrations.find((r) => r.id === registration)?.name ?? "";
-  const tab = useEditors.getState().open(registration, false, from.file);
-  if (text) drafts.set(tab, text);
-  let title = from.file ? fileTitle(from.file) : from.title;
+  const pages = from.pages ?? [{ text: text ?? "", file: from.file }];
+  const tab = useEditors.getState().open(registration, false, pages, from.front);
+  let title = from.title;
   if (!title) {
     count += 1;
     title = `${t("SQL Editor")} ${count}${name ? ` · ${name}` : ""}`;
@@ -55,30 +65,38 @@ export function openEditor(
     const n = Number(new RegExp(`^${t("SQL Editor")} (\\d+)`).exec(title)?.[1] ?? 0);
     count = Math.max(count, n);
   }
+  titles.set(tab, title);
   dock.addPanel({
     id: tab,
     component: "sql",
     // Its close button asks first when a transaction is active
     tabComponent: "sql",
-    title,
+    title: shownTitle(useEditors.getState().tabs[tab]),
     params: { tab },
     position: beside(dock),
   });
   return tab;
 }
 
+/** An editor's own title, whatever file its page in front has */
+export function editorTitle(id: string): string {
+  return titles.get(id) ?? panelTitle(id);
+}
+
 let watching: (() => void) | undefined;
 
-/** An editor's title is its file's name once it has one, marked while the
- *  text is not what the file holds */
+/** An editor's title is the file's name of the page in front once it has
+ *  one, marked while the text is not what the file holds */
 function retitle(state: ReturnType<typeof useEditors.getState>, before: ReturnType<typeof useEditors.getState>) {
   if (state.tabs === before.tabs) return;
   for (const tab of Object.values(state.tabs)) {
     const was = before.tabs[tab.id];
-    if (tab.file && was && (tab.file !== was.file || tab.changed !== was.changed)) {
-      dock?.getPanel(tab.id)?.api.setTitle(fileTitle({ file: tab.file, changed: tab.changed }));
-    }
+    if (!was || (was.page === tab.page && was.pages === tab.pages)) continue;
+    const title = shownTitle(tab);
+    const panel = dock?.getPanel(tab.id);
+    if (panel && panel.title !== title) panel.api.setTitle(title);
   }
+  for (const id of titles.keys()) if (!state.tabs[id]) titles.delete(id);
 }
 
 /** The SQL editors' panels in the order the dock has them, and the one in

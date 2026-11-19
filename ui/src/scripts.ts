@@ -2,8 +2,8 @@
 // The backend reads and writes them the way they were found (files.rs).
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { api, errorText, type FileFormat } from "./api";
-import { activatePanel, baseName, openEditor, panelTitle } from "./dock";
-import { textOf, useEditors } from "./editors";
+import { activatePanel, baseName, editorPanels, editorTitle, openEditor } from "./dock";
+import { MAX_PAGES, pageOf, textOf, useEditors } from "./editors";
 import { t } from "./i18n";
 import { useStore } from "./store";
 
@@ -38,40 +38,59 @@ export async function openScripts(registration: string): Promise<void> {
   for (const path of picked === null ? [] : [picked].flat()) await openScript(registration, path);
 }
 
-/** Shows the editor that has `path` open, or opens one for it */
+/** Shows the page that has `path` open, or opens it: in a new page of the
+ *  editor on `registration` in front, or of its first, when there is room;
+ *  in a new editor otherwise */
 export async function openScript(registration: string, path: string): Promise<void> {
-  const has = Object.values(useEditors.getState().tabs).find((tab) => tab.file === path);
-  if (has) {
-    activatePanel(has.id);
-    return;
+  const editors = useEditors.getState();
+  for (const tab of Object.values(editors.tabs)) {
+    const page = tab.pages.find((p) => p.file === path);
+    if (page) {
+      editors.showPage(tab.id, page.id);
+      activatePanel(tab.id);
+      return;
+    }
   }
   try {
     const { text, format } = await api.scriptRead(path);
-    openEditor(registration, text, { file: { file: path, format, changed: false } });
+    const file = { file: path, format, changed: false };
+    const { ids, active } = editorPanels();
+    const mine = ids.filter((id) => editors.tabs[id]?.registration === registration);
+    const into = [active, ...mine].find((id) => id && mine.includes(id) && editors.tabs[id].pages.length < MAX_PAGES);
+    if (into && useEditors.getState().addPage(into, { text, file })) activatePanel(into);
+    else openEditor(registration, text, { file });
   } catch (e) {
     useStore.getState().setNotice(errorText(e));
   }
 }
 
-/** Writes an editor's text to its file, asking where when it has none or
- *  `as` says to. False when nothing was written. */
-export async function saveEditor(id: string, as = false): Promise<boolean> {
+/** A page as its tab and the editor's pages strip call it */
+export function pageName(page: { n: number; file: string | null }): string {
+  return page.file ? baseName(page.file) : t("Query {n}", { n: page.n });
+}
+
+/** Writes a page's text to its file, the page in front's when `pageId` is
+ *  not given, asking where when it has none or `as` says to. False when
+ *  nothing was written. */
+export async function saveEditor(id: string, as = false, pageId?: string): Promise<boolean> {
   const tab = useEditors.getState().tabs[id];
-  if (!tab) return false;
-  let path = as ? null : tab.file;
+  const page = tab && pageOf(tab, pageId);
+  if (!tab || !page) return false;
+  let path = as ? null : page.file;
   try {
     if (!path) {
+      const name = tab.pages.length > 1 ? `${editorTitle(id)} ${pageName(page)}` : editorTitle(id);
       path = await save({
         title: t("Save Script"),
-        defaultPath: tab.file ?? `${panelTitle(id).replace(/[\\/:*?"<>|·]/g, "_").replace(/\s+/g, " ")}.sql`,
+        defaultPath: page.file ?? `${name.replace(/[\\/:*?"<>|·]/g, "_").replace(/\s+/g, " ")}.sql`,
         filters: filters(),
       });
       if (!path) return false;
     }
-    const format = tab.format ?? NEW;
-    const written = await api.scriptWrite(path, textOf(id), format);
+    const format = page.format ?? NEW;
+    const written = await api.scriptWrite(path, textOf(page.id), format);
     const editors = useEditors.getState();
-    editors.stored(id, path, written);
+    editors.stored(id, page.id, path, written);
     if (written.encoding !== format.encoding) {
       editors.note(
         id,

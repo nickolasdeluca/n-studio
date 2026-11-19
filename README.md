@@ -50,11 +50,14 @@ The status bar shows the version; name it when reporting something.
 
 ### Write and run SQL
 
-Each editor tab has its own transaction and isolation setting. Run one
-statement, everything up to the cursor, the whole editor, or a script with
-`SET TERM` support and an error log. Named parameters are prompted for before
-execution. Results stream into a sortable grid with CSV export; the plan,
-performance counters and cancellation stay close to the query.
+Each editor tab has its own transaction and isolation setting, and up to ten
+pages of text, as a browser's tabs (Ctrl+T, Ctrl+Tab), that share them and
+its results. Run one statement, everything up to the cursor, the whole page,
+or a script with `SET TERM` support and an error log. Named parameters are
+prompted for before execution. Results stream into a sortable grid with CSV
+export; the plan, performance counters and cancellation stay close to the
+query, below a bottom that can be minimized. A rollback takes the rows it
+rolled back away, so they are not edited afterwards.
 
 Completion knows tables, views, routines, generators and column types,
 including columns behind an alias; a table's columns start with its primary

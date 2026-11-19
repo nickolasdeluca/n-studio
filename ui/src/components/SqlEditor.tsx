@@ -5,12 +5,13 @@ import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type TxEnd } from "../api";
-import { drafts, isolations, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
+import { drafts, isolations, MAX_PAGES, pageOf, readers, useEditors, type BottomTab, type EditorTab, type RunMode } from "../editors";
 import { prepareCompletion } from "../complete";
 import { t } from "../i18n";
 import { Icon } from "../icons";
 import { formatEditor } from "../format";
-import { formatLabel, saveEditor } from "../scripts";
+import { formatLabel, pageName, saveEditor } from "../scripts";
+import { request } from "../pending";
 import { sessionChanged } from "../session";
 import { sqlExtensions } from "../sqlView";
 import { useStore } from "../store";
@@ -21,8 +22,11 @@ import { noEdits, toChanges } from "../rowEdits";
 import { PerformancePane } from "./PerformancePane";
 import { Empty, Results, type ResultsEdit } from "./Results";
 
-/** Editor states by tab, so a panel that remounts keeps its text and undo */
+/** Editor states by page, so a page put behind another, or a panel that
+ *  remounts, keeps its text, its selection and its undo */
 const saved = new Map<string, EditorState>();
+/** The page each mounted editor's view shows, by tab */
+const shown = new Map<string, string>();
 /** What the run keys call, by tab: the mounted panel's callbacks. Kept out
  *  of the saved state, which outlives a mount. */
 const runners = new Map<string, { run(mode: RunMode | "script"): boolean; end(how: TxEnd): boolean }>();
@@ -49,11 +53,26 @@ const format = (id: string) => {
   return !!view;
 };
 
-/** A closed editor's text goes with it */
+/** A closed editor's pages go with it */
 export function forgetEditor(id: string) {
-  saved.delete(id);
+  for (const page of saved.keys()) if (page.startsWith(`${id}:`)) saved.delete(page);
+  shown.delete(id);
   runners.delete(id);
 }
+
+/** Another page, to the right (`by` 1) or to the left (-1), round at the ends */
+function turnPage(id: string, by: number): boolean {
+  const tab = useEditors.getState().tabs[id];
+  if (!tab || tab.pages.length < 2) return false;
+  const at = tab.pages.findIndex((p) => p.id === tab.page);
+  useEditors.getState().showPage(id, tab.pages[(at + by + tab.pages.length) % tab.pages.length].id);
+  return true;
+}
+
+const newPage = (id: string) => {
+  useEditors.getState().addPage(id);
+  return true;
+};
 
 function runKeys(id: string) {
   const run = (mode: RunMode | "script") => () => runners.get(id)?.run(mode) ?? false;
@@ -71,6 +90,12 @@ function runKeys(id: string) {
       // The key editors elsewhere have; IBExpert's is `formatKey`
       { key: "Mod-Shift-f", run: () => format(id) },
       { key: "Escape", run: cancelKey(id) },
+      // The pages, as a browser's tabs
+      { key: "Mod-t", run: () => newPage(id) },
+      { key: "Ctrl-Tab", run: () => turnPage(id, 1) },
+      { key: "Ctrl-Shift-Tab", run: () => turnPage(id, -1) },
+      { key: "Ctrl-PageDown", run: () => turnPage(id, 1) },
+      { key: "Ctrl-PageUp", run: () => turnPage(id, -1) },
     ]),
   );
 }
@@ -119,9 +144,17 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
   const [cursor, setCursor] = useState<GridCursor>({ row: 0, col: 0 });
   const body = useRef<HTMLDivElement>(null);
 
-  const select = useCallback((range: { from: number; to: number }, error = false) => {
+  /** A place to select once the page it is in is in front */
+  const pending = useRef<{ range: { from: number; to: number }; error: boolean } | null>(null);
+  const select = useCallback((range: { from: number; to: number; page?: string }, error = false) => {
     const v = view.current;
     if (!v) return;
+    const editors = useEditors.getState();
+    if (range.page && range.page !== shown.get(id) && editors.tabs[id]?.pages.some((p) => p.id === range.page)) {
+      pending.current = { range, error };
+      editors.showPage(id, range.page);
+      return;
+    }
     const len = v.state.doc.length;
     const r = { from: Math.min(range.from, len), to: Math.min(range.to, len) };
     v.dispatch({
@@ -129,7 +162,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
       effects: [markError.of(error ? r : null), EditorView.scrollIntoView(r.from, { y: "center" })],
     });
     v.focus();
-  }, []);
+  }, [id]);
 
   const insert = useCallback((text: string) => {
     const v = view.current;
@@ -146,8 +179,11 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
       v.dispatch({ effects: markError.of(null) });
       const input = { text: v.state.doc.toString(), from: sel.from, to: sel.to };
       const editors = useEditors.getState();
-      if (mode === "script") void editors.runScript(id, input, (r) => select(r, true));
-      else void editors.run(id, mode, input, (r) => select(r, true));
+      // A failure is shown in the page that ran, whichever is in front by then
+      const page = shown.get(id);
+      const failed = (r: { from: number; to: number }) => select({ ...r, page }, true);
+      if (mode === "script") void editors.runScript(id, input, failed);
+      else void editors.run(id, mode, input, failed);
       return true;
     },
     [id, select],
@@ -160,49 +196,91 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
     [id],
   );
 
+  /** A page's state: the one it was left with, or a new one with its text */
+  const stateOf = useCallback(
+    (page: string) => {
+      let state = saved.get(page);
+      if (!state) {
+        state = EditorState.create({
+          doc: drafts.get(page) ?? "",
+          extensions: [
+            runKeys(id),
+            formatKey(id),
+            errorField,
+            // Typing makes the text other than its file's, and the session's
+            EditorView.updateListener.of((update) => {
+              if (!update.docChanged) return;
+              useEditors.getState().edited(id);
+              sessionChanged();
+            }),
+            ...sqlExtensions(() => useEditors.getState().tabs[id]?.registration),
+          ],
+        });
+        saved.set(page, state);
+        drafts.delete(page);
+        // From the view while it shows the page, from its kept state else
+        readers.set(page, () => (shown.get(id) === page && view.current ? view.current.state : saved.get(page))?.doc.toString() ?? "");
+      }
+      return state;
+    },
+    [id],
+  );
+
+  const showPos = (v: EditorView) => {
+    const head = v.state.selection.main.head;
+    const line = v.state.doc.lineAt(head);
+    setPos({ line: line.number, col: head - line.from + 1 });
+  };
+
   useEffect(() => {
     if (!host.current) return;
     runners.set(id, { run, end });
-    const state =
-      saved.get(id) ??
-      EditorState.create({
-        doc: drafts.get(id) ?? "",
-        extensions: [
-          runKeys(id),
-          formatKey(id),
-          errorField,
-          // Typing makes the text other than its file's, and the session's
-          EditorView.updateListener.of((update) => {
-            if (!update.docChanged) return;
-            useEditors.getState().edited(id);
-            sessionChanged();
-          }),
-          ...sqlExtensions(() => useEditors.getState().tabs[id]?.registration),
-        ],
-      });
+    const page = useEditors.getState().tabs[id]?.page;
+    if (!page) return;
     const v = new EditorView({
-      state,
+      state: stateOf(page),
       parent: host.current,
       dispatchTransactions(trs, v) {
         v.update(trs);
-        const head = v.state.selection.main.head;
-        const line = v.state.doc.lineAt(head);
-        setPos({ line: line.number, col: head - line.from + 1 });
+        showPos(v);
       },
     });
-    // From the view while there is one, from its kept state after
-    readers.set(id, () => (view.current?.state ?? saved.get(id))?.doc.toString() ?? "");
-    drafts.delete(id);
+    shown.set(id, page);
     view.current = v;
     views.set(id, v);
+    showPos(v);
     v.focus();
     return () => {
-      saved.set(id, v.state);
+      const at = shown.get(id);
+      if (at) saved.set(at, v.state);
       v.destroy();
       view.current = null;
       views.delete(id);
     };
-  }, [id, run, end]);
+  }, [id, run, end, stateOf]);
+
+  // Another page in front: the view shows it, as it was left
+  const front = tab?.page;
+  useEffect(() => {
+    const v = view.current;
+    const was = shown.get(id);
+    if (!v || !front || was === front) return;
+    if (was && useEditors.getState().tabs[id]?.pages.some((p) => p.id === was)) saved.set(was, v.state);
+    v.setState(stateOf(front));
+    shown.set(id, front);
+    showPos(v);
+    const go = pending.current;
+    pending.current = null;
+    if (go) select(go.range, go.error);
+    else v.focus();
+  }, [id, front, stateOf, select]);
+
+  // A closed page's state goes with it
+  const pages = tab?.pages;
+  useEffect(() => {
+    if (!pages) return;
+    for (const page of saved.keys()) if (page.startsWith(`${id}:`) && !pages.some((p) => p.id === page)) saved.delete(page);
+  }, [id, pages]);
 
   // A new result starts at its first row; the same rows read again after
   // a change stay where they were, as far as there still are rows. A new
@@ -249,6 +327,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
   return (
     <div className="flex h-full flex-col bg-panel" onKeyDownCapture={endKeys}>
       <EditorToolbar tab={tab} run={run} end={end} />
+      <PageStrip tab={tab} />
       <div ref={body} className="flex min-h-0 flex-1 flex-col">
         <div
           ref={host}
@@ -266,6 +345,70 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
         <Bottom tab={tab} cursor={cursor} setCursor={setCursor} select={select} insert={insert} />
       </div>
       <EditorStatus tab={tab} pos={pos} />
+    </div>
+  );
+}
+
+/** The editor's pages, as a browser's tabs: the one in front is what runs */
+function PageStrip({ tab }: { tab: EditorTab }) {
+  const editors = useEditors.getState();
+  const full = tab.pages.length >= MAX_PAGES;
+  const close = (page: string) => request({ kind: "closePage", tab: tab.id, page });
+  return (
+    <div
+      className="scroll-thin flex h-7 shrink-0 items-stretch overflow-x-auto border-b border-line bg-panel-2"
+      role="tablist"
+      aria-label={t("Pages")}
+      // On the strip's empty part, as on a browser's
+      onDoubleClick={(e) => e.target === e.currentTarget && editors.addPage(tab.id)}
+    >
+      {tab.pages.map((page) => {
+        const front = page.id === tab.page;
+        const name = pageName(page);
+        return (
+          <div
+            key={page.id}
+            role="tab"
+            aria-selected={front}
+            title={page.file ?? name}
+            onMouseDown={(e) => {
+              // The middle button closes it, as on a browser's
+              if (e.button === 1 && tab.pages.length > 1) {
+                e.preventDefault();
+                close(page.id);
+              } else if (e.button === 0) editors.showPage(tab.id, page.id);
+            }}
+            className={`group flex max-w-[14rem] shrink-0 cursor-default items-center gap-1 border-r border-line pr-1 pl-2.5 ${
+              front ? "bg-panel text-fg shadow-[inset_0_-2px_0_var(--accent)]" : "text-muted hover:bg-hover"
+            }`}
+          >
+            <span className="truncate">{name}</span>
+            {page.changed && <span className="text-accent">•</span>}
+            {tab.pages.length > 1 && (
+              <button
+                title={t("Close the page")}
+                aria-label={t("Close {name}", { name })}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => close(page.id)}
+                className={`grid size-4 place-items-center rounded text-[13px] leading-none text-muted hover:bg-hover hover:text-fg ${
+                  front ? "" : "opacity-0 group-hover:opacity-100"
+                }`}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <button
+        title={full ? t("An editor has at most {n} pages", { n: MAX_PAGES }) : t("New Page (Ctrl+T)")}
+        aria-label={t("New Page")}
+        disabled={full}
+        onClick={() => editors.addPage(tab.id)}
+        className="grid w-7 shrink-0 place-items-center text-muted hover:bg-hover hover:text-fg disabled:text-faint disabled:hover:bg-transparent"
+      >
+        <Icon name="plus" size={13} />
+      </button>
     </div>
   );
 }
@@ -610,6 +753,7 @@ function Plan({ tab }: { tab: EditorTab }) {
 function EditorStatus({ tab, pos }: { tab: EditorTab; pos: { line: number; col: number } }) {
   const isolation = isolations.find((i) => i.value === tab.txOptions.isolation)?.label ?? "";
   const result = tab.outcome?.result;
+  const page = pageOf(tab);
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-t border-line bg-panel-2 px-2 text-[11.5px] text-muted">
       <span className="tabular-nums">
@@ -622,13 +766,13 @@ function EditorStatus({ tab, pos }: { tab: EditorTab; pos: { line: number; col: 
           ? t("Transaction active · {isolation}{ro}", { isolation: t(isolation), ro: tab.txOptions.readOnly ? ` · ${t("read only")}` : "" })
           : t("No active transaction")}
       </span>
-      {tab.file && tab.format && (
+      {page?.file && page.format && (
         <>
           <span className="h-3 w-px bg-line" />
-          <span className="min-w-0 truncate" title={tab.file}>
-            {tab.file}
+          <span className="min-w-0 truncate" title={page.file}>
+            {page.file}
           </span>
-          <span className="shrink-0">{formatLabel(tab.format)}</span>
+          <span className="shrink-0">{formatLabel(page.format)}</span>
         </>
       )}
       {result && (

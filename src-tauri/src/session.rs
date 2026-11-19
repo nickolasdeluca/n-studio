@@ -15,18 +15,28 @@ use crate::commands::{blocking, AppState};
 use crate::error::AppResult;
 use crate::files::{self, Format};
 
+/// One of an editor's texts
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionTab {
-    /// The registration it runs on, which may since be gone
-    registration: String,
-    title: String,
+pub struct SessionPage {
     /// The script it was opened from or saved to
     file: Option<PathBuf>,
     format: Option<Format>,
     /// Its text. None when it is the file's, unchanged: the file is read
     /// again instead.
     text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTab {
+    /// The registration it runs on, which may since be gone
+    registration: String,
+    title: String,
+    /// Never none
+    pages: Vec<SessionPage>,
+    /// Which of them was in front
+    page: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -44,7 +54,46 @@ struct File {
     session: Session,
 }
 
-const VERSION: u32 = 1;
+/// 2: an editor has pages. 1 had one text to an editor.
+const VERSION: u32 = 2;
+
+/// What version 1 wrote: an editor was one text
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TabV1 {
+    registration: String,
+    title: String,
+    file: Option<PathBuf>,
+    format: Option<Format>,
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FileV1 {
+    tabs: Vec<TabV1>,
+    active: Option<usize>,
+}
+
+impl From<FileV1> for Session {
+    fn from(old: FileV1) -> Self {
+        let tabs = old
+            .tabs
+            .into_iter()
+            .map(|tab| SessionTab {
+                registration: tab.registration,
+                title: tab.title,
+                pages: vec![SessionPage { file: tab.file, format: tab.format, text: tab.text }],
+                page: 0,
+            })
+            .collect();
+        Session { tabs, active: old.active }
+    }
+}
+
+#[derive(Deserialize)]
+struct Version {
+    version: u32,
+}
 
 pub struct SessionStore {
     path: PathBuf,
@@ -59,8 +108,9 @@ impl SessionStore {
 
     fn load(&self) -> Session {
         let Ok(bytes) = fs::read(&self.path) else { return Session::default() };
-        match serde_json::from_slice::<File>(&bytes) {
-            Ok(file) if file.version <= VERSION => file.session,
+        match serde_json::from_slice::<Version>(&bytes).map(|v| v.version) {
+            Ok(1) => serde_json::from_slice::<FileV1>(&bytes).map(Session::from).unwrap_or_default(),
+            Ok(VERSION) => serde_json::from_slice::<File>(&bytes).map(|file| file.session).unwrap_or_default(),
             _ => Session::default(),
         }
     }
@@ -88,21 +138,24 @@ mod tests {
     use crate::files::Encoding;
 
     fn sample() -> Session {
+        let page = |file: Option<&str>, text: Option<&str>| SessionPage {
+            file: file.map(PathBuf::from),
+            format: file.map(|_| Format { encoding: Encoding::Win1252, crlf: true }),
+            text: text.map(str::to_string),
+        };
         Session {
             tabs: vec![
                 SessionTab {
                     registration: "r1".into(),
                     title: "SQL Editor 1".into(),
-                    file: None,
-                    format: None,
-                    text: Some("select 1 from rdb$database".into()),
+                    pages: vec![page(None, Some("select 1 from rdb$database"))],
+                    page: 0,
                 },
                 SessionTab {
                     registration: "r1".into(),
-                    title: "report.sql".into(),
-                    file: Some(PathBuf::from("/scripts/report.sql")),
-                    format: Some(Format { encoding: Encoding::Win1252, crlf: true }),
-                    text: None,
+                    title: "SQL Editor 2".into(),
+                    pages: vec![page(None, Some("select 2 from rdb$database")), page(Some("/scripts/report.sql"), None)],
+                    page: 1,
                 },
             ],
             active: Some(1),
@@ -116,6 +169,21 @@ mod tests {
         assert_eq!(store.load(), Session::default());
         store.save(sample()).unwrap();
         assert_eq!(SessionStore::new(dir.path()).load(), sample());
+    }
+
+    #[test]
+    fn a_first_version_file_is_read_as_editors_of_one_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let v1 = br#"{"version":1,"tabs":[{"registration":"r1","title":"report.sql","file":"/scripts/report.sql",
+            "format":{"encoding":"win1252","crlf":true},"text":null}],"active":0}"#;
+        fs::write(dir.path().join("session.json"), v1).unwrap();
+        let session = SessionStore::new(dir.path()).load();
+        assert_eq!(session.active, Some(0));
+        assert_eq!(session.tabs.len(), 1);
+        assert_eq!(session.tabs[0].title, "report.sql");
+        assert_eq!(session.tabs[0].page, 0);
+        assert_eq!(session.tabs[0].pages[0].file, Some(PathBuf::from("/scripts/report.sql")));
+        assert_eq!(session.tabs[0].pages[0].text, None);
     }
 
     #[test]

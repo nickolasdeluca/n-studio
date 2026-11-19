@@ -1,13 +1,13 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { api, errorText, type ExportOptions } from "../api";
-import { useEditors } from "../editors";
+import { pageOf, useEditors } from "../editors";
 import { panelTitle } from "../dock";
 import { t } from "../i18n";
 import type { ParamRequest, ParamValue } from "../params";
 import { addConnect } from "../executive";
 import { activeTabs, request, resolve, type PendingAction } from "../pending";
-import { saveEditor } from "../scripts";
+import { pageName, saveEditor } from "../scripts";
 import { useStore } from "../store";
 import { CompileDialog, DiscardDialog } from "./CompileDialog";
 import { FormDialog } from "./FormDialog";
@@ -34,7 +34,7 @@ export function Dialogs() {
     case "pending":
       return <PendingDialog tabs={dialog.tabs} action={dialog.action} />;
     case "unsaved":
-      return <UnsavedDialog tab={dialog.tab} action={dialog.action} />;
+      return <UnsavedDialog tab={dialog.tab} page={dialog.page} answered={dialog.answered} action={dialog.action} />;
     case "params":
       return <ParamsDialog request={dialog.request} />;
     case "export":
@@ -233,6 +233,7 @@ function PendingDialog({ tabs, action }: { tabs: string[]; action: PendingAction
   };
   const what = {
     close: action.kind === "close" && action.tab.startsWith("adm-exe-") ? t("Close the Script Executive") : t("Close the editor"),
+    closePage: t("Close the page"),
     disconnect: t("Disconnect"),
     quit: t("Quit N Studio"),
     update: t("Update and restart"),
@@ -390,17 +391,20 @@ function ScriptPasswordDialog({ run, database, user, title }: { run: number; dat
   );
 }
 
-function UnsavedDialog({ tab, action }: { tab: string; action: PendingAction }) {
+function UnsavedDialog(props: { tab: string; page: string; answered: string[]; action: PendingAction }) {
+  const { tab, page, answered, action } = props;
   const [busy, setBusy] = useState(false);
+  const editor = useEditors((s) => s.tabs[tab]);
   const close = () => useStore.getState().openDialog(null);
-  // What comes next may ask something of its own: the transaction's end
+  // What comes next may ask something of its own: another page's file,
+  // the transaction's end
   const go = () => {
     close();
-    request(action, true);
+    request(action, [...answered, page]);
   };
   const saveFirst = async () => {
     setBusy(true);
-    const saved = await saveEditor(tab);
+    const saved = await saveEditor(tab, false, page);
     setBusy(false);
     // Not saved is said in the status bar; the editor stays open
     if (saved) go();
@@ -428,7 +432,7 @@ function UnsavedDialog({ tab, action }: { tab: string; action: PendingAction }) 
         </>
       }
     >
-      <p>{t("{file} has changes that were not saved.", { file: panelTitle(tab) })}</p>
+      <p>{t("{file} has changes that were not saved.", { file: editor && pageOf(editor, page)?.file ? pageName(pageOf(editor, page)!) : panelTitle(tab) })}</p>
     </Modal>
   );
 }

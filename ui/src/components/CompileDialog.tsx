@@ -153,7 +153,7 @@ export function DiscardDialog({ viewers, action }: { viewers: string[]; action?:
     request(action);
   };
   const one = names.length === 1 ? names[0] : null;
-  const what = action ? { close: t("Close"), disconnect: t("Disconnect"), quit: t("Quit N Studio"), update: t("Update and Restart") }[action.kind] : t("Close");
+  const what = action ? { close: t("Close"), closePage: t("Close"), disconnect: t("Disconnect"), quit: t("Quit N Studio"), update: t("Update and Restart") }[action.kind] : t("Close");
   return (
     <Modal
       title={one ? `${what}: ${one}` : what}

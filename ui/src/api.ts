@@ -334,14 +334,22 @@ export interface ScriptFile {
   format: FileFormat;
 }
 
-/** An editor as it is kept between runs of the app */
-export interface SessionTab {
-  registration: string;
-  title: string;
+/** An editor's page as it is kept between runs of the app */
+export interface SessionPage {
   file: string | null;
   format: FileFormat | null;
   /** Null when it is the file's, unchanged */
   text: string | null;
+}
+
+/** An editor as it is kept between runs of the app */
+export interface SessionTab {
+  registration: string;
+  title: string;
+  /** Never none */
+  pages: SessionPage[];
+  /** Which was in front */
+  page: number;
 }
 
 export interface Session {

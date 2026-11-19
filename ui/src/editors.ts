@@ -36,8 +36,30 @@ export interface Message {
   at: number;
   level: "info" | "error";
   text: string;
-  /** The statement it is about, in the editor's text */
-  range?: { from: number; to: number };
+  /** The statement it is about, in the text of the page it ran on */
+  range?: { from: number; to: number; page?: string };
+}
+
+/** At most this many pages to an editor */
+export const MAX_PAGES = 10;
+
+/** One of an editor's texts. Its pages share the editor's transaction and
+ *  its bottom: what runs is the page in front's text. */
+export interface Page {
+  id: string;
+  /** Its number in the editor, for its name while it has no file */
+  n: number;
+  /** The script it was opened from or saved to */
+  file: string | null;
+  format: FileFormat | null;
+  /** Its text is no longer what `file` holds */
+  changed: boolean;
+}
+
+/** What a page is opened with */
+export interface PageSeed {
+  text: string;
+  file?: EditorFile;
 }
 
 export interface Outcome {
@@ -81,11 +103,16 @@ export interface EditorTab {
    *  user's: read only, and ended without asking */
   viewer: boolean;
   /** The script it was opened from or saved to */
-  file: string | null;
-  format: FileFormat | null;
-  /** Its text is no longer what `file` holds */
-  changed: boolean;
+  /** In the order they are shown, never none */
+  pages: Page[];
+  /** The page in front */
+  page: string;
+  /** The page the last run was of: what its messages' places are in */
+  ranOn: string | null;
 }
+
+/** The page in front, or the one with the id */
+export const pageOf = (tab: EditorTab, id: string = tab.page): Page | undefined => tab.pages.find((p) => p.id === id);
 
 /** Where an editor's text is, when it is a file's */
 export interface EditorFile {
@@ -106,12 +133,19 @@ export interface RunInput {
 
 interface State {
   tabs: Record<string, EditorTab>;
-  /** `viewer`: for an object viewer's Data tab */
-  open(registration: string, viewer?: boolean, file?: EditorFile): string;
-  /** The text was typed in */
+  /** `viewer`: for an object viewer's Data tab. `pages` are its texts,
+   *  one empty page when there are none; `front` the one in front. */
+  open(registration: string, viewer?: boolean, pages?: PageSeed[], front?: number): string;
+  /** A new page after the one in front, which comes to the front; null when
+   *  the editor has as many as it can */
+  addPage(id: string, seed?: PageSeed): string | null;
+  /** Its last page is not closed */
+  closePage(id: string, page: string): void;
+  showPage(id: string, page: string): void;
+  /** The page in front was typed in */
   edited(id: string): void;
-  /** The text is now what `file` holds */
-  stored(id: string, file: string, format: FileFormat): void;
+  /** The page's text is now what `file` holds */
+  stored(id: string, page: string, file: string, format: FileFormat): void;
   /** Says something in the tab's messages */
   note(id: string, text: string): void;
   close(id: string): Promise<void>;
@@ -148,13 +182,28 @@ export const isolations: { value: Isolation; label: string }[] = [
 ];
 
 let opened = 0;
-/** The text a new editor opens with, by tab, until its panel takes it */
+/** The text a new page opens with, by page, until its panel takes it */
 export const drafts = new Map<string, string>();
-/** How to read each editor's text, which lives in its panel */
+/** How to read each page's text, which lives in its panel */
 export const readers = new Map<string, () => string>();
 
-/** An editor's text as it is now */
-export const textOf = (id: string): string => readers.get(id)?.() ?? drafts.get(id) ?? "";
+/** A page's text as it is now */
+export const textOf = (page: string): string => readers.get(page)?.() ?? drafts.get(page) ?? "";
+
+/** Makes a page of `tab` from a seed, its text held until it is shown */
+function newPage(tab: string, n: number, seed: PageSeed): Page {
+  const id = `${tab}:${n}`;
+  if (seed.text) drafts.set(id, seed.text);
+  return { id, n, file: seed.file?.file ?? null, format: seed.file?.format ?? null, changed: seed.file?.changed ?? false };
+}
+
+/** The text of every page of an editor goes with it */
+function forgetPages(tab: EditorTab) {
+  for (const page of tab.pages) {
+    drafts.delete(page.id);
+    readers.delete(page.id);
+  }
+}
 
 /** How each table's rows can be changed, by registration and table: asked
  *  once, and again after the catalog changed */
@@ -179,8 +228,11 @@ export const useEditors = create<State>()((set, get) => {
       if (!tab) return s;
       return { tabs: { ...s.tabs, [id]: { ...tab, ...(typeof p === "function" ? p(tab) : p) } } };
     });
+  /** A place in the text is in the page the run was of */
   const log = (id: string, level: Message["level"], text: string, range?: Message["range"]) =>
-    patch(id, (tab) => ({ messages: [...tab.messages, { at: Date.now(), level, text, range }] }));
+    patch(id, (tab) => ({
+      messages: [...tab.messages, { at: Date.now(), level, text, range: range && { ...range, page: tab.ranOn ?? tab.page } }],
+    }));
 
   /** Drops the backend's rows of the tab's last select */
   const closeResult = (tab: EditorTab) => {
@@ -191,9 +243,10 @@ export const useEditors = create<State>()((set, get) => {
   return {
     tabs: {},
 
-    open(registration, viewer = false, file) {
+    open(registration, viewer = false, seeds = [], front = 0) {
       opened += 1;
       const id = `${viewer ? "data" : "sql"}-${Date.now().toString(36)}-${opened}`;
+      const pages = (seeds.length > 0 ? seeds.slice(0, MAX_PAGES) : [{ text: "" }]).map((seed, i) => newPage(id, i + 1, seed));
       set((s) => ({
         tabs: {
           ...s.tabs,
@@ -212,9 +265,9 @@ export const useEditors = create<State>()((set, get) => {
             script: null,
             scriptOptions: { stopOnError: false, autoDdl: true },
             viewer,
-            file: file?.file ?? null,
-            format: file?.format ?? null,
-            changed: file?.changed ?? false,
+            pages,
+            page: (pages[front] ?? pages[0]).id,
+            ranOn: null,
           },
         },
       }));
@@ -226,8 +279,7 @@ export const useEditors = create<State>()((set, get) => {
       if (!tab) return;
       closeResult(tab);
       forgetParams(id);
-      drafts.delete(id);
-      readers.delete(id);
+      forgetPages(tab);
       set((s) => {
         const tabs = { ...s.tabs };
         delete tabs[id];
@@ -238,13 +290,40 @@ export const useEditors = create<State>()((set, get) => {
       if (tab.tx !== null) await api.editorEnd(tab.registration, tab.tx, "rollback").catch(() => {});
     },
 
-    edited(id) {
+    addPage(id, seed = { text: "" }) {
       const tab = get().tabs[id];
-      if (tab?.file && !tab.changed) patch(id, { changed: true });
+      if (!tab || tab.pages.length >= MAX_PAGES) return null;
+      const page = newPage(id, Math.max(...tab.pages.map((p) => p.n)) + 1, seed);
+      const at = tab.pages.findIndex((p) => p.id === tab.page) + 1;
+      patch(id, { pages: [...tab.pages.slice(0, at), page, ...tab.pages.slice(at)], page: page.id });
+      return page.id;
     },
 
-    stored(id, file, format) {
-      patch(id, { file, format, changed: false });
+    closePage(id, page) {
+      const tab = get().tabs[id];
+      if (!tab || tab.pages.length <= 1) return;
+      const at = tab.pages.findIndex((p) => p.id === page);
+      if (at < 0) return;
+      const pages = tab.pages.filter((p) => p.id !== page);
+      drafts.delete(page);
+      readers.delete(page);
+      // The one after it comes to the front, or the one before the last
+      patch(id, { pages, page: tab.page === page ? pages[Math.min(at, pages.length - 1)].id : tab.page });
+    },
+
+    showPage(id, page) {
+      const tab = get().tabs[id];
+      if (tab && tab.page !== page && pageOf(tab, page)) patch(id, { page });
+    },
+
+    edited(id) {
+      const tab = get().tabs[id];
+      const page = tab && pageOf(tab);
+      if (page?.file && !page.changed) patch(id, { pages: tab.pages.map((p) => (p === page ? { ...p, changed: true } : p)) });
+    },
+
+    stored(id, page, file, format) {
+      patch(id, (tab) => ({ pages: tab.pages.map((p) => (p.id === page ? { ...p, file, format, changed: false } : p)) }));
     },
 
     note(id, text) {
@@ -266,7 +345,7 @@ export const useEditors = create<State>()((set, get) => {
     async run(id, mode, input, onError) {
       const start = get().tabs[id];
       if (!start || start.running) return;
-      patch(id, { running: true });
+      patch(id, { running: true, ranOn: start.page });
       try {
         const statements = await pick(mode, input);
         if (statements.length === 0) {
@@ -323,7 +402,7 @@ export const useEditors = create<State>()((set, get) => {
           else log(id, "error", `${p.error}\n${t("Statement {n}: {sql}", { n: n(p.index + 1), sql })}`, range);
         }
       };
-      patch(id, { running: true, script: { run, at: 0, statements: 0, failed: 0 } });
+      patch(id, (tab) => ({ running: true, ranOn: tab.page, script: { run, at: 0, statements: 0, failed: 0 } }));
       try {
         const options = { ...start.scriptOptions, atomic: false };
         const end = await runScript(run, start.registration, start.tx, start.txOptions, text, options, (event) => {

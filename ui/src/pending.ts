@@ -4,7 +4,7 @@
 // typed and not compiled or applied: those ask whether to discard it.
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { closePanel, panelTitle } from "./dock";
-import { useEditors } from "./editors";
+import { pageOf, useEditors } from "./editors";
 import { busyExecutives, settleExecutive } from "./executive";
 import { flushSession } from "./session";
 import { useStore } from "./store";
@@ -13,7 +13,13 @@ import { hasChanges, useViewers } from "./viewers";
 
 /** `update`: the app is replaced by a newer version and started again,
  *  which ends what a quit ends */
-export type PendingAction = { kind: "close"; tab: string } | { kind: "disconnect"; id: string } | { kind: "quit" } | { kind: "update" };
+export type PendingAction =
+  | { kind: "close"; tab: string }
+  /** One of an editor's pages, the editor staying open */
+  | { kind: "closePage"; tab: string; page: string }
+  | { kind: "disconnect"; id: string }
+  | { kind: "quit" }
+  | { kind: "update" };
 
 /** Editors with an active transaction, optionally only some */
 export function activeTabs(filter: (registration: string, tab: string) => boolean = () => true): string[] {
@@ -31,19 +37,25 @@ export function unsavedViewers(filter: (registration: string) => boolean = () =>
 }
 
 /** Does `action` now if nothing stands in the way; asks otherwise: first
- *  about an editor's unsaved file (`anyway` when that was answered), then
- *  about viewers' changes, then about transactions.
+ *  about each page's unsaved file (`answered`: the pages already asked
+ *  about), then about viewers' changes, then about transactions.
  *
- *  Only a closing editor asks about its file, and only when it has one:
- *  quitting and disconnecting keep every editor's text for the next run
- *  (session.ts), and text that was never a file is a scratch pad's. */
-export function request(action: PendingAction, anyway = false): void {
-  if (action.kind === "close" && !anyway) {
+ *  Only a closing editor or page asks about its files, and only when they
+ *  are files: quitting and disconnecting keep every page's text for the
+ *  next time (session.ts), and text that was never a file is a scratch pad's. */
+export function request(action: PendingAction, answered: string[] = []): void {
+  if (action.kind === "close" || action.kind === "closePage") {
     const tab = useEditors.getState().tabs[action.tab];
-    if (tab?.file && tab.changed) {
-      useStore.getState().openDialog({ type: "unsaved", tab: action.tab, action });
+    const pages = !tab ? [] : action.kind === "close" ? tab.pages : [pageOf(tab, action.page)].filter((p) => !!p);
+    const unsaved = pages.find((p) => p.file && p.changed && !answered.includes(p.id));
+    if (unsaved) {
+      useStore.getState().openDialog({ type: "unsaved", tab: action.tab, page: unsaved.id, answered, action });
       return;
     }
+  }
+  if (action.kind === "closePage") {
+    useEditors.getState().closePage(action.tab, action.page);
+    return;
   }
   const unsaved =
     action.kind === "close" ? [] : unsavedViewers(action.kind === "disconnect" ? (r) => r === action.id : undefined);
@@ -60,6 +72,8 @@ function affected(action: PendingAction): string[] {
   switch (action.kind) {
     case "close":
       return action.tab.startsWith("adm-exe-") ? busyExecutives(action.tab) : activeTabs((_, tab) => tab === action.tab);
+    case "closePage":
+      return [];
     case "disconnect":
       // A Script Executive's connection is its own
       return activeTabs((registration) => registration === action.id);
@@ -93,6 +107,9 @@ async function perform(action: PendingAction) {
   switch (action.kind) {
     case "close":
       closePanel(action.tab);
+      break;
+    case "closePage":
+      useEditors.getState().closePage(action.tab, action.page);
       break;
     case "disconnect":
       await useStore.getState().disconnect(action.id, true);
