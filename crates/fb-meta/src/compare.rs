@@ -7,15 +7,17 @@
 //! to a digest of the row, the source is read against it, and only the
 //! target rows found to differ are read again, to say in what.
 //!
-//! Blobs and arrays are left out: their values are not in the row, and
-//! reading them is a round trip for each.
+//! A blob is compared by a digest the server works out in the same read,
+//! and read itself only for a row that differs, to write it into the
+//! script. Arrays are left out: no SQL statement reads or writes one.
+//! Computed columns are compared, and never written.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fb_core::{Connection, Error, ExecuteOptions, Isolation, Result, TxEnd, TxOptions, Value};
+use fb_core::{Connection, Error, ExecuteOptions, Isolation, Result, TxEnd, TxId, TxOptions, Value};
 use serde::Serialize;
 
 use crate::data::editing;
@@ -174,16 +176,34 @@ fn digest(values: &[Lit]) -> u128 {
     ((a.finish() as u128) << 64) | b.finish() as u128
 }
 
+/// A blob column, compared by a digest the server works out, so that its
+/// value is read only for the rows that differ
+struct Blob {
+    name: String,
+    /// A TEXT blob on both sides, in other character sets: compared as
+    /// UTF-8, or the same text would differ in its bytes
+    as_utf8: bool,
+    /// The target computes it: compared, never written
+    computed: bool,
+}
+
 /// What of the two tables is compared
 struct Plan<'a> {
     source: &'a Table,
     target: &'a Table,
     key: Vec<String>,
+    /// Compared by value, besides the key
     columns: Vec<String>,
+    /// Of `columns`, those the target computes: never written
+    computed: Vec<String>,
+    blobs: Vec<Blob>,
+    /// Both servers digest a blob with SHA-256 (Firebird 4 and later);
+    /// before, there is a 64-bit hash and the length
+    strong: bool,
     notes: Vec<String>,
 }
 
-fn plan<'a>(source: &'a Table, target: &'a Table) -> Result<Plan<'a>> {
+fn plan<'a>(source: &'a Table, target: &'a Table, strong: bool) -> Result<Plan<'a>> {
     let Some(editing) = editing(target) else {
         return Err(invalid(format!(
             "{} has no key that tells its rows apart: a primary key, or a unique one without nulls.",
@@ -194,29 +214,181 @@ fn plan<'a>(source: &'a Table, target: &'a Table) -> Result<Plan<'a>> {
     if let Some(missing) = editing.key.iter().find(|k| of_source(k).is_none()) {
         return Err(invalid(format!("The source table {} has no column {missing}, which is in the target's key.", source.name)));
     }
-    let mut columns = Vec::new();
-    let mut notes = Vec::new();
+    let mut out = Plan {
+        source,
+        target,
+        key: editing.key.clone(),
+        columns: Vec::new(),
+        computed: Vec::new(),
+        blobs: Vec::new(),
+        strong,
+        notes: Vec::new(),
+    };
     for column in &target.columns {
         if editing.key.contains(&column.name) {
             continue;
         }
-        let reason = match of_source(&column.name) {
-            None => Some("only in the target"),
-            Some(_) if column.computed.is_some() => Some("computed"),
-            Some(s) if column.data_type.is_stored_apart() || s.data_type.is_stored_apart() => Some("a blob or an array"),
-            Some(_) => None,
+        let Some(theirs) = of_source(&column.name) else {
+            out.notes.push(format!("{} is not compared: only in the target.", column.name));
+            continue;
         };
-        match reason {
-            Some(reason) => notes.push(format!("{} is not compared: {reason}.", column.name)),
-            None => columns.push(column.name.clone()),
+        let (ours, other) = (&column.data_type, &theirs.data_type);
+        let computed = column.computed.is_some();
+        if ours.is_array() || other.is_array() {
+            out.notes.push(format!("{} is not compared: an array, which no SQL statement reads or writes.", column.name));
+            continue;
+        }
+        if computed {
+            out.notes.push(format!("{} is compared but never written: the target computes it.", column.name));
+        }
+        if ours.is_stored_apart() || other.is_stored_apart() {
+            let text = |t: &crate::types::DataType| t.is_text_blob();
+            let set = |t: &crate::types::DataType| t.charset.clone().filter(|c| c != "NONE" && c != "OCTETS");
+            let as_utf8 = text(ours) && text(other) && set(ours).is_some() && set(other).is_some() && set(ours) != set(other);
+            out.blobs.push(Blob { name: column.name.clone(), as_utf8, computed });
+        } else {
+            out.columns.push(column.name.clone());
+            if computed {
+                out.computed.push(column.name.clone());
+            }
         }
     }
     for column in &source.columns {
         if !target.columns.iter().any(|c| c.name == column.name) {
-            notes.push(format!("{} is not compared: only in the source.", column.name));
+            out.notes.push(format!("{} is not compared: only in the source.", column.name));
         }
     }
-    Ok(Plan { source, target, key: editing.key, columns, notes })
+    if !out.blobs.is_empty() && !strong {
+        out.notes.push(
+            "Blobs are compared by their length and a 64-bit hash, as servers before Firebird 4 offer: \
+             a change that keeps both would be missed."
+                .into(),
+        );
+    }
+    Ok(out)
+}
+
+/// Bytes of one blob a script writes: past them it says to copy it by hand
+fn blob_limit(major: u32) -> usize {
+    // Before Firebird 3 a statement is at most 64 KB
+    if major >= 3 {
+        1 << 20
+    } else {
+        16_000
+    }
+}
+
+/// Bytes of blobs a script holds in all
+const BLOB_BUDGET: usize = 64 << 20;
+
+/// Of a blob, what is read of it to show beside the other side's
+const PREVIEW: usize = 256;
+
+/// A blob's value as a script writes it and as it is shown
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Content {
+    Null,
+    Value { show: String, sql: String },
+    /// Larger than a script holds: shown, not written
+    TooLarge { show: String },
+}
+
+impl Content {
+    fn show(&self) -> Option<String> {
+        match self {
+            Content::Null => None,
+            Content::Value { show, .. } | Content::TooLarge { show } => Some(show.clone()),
+        }
+    }
+}
+
+/// A text as a blob literal: in pieces, as a string literal holds 32 KB
+fn text_blob_sql(text: &str) -> String {
+    const CHARS: usize = 8000;
+    let mut pieces = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.char_indices().nth(CHARS).map_or(rest.len(), |(i, _)| i);
+        pieces.push(literal(&rest[..end]));
+        rest = &rest[end..];
+    }
+    match pieces.len() {
+        0 => "''".into(),
+        1 => pieces.remove(0),
+        _ => format!("CAST({} AS BLOB SUB_TYPE TEXT) || {}", pieces[0], pieces[1..].join(" || ")),
+    }
+}
+
+/// Bytes as a blob literal, in pieces as [`text_blob_sql`]
+fn binary_blob_sql(bytes: &[u8]) -> String {
+    let hex = |part: &[u8]| format!("x'{}'", part.iter().map(|b| format!("{b:02X}")).collect::<String>());
+    let pieces: Vec<String> = bytes.chunks(16_000).map(hex).collect();
+    match pieces.len() {
+        0 => "x''".into(),
+        1 => pieces[0].clone(),
+        _ => format!("CAST({} AS BLOB SUB_TYPE BINARY) || {}", pieces[0], pieces[1..].join(" || ")),
+    }
+}
+
+fn text_preview(text: &str, cut: bool) -> String {
+    let mut shown: String = text.chars().take(120).collect();
+    if cut || shown.len() < text.len() {
+        shown.push('…');
+    }
+    shown
+}
+
+fn binary_preview(bytes: &[u8], cut: bool) -> String {
+    let hex: String = bytes.iter().take(16).map(|b| format!("{b:02X}")).collect();
+    let size = if cut { format!("more than {} bytes", bytes.len()) } else { format!("{} bytes", bytes.len()) };
+    if bytes.len() > 16 || cut {
+        format!("{hex}… ({size})")
+    } else {
+        format!("{hex} ({size})")
+    }
+}
+
+/// Reads blobs for a script, within [`BLOB_BUDGET`]
+struct Blobs {
+    limit: usize,
+    used: usize,
+}
+
+impl Blobs {
+    /// The value a cursor of `tx` returned for a blob, read up to `max`
+    /// bytes (the limit when `None`); a column that is no blob on this side
+    /// comes as text or bytes
+    fn read(&mut self, conn: &Connection, tx: TxId, value: &Value, max: Option<usize>) -> Result<Content> {
+        let writing = max.is_none();
+        let max = max.unwrap_or(self.limit).min(if writing { BLOB_BUDGET.saturating_sub(self.used) } else { usize::MAX });
+        let (text, bytes, complete) = match value {
+            Value::Null => return Ok(Content::Null),
+            Value::Text(s) => (Some(s.clone()), Vec::new(), true),
+            Value::Binary(b) => (None, b.clone(), true),
+            Value::BlobRef { id, text } => {
+                let read = conn.read_blob(tx, *id, *text, max)?;
+                (read.text, read.bytes, read.complete)
+            }
+            other => (Some(lit(&Column::default(), other).show.unwrap_or_default()), Vec::new(), true),
+        };
+        let size = text.as_ref().map_or(bytes.len(), String::len);
+        let show = match &text {
+            Some(t) => text_preview(t, !complete),
+            None => binary_preview(&bytes, !complete),
+        };
+        if !writing {
+            return Ok(Content::Value { show, sql: String::new() });
+        }
+        if !complete || size > max {
+            return Ok(Content::TooLarge { show });
+        }
+        self.used += size;
+        let sql = match &text {
+            Some(t) => text_blob_sql(t),
+            None => binary_blob_sql(&bytes),
+        };
+        Ok(Content::Value { show, sql })
+    }
 }
 
 impl Plan<'_> {
@@ -225,15 +397,44 @@ impl Plan<'_> {
         self.key.iter().chain(&self.columns)
     }
 
+    /// What the server digests a blob into
+    fn blob_digest(&self, blob: &Blob, dialect: u32) -> String {
+        let column = quote(&blob.name, dialect);
+        let value =
+            if blob.as_utf8 { format!("CAST({column} AS BLOB SUB_TYPE TEXT CHARACTER SET UTF8)") } else { column };
+        if self.strong {
+            format!("HEX_ENCODE(CRYPT_HASH({value} USING SHA256))")
+        } else {
+            format!("HASH({value}) || '/' || OCTET_LENGTH({value})")
+        }
+    }
+
+    /// The key, the compared columns, then each blob's digest
     fn select(&self, table: &Table, dialect: u32) -> String {
-        let list: Vec<String> = self.names().map(|n| quote(n, dialect)).collect();
+        let mut list: Vec<String> = self.names().map(|n| quote(n, dialect)).collect();
+        list.extend(self.blobs.iter().map(|b| self.blob_digest(b, dialect)));
         format!("SELECT {} FROM {}", list.join(", "), quote(&table.name, dialect))
     }
 
+    /// The key, the compared columns, each blob's digest, then the blobs
+    fn select_with_blobs(&self, table: &Table, dialect: u32) -> String {
+        let mut list: Vec<String> = self.names().map(|n| quote(n, dialect)).collect();
+        list.extend(self.blobs.iter().map(|b| self.blob_digest(b, dialect)));
+        list.extend(self.blobs.iter().map(|b| quote(&b.name, dialect)));
+        format!("SELECT {} FROM {}", list.join(", "), quote(&table.name, dialect))
+    }
+
+    /// Where the values compared end in a row: the blobs come after
+    fn compared(&self) -> usize {
+        self.key.len() + self.columns.len() + self.blobs.len()
+    }
+
     /// A row read by [`select`](Self::select), each value as its column
-    /// (the target's: it is the target's types the statements must suit)
+    /// (the target's: it is the target's types the statements must suit);
+    /// a blob's digest as text
     fn lits(&self, row: &[Value]) -> Vec<Lit> {
-        self.names()
+        let mut out: Vec<Lit> = self
+            .names()
             .zip(row)
             .map(|(name, value)| {
                 let column = self.target.columns.iter().find(|c| &c.name == name).expect("a column of the plan");
@@ -245,7 +446,10 @@ impl Plan<'_> {
                     _ => lit(column, value),
                 }
             })
-            .collect()
+            .collect();
+        let digests = row.iter().skip(out.len()).take(self.blobs.len());
+        out.extend(digests.map(|v| lit(&Column::default(), v)));
+        out
     }
 
     fn condition(&self, key: &[Lit], dialect: u32) -> String {
@@ -260,11 +464,17 @@ impl Plan<'_> {
             .collect();
         parts.join(" AND ")
     }
+
+    /// Rows found by their keys, `BATCH` to a statement
+    fn of_keys(&self, select: &str, rows: &[&[Lit]], dialect: u32) -> String {
+        let conditions: Vec<String> = rows.iter().map(|key| format!("({})", self.condition(key, dialect))).collect();
+        format!("{select} WHERE {}", conditions.join(" OR "))
+    }
 }
 
-/// Reads a query's rows a page at a time, in a snapshot of its own;
-/// `false` from `each` stops it
-fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(Vec<Value>) -> bool) -> Result<()> {
+/// Reads a query's rows a page at a time, in a snapshot of its own, which
+/// `each` is given to read blobs in; `false` from it stops
+fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(TxId, Vec<Value>) -> Result<bool>) -> Result<()> {
     let tx = conn.begin(TxOptions { isolation: Isolation::Snapshot, read_only: true, ..Default::default() })?;
     let mut run = || -> Result<()> {
         let executed = conn.execute(tx, sql, vec![], ExecuteOptions { plan: false, performance: false })?;
@@ -272,7 +482,7 @@ fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(Vec<Value>) -> bool
         loop {
             let page = conn.fetch(cursor, PAGE)?;
             for row in page.rows {
-                if !each(row) {
+                if !each(tx, row)? {
                     return conn.close_cursor(cursor);
                 }
             }
@@ -284,6 +494,11 @@ fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(Vec<Value>) -> bool
     let result = run();
     conn.end(tx, TxEnd::Rollback).ok();
     result
+}
+
+/// A line of a script that is not run, with no line break in it
+fn comment(text: String) -> Statement {
+    Statement::plain(format!("-- {}", text.replace(['\r', '\n'], " ")))
 }
 
 /// Compares `source_table` on `source` with `target_table` on `target`.
@@ -300,23 +515,27 @@ pub fn compare(
 ) -> Result<Comparison> {
     let source_def = table(source, source_table)?;
     let target_def = table(target, target_table)?;
-    let plan = plan(&source_def, &target_def)?;
+    let strong = source.info().major >= 4 && target.info().major >= 4;
+    let plan = plan(&source_def, &target_def, strong)?;
     let ctx = Context::of(target.info());
+    let source_dialect = source.info().dialect;
     let keys = plan.key.len();
     let stopped = || cancel.load(Ordering::Relaxed);
 
-    let mut out = Comparison { key: plan.key.clone(), columns: plan.columns.clone(), notes: plan.notes.clone(), ..Default::default() };
+    let mut columns = plan.columns.clone();
+    columns.extend(plan.blobs.iter().map(|b| b.name.clone()));
+    let mut out = Comparison { key: plan.key.clone(), columns, notes: plan.notes.clone(), ..Default::default() };
 
     // The target, as its keys and what each row comes to
     let mut digests: HashMap<String, u128> = HashMap::new();
-    stream(target, &plan.select(plan.target, ctx.dialect), |row| {
+    stream(target, &plan.select(plan.target, ctx.dialect), |_, row| {
         let lits = plan.lits(&row);
         digests.insert(joined(&lits[..keys]), digest(&lits[keys..]));
         out.target_rows += 1;
         if out.target_rows % PAGE as u64 == 0 {
             progress(Progress { phase: "target", rows: out.target_rows });
         }
-        !stopped()
+        Ok(!stopped())
     })?;
 
     // The source against it. What differs waits for the target's values.
@@ -324,8 +543,7 @@ pub fn compare(
     let mut differing: Vec<Vec<Lit>> = Vec::new();
     let mut kept = 0usize;
     if !stopped() {
-        let source_dialect = source.info().dialect;
-        stream(source, &plan.select(plan.source, source_dialect), |row| {
+        stream(source, &plan.select(plan.source, source_dialect), |_, row| {
             let lits = plan.lits(&row);
             out.source_rows += 1;
             match digests.remove(&joined(&lits[..keys])) {
@@ -348,7 +566,7 @@ pub fn compare(
             if out.source_rows % PAGE as u64 == 0 {
                 progress(Progress { phase: "source", rows: out.source_rows });
             }
-            !stopped()
+            Ok(!stopped())
         })?;
     }
     if stopped() {
@@ -375,71 +593,178 @@ pub fn compare(
     out.truncated = (out.only_source + out.only_target + out.different) as usize > kept;
 
     let name = quote(&plan.target.name, ctx.dialect);
-    let column_names: Vec<String> = plan.names().map(|n| quote(n, ctx.dialect)).collect();
+    let quoted = |n: &String| quote(n, ctx.dialect);
     let mut deletes = Vec::new();
     let mut updates = Vec::new();
     let mut insert_statements = Vec::new();
+    let mut blobs = Blobs { limit: blob_limit(target.info().major), used: 0 };
+    let first_blob = keys + plan.columns.len();
+    let too_large = |column: &str, condition: &str, limit: usize| {
+        comment(format!(
+            "{column} of the row where {condition} is larger than a script holds ({} KB): copy it by hand",
+            limit / 1024
+        ))
+    };
 
     for key in &only_target {
         deletes.push(Statement::plain(format!("DELETE FROM {name} WHERE {}", plan.condition(key, ctx.dialect))));
         out.rows.push(DiffRow { kind: DiffKind::OnlyTarget, key: key.iter().map(|l| l.show.clone()).collect(), changes: Vec::new() });
     }
 
-    // The target's side of the rows that differ, a batch to a statement
-    let select = plan.select(plan.target, ctx.dialect);
+    // The target's side of the rows that differ, a batch to a statement,
+    // and the source's blobs that differ from the target's
+    let with_blobs = plan.select_with_blobs(plan.target, ctx.dialect);
+    let source_blobs = plan.select_with_blobs(plan.source, source_dialect);
     let mut read = 0u64;
     for batch in differing.chunks(BATCH) {
         if stopped() {
             out.cancelled = true;
             break;
         }
-        let conditions: Vec<String> = batch.iter().map(|row| format!("({})", plan.condition(&row[..keys], ctx.dialect))).collect();
-        let mut theirs: HashMap<String, Vec<Lit>> = HashMap::new();
-        stream(target, &format!("{select} WHERE {}", conditions.join(" OR ")), |row| {
+        let batch_keys: Vec<&[Lit]> = batch.iter().map(|row| &row[..keys]).collect();
+        let mut theirs: HashMap<String, (Vec<Lit>, Vec<Content>)> = HashMap::new();
+        stream(target, &plan.of_keys(&with_blobs, &batch_keys, ctx.dialect), |tx, row| {
             let lits = plan.lits(&row);
-            theirs.insert(joined(&lits[..keys]), lits);
-            true
+            let mut shown = Vec::new();
+            for value in &row[plan.compared()..] {
+                shown.push(blobs.read(target, tx, value, Some(PREVIEW))?);
+            }
+            theirs.insert(joined(&lits[..keys]), (lits, shown));
+            Ok(true)
         })?;
+        // The source's blobs, of the rows where one differs
+        let blob_differs = |row: &[Lit]| {
+            theirs.get(&joined(&row[..keys])).is_some_and(|(t, _)| (first_blob..row.len()).any(|i| row[i].sql != t[i].sql))
+        };
+        let wanted: Vec<&[Lit]> = batch.iter().filter(|r| blob_differs(r)).map(|r| &r[..keys]).collect();
+        let mut ours: HashMap<String, Vec<Content>> = HashMap::new();
+        if !wanted.is_empty() {
+            stream(source, &plan.of_keys(&source_blobs, &wanted, source_dialect), |tx, row| {
+                let lits = plan.lits(&row);
+                let Some((target_row, _)) = theirs.get(&joined(&lits[..keys])) else { return Ok(true) };
+                let mut values = Vec::new();
+                for (i, value) in row[plan.compared()..].iter().enumerate() {
+                    let differs = lits[first_blob + i].sql != target_row[first_blob + i].sql;
+                    values.push(if differs && !plan.blobs[i].computed {
+                        blobs.read(source, tx, value, None)?
+                    } else {
+                        Content::Null
+                    });
+                }
+                ours.insert(joined(&lits[..keys]), values);
+                Ok(true)
+            })?;
+        }
         for row in batch {
             let key: Vec<Option<String>> = row[..keys].iter().map(|l| l.show.clone()).collect();
             // Gone or changed since it was read: the next comparison's to say
-            let Some(target_row) = theirs.get(&joined(&row[..keys])) else { continue };
+            let Some((target_row, target_blobs)) = theirs.get(&joined(&row[..keys])) else { continue };
+            let condition = plan.condition(&row[..keys], ctx.dialect);
             let mut changes = Vec::new();
             let mut set = Vec::new();
+            let mut notes = Vec::new();
+            let mut computed_only = Vec::new();
             for (i, column) in plan.columns.iter().enumerate() {
                 let (ours, their) = (&row[keys + i], &target_row[keys + i]);
                 if ours.sql != their.sql {
-                    set.push(format!("{} = {}", quote(column, ctx.dialect), ours.sql));
+                    if plan.computed.contains(column) {
+                        computed_only.push(column.clone());
+                    } else {
+                        set.push(format!("{} = {}", quoted(column), ours.sql));
+                    }
                     changes.push(Change { column: column.clone(), source: ours.show.clone(), target: their.show.clone() });
                 }
             }
-            if set.is_empty() {
+            let source_values = ours.get(&joined(&row[..keys]));
+            for (i, blob) in plan.blobs.iter().enumerate() {
+                if row[first_blob + i].sql == target_row[first_blob + i].sql {
+                    continue;
+                }
+                let value = source_values.and_then(|v| v.get(i)).cloned().unwrap_or(Content::Null);
+                match &value {
+                    _ if blob.computed => computed_only.push(blob.name.clone()),
+                    Content::Null => set.push(format!("{} = NULL", quoted(&blob.name))),
+                    Content::Value { sql, .. } => set.push(format!("{} = {sql}", quoted(&blob.name))),
+                    Content::TooLarge { .. } => notes.push(too_large(&blob.name, &condition, blobs.limit)),
+                }
+                let target = target_blobs.get(i).and_then(Content::show);
+                changes.push(Change { column: blob.name.clone(), source: value.show(), target });
+            }
+            if changes.is_empty() {
                 continue;
             }
-            updates.push(Statement::plain(format!(
-                "UPDATE {name} SET {} WHERE {}",
-                set.join(", "),
-                plan.condition(&row[..keys], ctx.dialect)
-            )));
+            updates.extend(notes);
+            if set.is_empty() {
+                if !computed_only.is_empty() {
+                    updates.push(comment(format!(
+                        "The row where {condition} differs only in what the target computes ({}): nothing to write",
+                        computed_only.join(", ")
+                    )));
+                }
+            } else {
+                updates.push(Statement::plain(format!("UPDATE {name} SET {} WHERE {condition}", set.join(", "))));
+            }
             out.rows.push(DiffRow { kind: DiffKind::Different, key, changes });
         }
         read += batch.len() as u64;
         progress(Progress { phase: "details", rows: read });
     }
 
+    // The rows to insert, with the source's blobs
+    let mut inserted_blobs: HashMap<String, Vec<Content>> = HashMap::new();
+    if !plan.blobs.is_empty() {
+        for batch in inserts.chunks(BATCH) {
+            if stopped() {
+                out.cancelled = true;
+                break;
+            }
+            let batch_keys: Vec<&[Lit]> = batch.iter().map(|row| &row[..keys]).collect();
+            stream(source, &plan.of_keys(&source_blobs, &batch_keys, source_dialect), |tx, row| {
+                let lits = plan.lits(&row);
+                let mut values = Vec::new();
+                for (i, value) in row[plan.compared()..].iter().enumerate() {
+                    values.push(if plan.blobs[i].computed { Content::Null } else { blobs.read(source, tx, value, None)? });
+                }
+                inserted_blobs.insert(joined(&lits[..keys]), values);
+                Ok(true)
+            })?;
+        }
+    }
     for row in &inserts {
-        let values: Vec<&str> = row.iter().map(|l| l.sql.as_str()).collect();
-        insert_statements.push(Statement::plain(format!(
-            "INSERT INTO {name} ({}) VALUES ({})",
-            column_names.join(", "),
-            values.join(", ")
-        )));
-        let changes = plan
+        let condition = plan.condition(&row[..keys], ctx.dialect);
+        let mut names: Vec<String> = Vec::new();
+        let mut values: Vec<String> = Vec::new();
+        for (name, l) in plan.names().zip(row.iter()) {
+            if !plan.computed.contains(name) {
+                names.push(quoted(name));
+                values.push(l.sql.clone());
+            }
+        }
+        let mut changes: Vec<Change> = plan
             .columns
             .iter()
             .zip(&row[keys..])
             .map(|(column, l)| Change { column: column.clone(), source: l.show.clone(), target: None })
             .collect();
+        let contents = inserted_blobs.get(&joined(&row[..keys]));
+        for (i, blob) in plan.blobs.iter().enumerate() {
+            let value = contents.and_then(|v| v.get(i)).cloned().unwrap_or(Content::Null);
+            match &value {
+                _ if blob.computed => {}
+                Content::Null => {}
+                Content::Value { sql, .. } => {
+                    names.push(quoted(&blob.name));
+                    values.push(sql.clone());
+                }
+                Content::TooLarge { .. } => insert_statements.push(too_large(&blob.name, &condition, blobs.limit)),
+            }
+            changes.push(Change { column: blob.name.clone(), source: value.show(), target: None });
+        }
+        insert_statements.push(Statement::plain(format!(
+            "INSERT INTO {name} ({}) VALUES ({})",
+            names.join(", "),
+            values.join(", ")
+        )));
         out.rows.push(DiffRow { kind: DiffKind::OnlySource, key: row[..keys].iter().map(|l| l.show.clone()).collect(), changes });
     }
 
@@ -462,7 +787,8 @@ fn lines(statements: &[Statement]) -> String {
     let mut out = String::new();
     for s in statements {
         out.push_str(&s.sql);
-        out.push_str(";\n");
+        // A comment ends with its line
+        out.push_str(if s.sql.starts_with("--") { "\n" } else { ";\n" });
     }
     out
 }
@@ -526,15 +852,58 @@ mod tests {
         computed.computed = Some("(A * 2)".into());
         let target = keyed("T", vec![column("ID", 8), column("A", 8), column("MEMO", 261), computed.clone(), column("NEW", 8)]);
         let source = keyed("S", vec![column("ID", 8), column("A", 8), column("MEMO", 261), computed, column("OLD", 8)]);
-        let p = plan(&source, &target).unwrap();
-        assert_eq!((p.key.as_slice(), p.columns.as_slice()), (&["ID".to_string()][..], &["A".to_string()][..]));
-        assert_eq!(p.notes.len(), 4, "{:?}", p.notes);
+        let p = plan(&source, &target, true).unwrap();
+        assert_eq!(p.key, ["ID"]);
+        // A computed column is compared, and a blob by its digest
+        assert_eq!((p.columns.as_slice(), p.computed.as_slice()), (&["A".to_string(), "TOTAL".into()][..], &["TOTAL".to_string()][..]));
+        assert_eq!(p.blobs.iter().map(|b| b.name.as_str()).collect::<Vec<_>>(), ["MEMO"]);
+        // NEW and OLD on one side only, TOTAL never written
+        assert_eq!(p.notes.len(), 3, "{:?}", p.notes);
+        assert!(p.select(&target, 3).contains("HEX_ENCODE(CRYPT_HASH(MEMO USING SHA256))"), "{}", p.select(&target, 3));
+        // Before Firebird 4 a weaker digest, and said to be
+        let weak = plan(&source, &target, false).unwrap();
+        assert_eq!(weak.notes.len(), 4);
+        assert!(weak.select(&target, 3).contains("HASH(MEMO) || '/' || OCTET_LENGTH(MEMO)"));
+        // An array is left out
+        let mut listed = column("LIST", 8);
+        listed.data_type.dimensions = vec![(1, 3)];
+        let with_array = keyed("T", vec![column("ID", 8), listed.clone()]);
+        let a = plan(&with_array, &with_array, true).unwrap();
+        assert!(a.columns.is_empty() && a.blobs.is_empty() && a.notes[0].contains("array"), "{:?}", a.notes);
 
         let mut keyless = target.clone();
         keyless.constraints.clear();
-        assert!(plan(&source, &keyless).is_err());
+        assert!(plan(&source, &keyless, true).is_err());
         let other_key = keyed("S", vec![column("CODE", 8)]);
-        assert!(plan(&other_key, &target).is_err());
+        assert!(plan(&other_key, &target, true).is_err());
+    }
+
+    #[test]
+    fn a_blob_is_written_in_pieces_a_literal_holds() {
+        assert_eq!(text_blob_sql("it's"), "'it''s'");
+        assert_eq!(text_blob_sql(""), "''");
+        let long = "é".repeat(8001);
+        let sql = text_blob_sql(&long);
+        assert!(sql.starts_with("CAST('é") && sql.ends_with(" AS BLOB SUB_TYPE TEXT) || 'é'"), "{}", &sql[sql.len() - 40..]);
+        assert_eq!(binary_blob_sql(&[0, 255]), "x'00FF'");
+        assert_eq!(binary_blob_sql(&[]), "x''");
+        let sql = binary_blob_sql(&vec![1; 16_001]);
+        assert!(sql.starts_with("CAST(x'0101") && sql.ends_with(" AS BLOB SUB_TYPE BINARY) || x'01'"));
+    }
+
+    #[test]
+    fn a_blob_is_shown_by_its_start() {
+        assert_eq!(text_preview("short", false), "short");
+        assert_eq!(text_preview("cut", true), "cut…");
+        assert_eq!(text_preview(&"a".repeat(200), false).chars().count(), 121);
+        assert_eq!(binary_preview(&[0xAB, 1], false), "AB01 (2 bytes)");
+        assert_eq!(binary_preview(&[0; 20], true), "00000000000000000000000000000000… (more than 20 bytes)");
+    }
+
+    #[test]
+    fn a_comment_ends_its_line_without_a_terminator() {
+        let script = lines(&[comment("a\nb".into()), Statement::plain("DELETE FROM T")]);
+        assert_eq!(script, "-- a b\nDELETE FROM T;\n");
     }
 
     #[test]

@@ -143,6 +143,16 @@ impl DataType {
     }
 
     /// A blob or an array: its values are not in the row, but behind it
+    /// A TEXT blob
+    pub fn is_text_blob(&self) -> bool {
+        self.code == code::BLOB && self.sub_type == 1
+    }
+
+    /// An array: read and written only through the array API
+    pub fn is_array(&self) -> bool {
+        self.array > 0 || !self.dimensions.is_empty()
+    }
+
     pub fn is_stored_apart(&self) -> bool {
         self.array > 0 || !self.dimensions.is_empty() || matches!(self.code, code::BLOB | code::QUAD)
     }

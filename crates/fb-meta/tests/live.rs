@@ -787,17 +787,22 @@ fn two_tables_are_compared_and_the_scripts_close_the_gap() {
     let mut phases = Vec::new();
     let c = compare(&conn, "CMP_SOURCE", &conn, "CMP_TARGET", 1000, &never, |p| phases.push(p.phase)).unwrap();
     assert_eq!(c.key, ["ID"]);
-    assert_eq!(c.columns, ["NOME", "VALOR", "DIA", "HORA", "QUANDO"]);
-    assert_eq!(c.notes.len(), 3, "{:?}", c.notes);
+    assert_eq!(c.columns, ["NOME", "VALOR", "DIA", "HORA", "QUANDO", "DOBRO", "OBS"]);
+    // Each side's own column, the computed one; before Firebird 4 the
+    // weaker digest of blobs too
+    let weak = usize::from(conn.info().major < 4);
+    assert_eq!(c.notes.len(), 3 + weak, "{:?}", c.notes);
     assert_eq!((c.source_rows, c.target_rows), (5, 5));
-    assert_eq!((c.same, c.different, c.only_source, c.only_target), (2, 2, 1, 1));
+    // Row 1 differs in its blob only
+    assert_eq!((c.same, c.different, c.only_source, c.only_target), (1, 3, 1, 1));
     assert!(!c.truncated && !c.cancelled);
     assert_eq!(phases, ["details"]);
 
     assert_eq!(c.deletes, "DELETE FROM CMP_TARGET WHERE ID = 9;\n");
     assert_eq!(
         c.updates,
-        "UPDATE CMP_TARGET SET NOME = 'it''s' WHERE ID = 2;\n\
+        "UPDATE CMP_TARGET SET OBS = 'a' WHERE ID = 1;\n\
+         UPDATE CMP_TARGET SET NOME = 'it''s' WHERE ID = 2;\n\
          UPDATE CMP_TARGET SET VALOR = NULL, DIA = '2024-03-01', HORA = '23:59:59', QUANDO = '2024-03-01 23:59:59.5' WHERE ID = 3;\n"
     );
     assert_eq!(
@@ -809,12 +814,16 @@ fn two_tables_are_compared_and_the_scripts_close_the_gap() {
         kinds,
         [
             (DiffKind::OnlyTarget, "9".to_string(), 0),
+            (DiffKind::Different, "1".to_string(), 1),
             (DiffKind::Different, "2".to_string(), 1),
-            (DiffKind::Different, "3".to_string(), 4),
-            (DiffKind::OnlySource, "4".to_string(), 5)
+            // DOBRO follows VALOR: told, not set
+            (DiffKind::Different, "3".to_string(), 5),
+            (DiffKind::OnlySource, "4".to_string(), 7)
         ]
     );
-    let valor = c.rows[2].changes.iter().find(|x| x.column == "VALOR").unwrap();
+    let obs = c.rows[1].changes.iter().find(|x| x.column == "OBS").unwrap();
+    assert_eq!((obs.source.as_deref(), obs.target.as_deref()), (Some("a"), Some("b")));
+    let valor = c.rows[3].changes.iter().find(|x| x.column == "VALOR").unwrap();
     assert_eq!((valor.source.as_deref(), valor.target.as_deref()), (None, Some("3.00")));
 
     let tx = conn.begin(TxOptions::default()).unwrap();
@@ -825,7 +834,8 @@ fn two_tables_are_compared_and_the_scripts_close_the_gap() {
     let apart = "select count(*) from cmp_source s full join cmp_target t on t.id = s.id \
                  where s.id is null or t.id is null or trim(s.nome) is distinct from t.nome \
                     or s.valor is distinct from t.valor or s.dia is distinct from t.dia \
-                    or s.hora is distinct from t.hora or s.quando is distinct from t.quando";
+                    or s.hora is distinct from t.hora or s.quando is distinct from t.quando \
+                    or cast(s.obs as varchar(100)) is distinct from cast(t.obs as varchar(100))";
     let left = conn.execute(tx, apart, vec![], ExecuteOptions { plan: false, performance: false }).unwrap();
     let rows = conn.fetch(left.cursor.unwrap(), 10).unwrap().rows;
     conn.end(tx, TxEnd::Rollback).unwrap();
@@ -834,11 +844,12 @@ fn two_tables_are_compared_and_the_scripts_close_the_gap() {
     // Kept short, it says there is more, and still counts it all
     let short = compare(&conn, "CMP_SOURCE", &conn, "CMP_TARGET", 1, &never, |_| {}).unwrap();
     assert!(short.truncated);
-    assert_eq!((short.different, short.only_source, short.only_target, short.rows.len()), (2, 1, 1, 1));
+    assert_eq!((short.different, short.only_source, short.only_target, short.rows.len()), (3, 1, 1, 1));
 
     // A table compared with itself has nothing to say
     let own = compare(&conn, "CMP_SOURCE", &conn, "CMP_SOURCE", 1000, &never, |_| {}).unwrap();
-    assert_eq!((own.same, own.rows.len(), own.notes.len()), (5, 0, 1));
+    // but that DOBRO is never written
+    assert_eq!((own.same, own.rows.len(), own.notes.len()), (5, 0, 1 + weak));
 
     // Stopped, it says so
     let stop = AtomicBool::new(true);

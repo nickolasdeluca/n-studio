@@ -242,8 +242,13 @@ stops at 250 tables.
 matched by the target's primary key (or a unique key of NOT NULL columns). It
 counts every difference, keeps 20,000 in detail, and writes the DELETE, UPDATE
 and INSERT statements that make the target the source into an SQL editor; it
-changes nothing itself. Blobs, arrays and computed columns are left out and said
-to be.
+changes nothing itself. A blob is compared by a digest the server works out
+in the same read (SHA-256 from Firebird 4, a 64-bit hash and the length
+before, and said to be), and read only for a row that differs, to write it
+into the script in pieces a literal holds; one past 1 MB (16 KB before
+Firebird 3) is told to be copied by hand. Computed columns are compared
+and never written. Arrays are left out and said to be: no SQL statement
+reads or writes one.
 
 **Query builder.** Tables and views picked by name, joined by their foreign keys
 when they first enter, columns ticked, renamed, totalled, sorted and filtered. The

@@ -200,7 +200,8 @@ GRANT R_FIXTURE TO U_FIXTURE WITH ADMIN OPTION;
 
 /* Two tables to compare: a row the same in both, rows that differ in a
    text, in a number and in each kind of date, a row only the source has
-   and one only the target has. A blob and a column of each side's own,
+   and one only the target has. A blob, compared by its digest; a computed
+   column, compared and never written; and a column of each side's own,
    which a comparison leaves out. */
 CREATE TABLE CMP_SOURCE (
   ID         INTEGER NOT NULL,
@@ -211,6 +212,7 @@ CREATE TABLE CMP_SOURCE (
   QUANDO     TIMESTAMP,
   OBS        BLOB SUB_TYPE TEXT,
   SO_ORIGEM  INTEGER,
+  DOBRO      COMPUTED BY (VALOR * 2),
   CONSTRAINT PK_CMP_SOURCE PRIMARY KEY (ID)
 );
 
@@ -223,6 +225,7 @@ CREATE TABLE CMP_TARGET (
   QUANDO      TIMESTAMP,
   OBS         BLOB SUB_TYPE TEXT,
   SO_DESTINO  INTEGER,
+  DOBRO       COMPUTED BY (VALOR * 2),
   CONSTRAINT PK_CMP_TARGET PRIMARY KEY (ID)
 );
 
