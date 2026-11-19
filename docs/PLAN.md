@@ -463,7 +463,7 @@ Tried by the live tests on the docker fixture, the panel in the browser
 preview, and by the owner against a real database in the app; a file near
 the 256 MB limit has been split, not run.
 
-### M11 — The agent
+### M11 — The agent — done
 
 Claude Code or Codex inside the app, the way an editor hosts them: N Studio
 does not talk to a model itself. It runs the user's own `claude` or `codex`,
