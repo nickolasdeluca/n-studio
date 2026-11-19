@@ -32,7 +32,7 @@ function kept(tab: EditorTab, front: boolean): SessionTab | null {
     // A page nothing was typed in is not worth bringing back
     if (!p.file && !text?.trim()) continue;
     if (p.id === tab.page) page = pages.length;
-    pages.push({ file: p.file, format: p.format, text });
+    pages.push({ title: p.title, file: p.file, format: p.format, text });
   }
   return pages.length === 0 ? null : { registration: tab.registration, title: editorTitle(tab.id), pages, page, front };
 }
@@ -169,7 +169,7 @@ async function pageSeed(page: SessionPage, failed: string[]): Promise<PageSeed |
     }
   }
   const file = page.file && page.format ? { file: page.file, format: page.format, changed: page.text !== null } : undefined;
-  return { text: text ?? "", file };
+  return { text: text ?? "", file, title: page.title ?? null };
 }
 
 /** An editor opened or closed, a page added, closed or brought to the

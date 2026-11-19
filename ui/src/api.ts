@@ -336,6 +336,8 @@ export interface ScriptFile {
 
 /** An editor's page as it is kept between runs of the app */
 export interface SessionPage {
+  /** The name it was given, if one was */
+  title: string | null;
   file: string | null;
   format: FileFormat | null;
   /** Null when it is the file's, unchanged */

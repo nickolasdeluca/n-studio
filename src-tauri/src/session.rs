@@ -20,6 +20,9 @@ use crate::files::{self, Format};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionPage {
+    /// The name it was given, if one was
+    #[serde(default)]
+    title: Option<String>,
     /// The script it was opened from or saved to
     file: Option<PathBuf>,
     format: Option<Format>,
@@ -86,7 +89,7 @@ impl From<FileV1> for Session {
             .map(|(i, tab)| SessionTab {
                 registration: tab.registration,
                 title: tab.title,
-                pages: vec![SessionPage { file: tab.file, format: tab.format, text: tab.text }],
+                pages: vec![SessionPage { title: None, file: tab.file, format: tab.format, text: tab.text }],
                 page: 0,
                 front: old.active == Some(i),
             })
@@ -144,6 +147,7 @@ mod tests {
 
     fn sample() -> Session {
         let page = |file: Option<&str>, text: Option<&str>| SessionPage {
+            title: text.map(|_| "Totals".to_string()),
             file: file.map(PathBuf::from),
             format: file.map(|_| Format { encoding: Encoding::Win1252, crlf: true }),
             text: text.map(str::to_string),

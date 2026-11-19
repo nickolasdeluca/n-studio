@@ -349,11 +349,23 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
   );
 }
 
-/** The editor's pages, as a browser's tabs: the one in front is what runs */
+/** The editor's pages, as a browser's tabs: the one in front is what runs.
+ *  A double click on one, or its menu, renames it. */
 function PageStrip({ tab }: { tab: EditorTab }) {
   const editors = useEditors.getState();
+  const showMenu = useContextMenu((m) => m.show);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const full = tab.pages.length >= MAX_PAGES;
   const close = (page: string) => request({ kind: "closePage", tab: tab.id, page });
+  const menu = (e: React.MouseEvent, page: string) => {
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, [
+      { label: t("Rename…"), icon: "edit", onSelect: () => setRenaming(page) },
+      { label: t("New Page (Ctrl+T)"), icon: "plus", disabled: full, onSelect: () => editors.addPage(tab.id) },
+      "separator",
+      { label: t("Close the Page"), disabled: tab.pages.length <= 1, onSelect: () => close(page) },
+    ]);
+  };
   return (
     <div
       className="scroll-thin flex h-7 shrink-0 items-stretch overflow-x-auto border-b border-line bg-panel-2"
@@ -371,6 +383,8 @@ function PageStrip({ tab }: { tab: EditorTab }) {
             role="tab"
             aria-selected={front}
             title={page.file ?? name}
+            onDoubleClick={() => setRenaming(page.id)}
+            onContextMenu={(e) => menu(e, page.id)}
             onMouseDown={(e) => {
               // The middle button closes it, as on a browser's
               if (e.button === 1 && tab.pages.length > 1) {
@@ -382,7 +396,18 @@ function PageStrip({ tab }: { tab: EditorTab }) {
               front ? "bg-panel text-fg shadow-[inset_0_-2px_0_var(--accent)]" : "text-muted hover:bg-hover"
             }`}
           >
-            <span className="truncate">{name}</span>
+            {renaming === page.id ? (
+              <PageName
+                page={name}
+                done={(title) => {
+                  setRenaming(null);
+                  // Its own name typed back is no name of its own: it follows its file again
+                  if (title !== null) editors.renamePage(tab.id, page.id, title.trim() === pageName({ ...page, title: null }) ? "" : title);
+                }}
+              />
+            ) : (
+              <span className="truncate">{name}</span>
+            )}
             {page.changed && <span className="text-accent">•</span>}
             {tab.pages.length > 1 && (
               <button
@@ -410,6 +435,38 @@ function PageStrip({ tab }: { tab: EditorTab }) {
         <Icon name="plus" size={13} />
       </button>
     </div>
+  );
+}
+
+/** A page's name being typed: Enter or leaving it keeps it, Escape does not
+ *  (`done(null)`). Left blank, the page goes back to the name it had before
+ *  it was given one. */
+function PageName({ page, done }: { page: string; done(title: string | null): void }) {
+  const [text, setText] = useState(page);
+  const finished = useRef(false);
+  const finish = (title: string | null) => {
+    if (finished.current) return;
+    finished.current = true;
+    done(title);
+  };
+  return (
+    <input
+      autoFocus
+      value={text}
+      aria-label={t("Page name")}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => setText(e.target.value)}
+      onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        // The editor's keys are not this field's
+        e.stopPropagation();
+        if (e.key === "Enter") finish(text);
+        else if (e.key === "Escape") finish(null);
+      }}
+      onBlur={() => finish(text)}
+      className="h-5 w-32 rounded border border-accent bg-panel px-1 text-fg outline-none"
+    />
   );
 }
 

@@ -47,8 +47,10 @@ export const MAX_PAGES = 10;
  *  its bottom: what runs is the page in front's text. */
 export interface Page {
   id: string;
-  /** Its number in the editor, for its name while it has no file */
+  /** Its number in the editor, for its name while it has no other */
   n: number;
+  /** The name it was given, if one was */
+  title: string | null;
   /** The script it was opened from or saved to */
   file: string | null;
   format: FileFormat | null;
@@ -60,6 +62,7 @@ export interface Page {
 export interface PageSeed {
   text: string;
   file?: EditorFile;
+  title?: string | null;
 }
 
 export interface Outcome {
@@ -142,6 +145,8 @@ interface State {
   /** Its last page is not closed */
   closePage(id: string, page: string): void;
   showPage(id: string, page: string): void;
+  /** Gives a page a name; blank, it goes back to its file's or its number */
+  renamePage(id: string, page: string, title: string): void;
   /** The page in front was typed in */
   edited(id: string): void;
   /** The page's text is now what `file` holds */
@@ -194,7 +199,14 @@ export const textOf = (page: string): string => readers.get(page)?.() ?? drafts.
 function newPage(tab: string, n: number, seed: PageSeed): Page {
   const id = `${tab}:${n}`;
   if (seed.text) drafts.set(id, seed.text);
-  return { id, n, file: seed.file?.file ?? null, format: seed.file?.format ?? null, changed: seed.file?.changed ?? false };
+  return {
+    id,
+    n,
+    title: seed.title ?? null,
+    file: seed.file?.file ?? null,
+    format: seed.file?.format ?? null,
+    changed: seed.file?.changed ?? false,
+  };
 }
 
 /** The text of every page of an editor goes with it */
@@ -309,6 +321,11 @@ export const useEditors = create<State>()((set, get) => {
       readers.delete(page);
       // The one after it comes to the front, or the one before the last
       patch(id, { pages, page: tab.page === page ? pages[Math.min(at, pages.length - 1)].id : tab.page });
+    },
+
+    renamePage(id, page, title) {
+      const name = title.trim() || null;
+      patch(id, (tab) => ({ pages: tab.pages.map((p) => (p.id === page && p.title !== name ? { ...p, title: name } : p)) }));
     },
 
     showPage(id, page) {

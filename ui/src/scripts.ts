@@ -64,9 +64,9 @@ export async function openScript(registration: string, path: string): Promise<vo
   }
 }
 
-/** A page as its tab and the editor's pages strip call it */
-export function pageName(page: { n: number; file: string | null }): string {
-  return page.file ? baseName(page.file) : t("Query {n}", { n: page.n });
+/** A page as its tab calls it: the name it was given, its file's, or its number */
+export function pageName(page: { n: number; title: string | null; file: string | null }): string {
+  return page.title ?? (page.file ? baseName(page.file) : t("Query {n}", { n: page.n }));
 }
 
 /** Writes a page's text to its file, the page in front's when `pageId` is
