@@ -521,6 +521,9 @@ pub struct Tick {
 }
 
 struct Trace {
+    /// The registration it follows: the one it was started on, or the one
+    /// whose folder a log opened from disk is in
+    registration: Option<String>,
     stop: AtomicBool,
     store: Mutex<Store>,
     standing: Mutex<(Standing, Option<String>)>,
@@ -565,6 +568,64 @@ impl Traces {
             .cloned()
             .ok_or_else(|| AppError::NotFound { message: "This monitoring session is no longer open.".into() })
     }
+
+    /// What the newest session open on `registration` adds up to, for the
+    /// agent: its statements without their literals, and nothing of who
+    /// connected from where
+    pub(crate) fn summary(&self, registration: &str, by: &str, limit: usize) -> Option<TraceSummary> {
+        let (run, trace) = self
+            .open
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, t)| t.registration.as_deref() == Some(registration))
+            .max_by_key(|(run, _)| **run)
+            .map(|(run, t)| (*run, t.clone()))?;
+        let (standing, error) = trace.standing.lock().unwrap().clone();
+        let store = trace.store.lock().unwrap();
+        let seconds = store.seconds.len();
+        let statements: u64 = store.seconds.iter().map(|s| s.statements).sum();
+        let ms: u64 = store.seconds.iter().map(|s| s.ms).sum();
+        Some(TraceSummary {
+            session: run,
+            standing,
+            error,
+            events: store.total,
+            gaps: store.gaps,
+            seconds,
+            statements,
+            errors: store.seconds.iter().map(|s| s.errors).sum(),
+            connects: store.seconds.iter().map(|s| s.connects).sum(),
+            average_ms: if statements == 0 { 0.0 } else { ms as f64 / statements as f64 },
+            worst_second_p95_ms: store.seconds.iter().map(|s| s.view().high).max().unwrap_or(0),
+            memory_used: store.memory.as_ref().map(|m| m.used),
+            memory_peak: store.memory.as_ref().map(|m| m.peak),
+            top: store.top(by, false, limit),
+        })
+    }
+}
+
+/// A monitoring session as the agent is told of it
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceSummary {
+    session: u64,
+    standing: Standing,
+    error: Option<String>,
+    /// Events in all, and the times the server dropped some
+    events: u64,
+    gaps: u64,
+    /// The seconds the figures below are over: the latest ones kept
+    seconds: usize,
+    statements: u64,
+    errors: u64,
+    connects: u64,
+    average_ms: f64,
+    worst_second_p95_ms: u32,
+    memory_used: Option<i64>,
+    memory_peak: Option<i64>,
+    /// The statements that cost the most, literals replaced by `?`
+    top: Vec<StatementStats>,
 }
 
 /// A log's lines of ours: each starts with `# `
@@ -611,6 +672,7 @@ pub async fn trace_start(app: AppHandle, id: String, run: u64, options: TraceOpt
         remarks(&mut file, &head).and_then(|()| file.flush()).map_err(|e| AppError::storage(&log, e))?;
 
         let trace = Arc::new(Trace {
+            registration: Some(id.clone()),
             stop: AtomicBool::new(false),
             store: Mutex::new(Store { ignored, ..Store::default() }),
             standing: Mutex::new((Standing::Recording, None)),
@@ -820,7 +882,13 @@ fn read_log(bytes: &[u8]) -> Store {
 pub async fn trace_open(app: AppHandle, run: u64, path: PathBuf) -> AppResult<Tick> {
     blocking(app, move |state| {
         let bytes = fs::read(&path).map_err(|e| AppError::storage(&path, e))?;
+        let registration = path
+            .parent()
+            .filter(|dir| dir.parent() == Some(state.traces.dir.as_path()))
+            .and_then(|dir| dir.file_name())
+            .map(|name| name.to_string_lossy().into_owned());
         let trace = Arc::new(Trace {
+            registration,
             stop: AtomicBool::new(true),
             store: Mutex::new(read_log(&bytes)),
             standing: Mutex::new((Standing::Opened, None)),

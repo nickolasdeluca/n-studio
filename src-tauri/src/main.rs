@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod admin;
+mod agent;
 mod changes;
 mod commands;
 mod debugger;
@@ -44,6 +45,7 @@ fn view_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         view.prepend_items(&[
             &MenuItem::with_id(app, "view:explorer", "Database Explorer", true, None::<&str>)?,
             &MenuItem::with_id(app, "view:objects", "Objects", true, None::<&str>)?,
+            &MenuItem::with_id(app, "view:agent", "Claude Code", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "view:reset", "Reset Layout", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -64,6 +66,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(update::Found::default())
+        .manage(agent::Agents::default())
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let registry = registry::Registry::load(&dir)?;
@@ -177,6 +180,12 @@ fn main() {
             debugger::debug_open,
             debugger::debug_start,
             debugger::debug_command,
+            agent::agent_start,
+            agent::agent_input,
+            agent::agent_resize,
+            agent::agent_stop,
+            agent::agent_reply,
+            agent::agent_share,
         ])
         .run(tauri::generate_context!())
         .expect("N Studio failed to start");

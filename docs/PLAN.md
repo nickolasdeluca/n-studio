@@ -463,6 +463,70 @@ Tried by the live tests on the docker fixture, the panel in the browser
 preview, and by the owner against a real database in the app; a file near
 the 256 MB limit has been split, not run.
 
+### M11 — The agent
+
+Claude Code inside the app, the way an editor hosts it: N Studio does not
+talk to a model itself. It runs the user's own `claude`, signed in to the
+user's own account, in a terminal panel, and gives it a way into the
+databases that the app decides the shape of. Claude Code owns the sign-in,
+the conversation, the permissions it asks for and the files of the project
+folder it is started in, when it is given one; N Studio owns what the agent may know about a
+database. That is the line the owner drew: **the agent sees metadata, never
+data, unless the user hands it some.**
+
+- **The panel** (`src-tauri/src/agent.rs`, `ui/src/components/AgentPanel.tsx`):
+  a pseudo-terminal running `claude`, drawn with xterm.js: in a project folder
+  the user picks, or, with none, in an empty folder of the app's own
+  (`agent/workspace` in its data folder), where it reaches none of the
+  user's files and works with the databases only. The app finds `claude` as the user's shell would (a login shell
+  on macOS and Linux, whose `PATH` a GUI app does not get); without it, the
+  panel says how to install it. Closing the panel ends the process.
+- **A door of its own** (`src-tauri/src/agent/mcp.rs`): an MCP server on
+  `127.0.0.1`, a port the system picks and a token made for each start,
+  handed to `claude` with `--mcp-config`. Nothing but the process the panel
+  started knows the token. Its tools:
+  - `list_databases`: every registration, connected or not, with its
+    explorer folder; a connected one with server version, dialect and
+    character set. No server, path or user: the agent has no need of them.
+  - `connect_database`: connects a registration as the explorer does, with
+    its saved password or the one the user types when asked; the agent never
+    sees it, and the user may decline.
+  - `disconnect_database`: refused while the user has a transaction open
+    on the database (the agent's own read-only editors aside), a statement
+    running, grid changes not applied or an object viewer's changes not
+    compiled. Both are asked for by Claude Code each time.
+  - `list_objects`, `get_object_ddl`, `get_dependencies`, `find_columns`:
+    what `fb-meta` reads, as the extract and the object viewers show it,
+    less what holds values: a generator's current value is left out.
+  - `run_query`: one `SELECT` (or `WITH`), and nothing else, in an editor
+    the user sees, in a read-only transaction. The rows go to the grid; the
+    agent is told the columns and their types, how many rows came, the
+    times and the plan, and an error with the values it quotes taken out.
+  - `open_in_editor`: SQL for the user to read and run (a change to a table,
+    a new field, a script): what writes is run by the user, never by the
+    agent.
+  - `get_activity`: what `MON$` says the database is doing now: the
+    transaction counters and the gaps between them, attachments counted and
+    the busiest by I/O, the oldest active transactions, the statements
+    running and memory. No user, machine or program of an attachment.
+  - `get_trace_summary`: the newest Activity Monitor session of the
+    database (recording, or opened from its log), with its statements
+    ranked by cost as the Statements tab has them. The user starts and
+    stops a session; the agent cannot, since a trace is load on the server.
+  - Every statement text the agent gets from these has its literals
+    replaced by `?`, as the trace already keeps them.
+  - `get_shared_data`: what the user chose to share, below.
+- **Sharing data** is the user's act: the grid's selection (or its fetched
+  rows) through *Share with the agent*, which says first that the rows will
+  leave the machine for the agent's provider. Shared rows are kept for the
+  panel's process only, up to a limit the dialog states, and the agent is
+  told an id to read them by.
+
+Decided with the owner: no sign-in of the app's own (a third party may not
+offer a Claude subscription's sign-in; the user's `claude` already has one);
+metadata only by default; queries the agent runs are shown to the user and
+not to it.
+
 ---
 
 ## 5. Testing

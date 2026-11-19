@@ -137,6 +137,33 @@ builder, or compare two tables' rows and generate a synchronization script.
 The PSQL debugger steps through a procedure or function; its emulation
 limits are listed below.
 
+### Work with Claude Code
+
+The Claude Code panel (toolbar, or View) runs your own
+[Claude Code](https://claude.com/claude-code), signed in as you signed it in.
+Without a project it works with the databases only, in an empty folder of
+the app's own; choose a project folder to let it read and change that
+project's files too. N Studio does not sign in to anything itself.
+It gives Claude Code tools that read the metadata of the connected databases:
+objects, their DDL, dependencies, and where a column is. It can see which
+databases are registered and ask to connect one (you type the password if
+it is not saved) or disconnect one, which it cannot do while you have a
+transaction or changes open on it. It can also read what the Activity Monitor
+sees: the transaction counters, connections counted, statements running and
+the statements a recording found costliest, always with their values
+replaced by `?` and without who is connected from where. Claude Code never
+sees the data:
+
+- A query it runs is one `SELECT`, in an editor you see, in a read-only
+  transaction. The rows go to your grid. Claude Code is told the columns,
+  the row count, the times and the plan.
+- SQL that changes something is opened in an editor for you to read and run.
+- Rows reach it only when you share them: *Share with Claude Code* on a grid,
+  the current record or up to 1,000 fetched rows. The dialog says first that
+  they leave this computer.
+
+Claude Code must be installed and signed in once from a terminal.
+
 ## The alpha caveats
 
 - Embedded (serverless) databases, and engines other than Firebird.
@@ -181,7 +208,8 @@ Saved passwords live in the OS keychain, never in a file.
 crates/fb-core       connection actor, transactions, cursors, type mapping
 crates/fb-meta       version-aware catalog: object kinds, counts, lists
 crates/fb-sql        lexer, statement splitter, PSQL parser for the debugger
-src-tauri/           the app's backend: registrations, keychain, session, history, commands
+src-tauri/           the app's backend: registrations, keychain, session, history, commands,
+                     the agent's terminal and its MCP server
 ui/                  the app's interface: React, dockview, Tailwind, Zustand
 crates/fb-wire       vendored pure-Rust Firebird wire protocol, extended
 crates/fb-wire-core  vendored core types for it: exact decimals, Firebird 4 types

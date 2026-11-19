@@ -81,6 +81,20 @@ impl AppState {
             .ok_or_else(|| AppError::NotConnected { message: "The database is not connected.".into() })
     }
 
+    /// The connected registrations, in the explorer's order, each with its
+    /// connection
+    pub(crate) fn connected(&self) -> Vec<(Registration, Arc<Connection>)> {
+        self.registered().into_iter().filter_map(|(r, conn)| conn.map(|conn| (r, conn))).collect()
+    }
+
+    /// Every registration, in the explorer's order, with its connection
+    /// when it is connected
+    pub(crate) fn registered(&self) -> Vec<(Registration, Option<Arc<Connection>>)> {
+        let sessions = self.sessions.lock().unwrap();
+        let registry = self.registry.lock().unwrap();
+        registry.all().iter().map(|r| (r.clone(), sessions.get(&r.id).cloned())).collect()
+    }
+
     /// How a connected registration reaches its server
     pub(crate) fn params(&self, id: &str) -> AppResult<ConnectParams> {
         self.params
