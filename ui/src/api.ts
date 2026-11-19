@@ -1127,7 +1127,7 @@ export interface SharedColumn {
 /** What the agent asks the window for */
 export type AgentRequest =
   | { kind: "run"; request: number; registration: string; sql: string }
-  | { kind: "open"; request: number; registration: string; sql: string; title: string | null }
+  | { kind: "open"; request: number; registration: string; sql: string; title: string | null; executive: boolean }
   | { kind: "connect"; request: number; registration: string }
   | { kind: "disconnect"; request: number; registration: string };
 

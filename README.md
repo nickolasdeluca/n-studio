@@ -159,7 +159,10 @@ sees the data:
 - A query it runs is one `SELECT`, in an editor you see, in a read-only
   transaction. The rows go to your grid. The agent is told the columns,
   the row count, the times and the plan.
-- SQL that changes something is opened in an editor for you to read and run.
+- SQL that changes something is opened in an editor for you to read and run;
+  a script with many statements or `SET TERM`, in a Script Executive. Before
+  handing you an `UPDATE` or `DELETE` it can count the rows it would change,
+  without running it: it is told the number, nothing of the rows.
 - Rows reach it only when you share them: *Share with Claude Code* (or
   *Codex*) on a grid,
   the current record or up to 1,000 fetched rows. The dialog says first that

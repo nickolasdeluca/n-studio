@@ -512,6 +512,17 @@ data, unless the user hands it some.**
   - `open_in_editor`: SQL for the user to read and run (a change to a table,
     a new field, a script): what writes is run by the user, never by the
     agent.
+    A script of many statements, or with `SET TERM` for procedures and
+    triggers, opens in a Script Executive instead (`in: script_executive`),
+    which runs it as isql does.
+  - `count_affected_rows`: how many rows an `UPDATE` or `DELETE` would
+    change, without running it: the statement becomes a `SELECT COUNT(*)`
+    over its own table, alias and clauses (`WHERE`, `PLAN`, and `ORDER BY`
+    with `ROWS`, in a derived table so `ROWS` limits the count), run in a
+    read-only transaction that is rolled back. The agent gets the number
+    only, and it is asked for each time. Parameters, `WHERE CURRENT OF`,
+    `MERGE` and `UPDATE OR INSERT` are refused; triggers and cascades are
+    not followed.
   - `get_activity`: what `MON$` says the database is doing now: the
     transaction counters and the gaps between them, attachments counted and
     the busiest by I/O, the oldest active transactions, the statements

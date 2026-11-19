@@ -111,8 +111,9 @@ struct Exit {
 pub enum Request {
     /// A select to run where the user sees it, read only
     Run { request: u64, registration: String, sql: String },
-    /// SQL for the user to read, and to run if they want to
-    Open { request: u64, registration: String, sql: String, title: Option<String> },
+    /// SQL for the user to read, and to run if they want to: in an SQL
+    /// editor, or in a Script Executive for a script
+    Open { request: u64, registration: String, sql: String, title: Option<String>, executive: bool },
     /// A registered database to connect, as the explorer would
     Connect { request: u64, registration: String },
     /// A connected database to disconnect, unless the user has work open on it
@@ -212,7 +213,10 @@ with their values replaced by ?.\n\
 transaction; the rows go to the user's grid and you are told only the columns, how many rows came, \
 the times and the plan. Do not ask N Studio for rows another way.\n\
 - To change a database, or to give the user a script, use open_in_editor: the user reads it and runs it \
-themselves. Never try to write to a database by any other means.\n\
+themselves. Never try to write to a database by any other means. A script of many statements, or one \
+with SET TERM for procedures and triggers, opens in a Script Executive (in: script_executive).\n\
+- Before giving the user an UPDATE or DELETE, count_affected_rows says how many rows its WHERE picks, \
+without running it: tell the user the number, and check it against what they asked for.\n\
 - The user may share rows with you from a grid; get_shared_data lists and reads them. Only what was \
 shared is yours to analyse.\n\
 - The SQL is Firebird's: mind the database's dialect, its server version and its character set, which \

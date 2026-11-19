@@ -30,7 +30,7 @@ pub const READ_ONLY: [&str; 8] = [
     "get_shared_data",
 ];
 
-const ALL: [&str; 12] = [
+const ALL: [&str; 13] = [
     "list_databases",
     "connect_database",
     "disconnect_database",
@@ -42,6 +42,7 @@ const ALL: [&str; 12] = [
     "get_trace_summary",
     "run_query",
     "open_in_editor",
+    "count_affected_rows",
     "get_shared_data",
 ];
 
@@ -194,13 +195,27 @@ pub fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "open_in_editor",
-            "description": "Opens SQL in a new N Studio editor for the user to read, change and run: DDL, a migration script, DML. It is not run. This is how a database is changed.",
+            "description": "Opens SQL in a new N Studio editor for the user to read, change and run: DDL, a migration script, DML. It is not run. This is how a database is changed. A script of many statements, one that creates or alters procedures, triggers or functions with SET TERM, or one with its own COMMITs, goes to a Script Executive (in: script_executive), which runs a script statement by statement as isql does; a statement or a few go to an SQL editor (in: editor, the default).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "database": database,
                     "sql": { "type": "string" },
-                    "title": { "type": "string", "description": "What the editor's page is called" },
+                    "title": { "type": "string", "description": "What the editor's page is called (an SQL editor only)" },
+                    "in": { "type": "string", "enum": ["editor", "script_executive"], "description": "Where it opens: editor unless said" },
+                },
+                "required": ["sql"],
+                "additionalProperties": false,
+            },
+        }),
+        json!({
+            "name": "count_affected_rows",
+            "description": "How many rows an UPDATE or DELETE would change, without running it: N Studio counts the rows its WHERE (with its PLAN, ORDER BY and ROWS) picks, in a read-only transaction, and gives the number only. Use it to check a change before opening it for the user. Triggers and cascades are not followed; the count is of the statement's own table.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "database": database,
+                    "sql": { "type": "string", "description": "One UPDATE or DELETE, without parameters" },
                 },
                 "required": ["sql"],
                 "additionalProperties": false,
@@ -230,6 +245,7 @@ pub fn call(app: &AppHandle, name: &str, args: &Value) -> Result<String, String>
         "find_columns" => find_columns(&state, args),
         "run_query" => run_query(app, &state, args),
         "open_in_editor" => open_in_editor(app, &state, args),
+        "count_affected_rows" => count_affected(&state, args),
         "get_activity" => activity(&state, args),
         "get_trace_summary" => trace_summary(&state, args),
         "get_shared_data" => shared_data(&app.state::<Agents>(), args),
@@ -570,18 +586,136 @@ fn run_query(app: &AppHandle, state: &AppState, args: &Value) -> Result<Value, S
     Ok(query_report(&reply))
 }
 
+/// The SELECT that counts what an UPDATE or DELETE would change: the rows
+/// its own clauses pick (WHERE, PLAN, ORDER BY with ROWS), from its table
+/// and alias, in a derived table so that ROWS limits the count as it limits
+/// the change. RETURNING and SKIP LOCKED say nothing of which rows.
+pub(super) fn count_query(sql: &str) -> Result<String, String> {
+    use fb_sql::lexer::{tokenize, TokenKind};
+    const ONLY: &str = "count_affected_rows counts for one UPDATE or DELETE.";
+    let statements = fb_sql::split(sql);
+    let [statement] = statements.as_slice() else {
+        return Err(ONLY.into());
+    };
+    if statement.kind != StatementKind::Sql {
+        return Err(ONLY.into());
+    }
+    if statement.unterminated_literal {
+        return Err("The statement ends inside a string, a quoted name or a comment.".into());
+    }
+    let text = sql[statement.range.clone()].trim().trim_end_matches(';').trim_end();
+    let operation = fb_sql::classify(text).operation;
+    if !matches!(operation, Operation::Update | Operation::Delete) {
+        return Err(ONLY.into());
+    }
+    let tokens: Vec<_> = tokenize(text).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    if tokens.iter().any(|t| t.kind == TokenKind::Param) {
+        return Err("The statement has parameters: give it the values to count with.".into());
+    }
+    let word = |i: usize| {
+        tokens.get(i).filter(|t| t.kind == TokenKind::Word).map(|t| text[t.range.clone()].to_ascii_uppercase())
+    };
+    // How deep in parentheses each token is: only the statement's own
+    // clauses count, not a subquery's
+    let mut depths = Vec::with_capacity(tokens.len());
+    let mut depth = 0i32;
+    for t in &tokens {
+        let punct = (t.kind == TokenKind::Punct).then(|| &text[t.range.clone()]);
+        if punct == Some(")") {
+            depth -= 1;
+        }
+        depths.push(depth);
+        if punct == Some("(") {
+            depth += 1;
+        }
+    }
+    let top = |i: usize, words: &[&str]| depths[i] == 0 && word(i).is_some_and(|w| words.contains(&w.as_str()));
+    let find = |from: usize, words: &[&str]| (from..tokens.len()).find(|&i| top(i, words));
+    let start = |i: usize| tokens[i].range.start;
+
+    if let Some(at) = find(0, &["WHERE"]) {
+        if word(at + 1).as_deref() == Some("CURRENT") {
+            return Err("WHERE CURRENT OF counts nothing: it is the row of a cursor.".into());
+        }
+    }
+    let end = (0..tokens.len())
+        .find(|&i| top(i, &["RETURNING"]) || (top(i, &["SKIP"]) && word(i + 1).as_deref() == Some("LOCKED")))
+        .map_or(text.len(), start);
+
+    let (source, clauses) = match operation {
+        Operation::Delete => {
+            if word(1).as_deref() != Some("FROM") {
+                return Err(ONLY.into());
+            }
+            let from = find(2, &["WHERE", "PLAN", "ORDER", "ROWS"]).map_or(end, start).min(end);
+            (&text[tokens.get(2).ok_or(ONLY)?.range.start..from], from)
+        }
+        _ => {
+            let set = find(2, &["SET"]).ok_or(ONLY)?;
+            let from = find(set + 1, &["WHERE", "PLAN", "ORDER", "ROWS"]).map_or(end, start).min(end);
+            (&text[tokens.get(1).ok_or(ONLY)?.range.start..start(set)], from)
+        }
+    };
+    let mut tail = text[clauses..end].trim();
+    // A derived table takes ORDER BY only with ROWS; without it the order
+    // changes nothing of which rows
+    let rows = (0..tokens.len()).any(|i| start(i) >= clauses && start(i) < end && top(i, &["ROWS"]));
+    if !rows {
+        if let Some(order) = (0..tokens.len()).find(|&i| start(i) >= clauses && start(i) < end && top(i, &["ORDER"])) {
+            tail = text[clauses..start(order)].trim();
+        }
+    }
+    let source = source.trim();
+    if source.is_empty() {
+        return Err(ONLY.into());
+    }
+    let inner = if tail.is_empty() { format!("select 1 as n from {source}") } else { format!("select 1 as n from {source} {tail}") };
+    Ok(format!("select count(*) from ({inner})"))
+}
+
+fn count_affected(state: &AppState, args: &Value) -> Result<Value, String> {
+    let (_, conn) = database(state, args)?;
+    let sql = count_query(required(args, "sql")?)?;
+    let rows = count_on(&conn, &sql)?;
+    Ok(json!({ "rows": rows, "counted": sql }))
+}
+
+/// Runs a count in a read-only transaction of its own, rolled back
+fn count_on(conn: &Connection, sql: &str) -> Result<i64, String> {
+    let failed = |e: fb_core::Error| redact(&e.to_string());
+    let tx = conn.begin(fb_core::TxOptions { read_only: true, ..Default::default() }).map_err(failed)?;
+    let counted = (|| {
+        let executed = conn.execute(tx, sql, vec![], fb_core::ExecuteOptions { plan: false, performance: false })?;
+        let Some(cursor) = executed.cursor else { return Ok(None) };
+        let fetched = conn.fetch(cursor, 1)?;
+        if !fetched.eof {
+            conn.close_cursor(cursor)?;
+        }
+        Ok(fetched.rows.first().and_then(|row| row.first()).and_then(fb_core::Value::as_i64))
+    })();
+    // Nothing was written; the transaction only read
+    let _ = conn.end(tx, fb_core::TxEnd::Rollback);
+    counted.map_err(failed)?.ok_or_else(|| "The count gave no number.".to_string())
+}
+
 fn open_in_editor(app: &AppHandle, state: &AppState, args: &Value) -> Result<Value, String> {
     let (registration, _) = database(state, args)?;
     let sql = required(args, "sql")?.to_string();
     let title = text(args, "title").map(str::to_owned);
+    let executive = match text(args, "in") {
+        None | Some("editor") => false,
+        Some("script_executive") => true,
+        Some(other) => return Err(format!("`in` cannot be {other}: editor or script_executive.")),
+    };
     let agents = app.state::<Agents>();
     let reply = agents.ask(
         app,
-        |request| Request::Open { request, registration: registration.id.clone(), sql, title },
+        |request| Request::Open { request, registration: registration.id.clone(), sql, title, executive },
         OPEN_WAIT,
     )?;
     match reply.get("error").and_then(Value::as_str) {
         Some(error) => Err(error.to_string()),
+        None if executive => Ok(json!("Opened in a Script Executive for the user. It was not run.")),
         None => Ok(json!("Opened in an editor for the user. It was not run.")),
     }
 }
@@ -870,6 +1004,75 @@ mod tests {
         assert!(text.contains("Clients / South") && text.contains("\"connected\":false"));
         for secret in ["db.example", "erp.fdb", "SYSDBA", "3050"] {
             assert!(!text.contains(secret), "{secret} in {text}");
+        }
+    }
+
+    #[test]
+    fn an_update_or_delete_is_counted_by_its_own_clauses() {
+        let count = |sql: &str| count_query(sql).unwrap();
+        assert_eq!(
+            count("update cliente c set c.ativo = 0 where c.ultimo_pedido < '2020-01-01';"),
+            "select count(*) from (select 1 as n from cliente c where c.ultimo_pedido < '2020-01-01')"
+        );
+        assert_eq!(
+            count("DELETE FROM \"Pedido\" WHERE status = 'X' RETURNING id"),
+            "select count(*) from (select 1 as n from \"Pedido\" WHERE status = 'X')"
+        );
+        assert_eq!(count("delete from log"), "select count(*) from (select 1 as n from log)");
+        // A subquery's WHERE is not the statement's
+        assert_eq!(
+            count("update t set total = (select sum(v) from i where i.t = t.id) where t.dia = current_date"),
+            "select count(*) from (select 1 as n from t where t.dia = current_date)"
+        );
+        // ROWS limits the count, and keeps its ORDER BY; without it the order goes
+        assert_eq!(
+            count("delete from fila order by criado rows 100"),
+            "select count(*) from (select 1 as n from fila order by criado rows 100)"
+        );
+        assert_eq!(
+            count("update fila set feito = 1 where feito = 0 order by criado"),
+            "select count(*) from (select 1 as n from fila where feito = 0)"
+        );
+        assert_eq!(
+            count("update t set a = 1 where b = 2 skip locked"),
+            "select count(*) from (select 1 as n from t where b = 2)"
+        );
+    }
+
+    /// Against the server the `FB_*` variables name, read only; skipped
+    /// without them. The table is the first the database has, whatever it is.
+    #[test]
+    fn a_count_on_a_live_database_agrees_with_a_select() {
+        let Some(params) = fb_core::ConnectParams::from_env() else {
+            eprintln!("FB_DB not set: skipping live test");
+            return;
+        };
+        let conn = Connection::open(&params).expect("connect");
+        let first = conn
+            .query("select first 1 trim(rdb$relation_name) from rdb$relations where rdb$system_flag = 0 and rdb$view_blr is null order by 1", vec![])
+            .expect("tables");
+        let Some(table) = first.rows.first().and_then(|r| r.first()).and_then(|v| v.as_str()).map(str::to_owned) else { return };
+        let quoted = format!("\"{}\"", table.replace('"', "\"\""));
+        let direct = conn.query(&format!("select count(*) from {quoted}"), vec![]).expect("count");
+        let direct = direct.rows[0][0].as_i64().unwrap();
+        assert_eq!(count_on(&conn, &count_query(&format!("delete from {quoted}")).unwrap()).unwrap(), direct);
+        assert_eq!(count_on(&conn, &count_query(&format!("delete from {quoted} where 1 = 0")).unwrap()).unwrap(), 0);
+        assert_eq!(count_on(&conn, &count_query(&format!("delete from {quoted} rows 1")).unwrap()).unwrap(), direct.min(1));
+    }
+
+    #[test]
+    fn only_a_plain_update_or_delete_is_counted() {
+        for refused in [
+            "select * from t",
+            "insert into t values (1)",
+            "update or insert into t (id) values (1) matching (id)",
+            "merge into t using s on t.id = s.id when matched then delete",
+            "update t set a = 1 where id = ?",
+            "delete from t where id = :id",
+            "delete from t where current of c",
+            "delete from t; delete from u",
+        ] {
+            assert!(count_query(refused).is_err(), "{refused} was counted");
         }
     }
 

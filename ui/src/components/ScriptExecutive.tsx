@@ -27,6 +27,7 @@ import {
   closeDisk,
   saveExecutive,
   stopExecutive,
+  takeStartingText,
   texts,
   toggleChecked,
   useExecutives,
@@ -139,6 +140,7 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
     const state =
       saved.get(id) ??
       EditorState.create({
+        doc: takeStartingText(id),
         extensions: [
           panelKeys(id),
           marksField,

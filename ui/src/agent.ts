@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { api, errorText, SHARE_CHARS, SHARE_ROWS, type AgentKind, type AgentRequest, type Cell, type SharedColumn } from "./api";
 import { activatePanel, editorTitle, openEditor } from "./dock";
 import { useEditors } from "./editors";
+import { openExecutive } from "./executive";
 import { t } from "./i18n";
 import { unsavedViewers } from "./pending";
 import { editCount } from "./rowEdits";
@@ -232,6 +233,12 @@ function registrationName(id: string): string {
 }
 
 function open(request: Extract<AgentRequest, { kind: "open" }>) {
+  if (request.executive) {
+    // A script, statement by statement as isql runs it: on its database,
+    // which the Script Executive connects itself if it must
+    openExecutive(request.registration, request.sql);
+    return { ok: true };
+  }
   const title = `${AGENTS[useAgent.getState().kind].short} · ${request.title ?? registrationName(request.registration)}`;
   const tab = openEditor(request.registration, request.sql, { title });
   return tab ? { ok: true } : { ok: false, error: t("The database is not connected in N Studio.") };

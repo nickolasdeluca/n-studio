@@ -102,9 +102,21 @@ const get = (id: string) => useExecutives.getState().panels[id];
 let count = 0;
 
 /** Opens a Script Executive, on a registration or on none */
-export function openExecutive(registration: string | null): string {
+/** The text a panel opens with, until its editor takes it */
+const startingTexts = new Map<string, string>();
+
+export function takeStartingText(id: string): string {
+  const text = startingTexts.get(id) ?? "";
+  startingTexts.delete(id);
+  return text;
+}
+
+/** Opens a Script Executive on `registration`, empty or with `text`: a
+ *  script given it that no file holds yet, so closing it asks first */
+export function openExecutive(registration: string | null, text?: string): string {
   count += 1;
   const id = `adm-exe-${count}`;
+  if (text) startingTexts.set(id, text);
   const panel: Executive = {
     id,
     registration,
@@ -121,7 +133,7 @@ export function openExecutive(registration: string | null): string {
     focus: null,
     disk: null,
     file: null,
-    changed: false,
+    changed: !!text,
   };
   useExecutives.setState((s) => ({ panels: { ...s.panels, [id]: panel } }));
   openAdminPanel(id, "executive", titleOf(panel, count));
