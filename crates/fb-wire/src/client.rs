@@ -803,8 +803,8 @@ impl FirebirdWireConnection {
 
     /// Attach to the services manager, on a connection made to
     /// [`SERVICE_MANAGER`]
-    pub fn attach_service(&mut self, user: &str, pass: &str) -> Result<u32, FbError> {
-        let req = service_attach(user, pass, self.version, self.dpb_auth_data.take().as_deref());
+    pub fn attach_service(&mut self, user: &str, pass: &str, role: Option<&str>) -> Result<u32, FbError> {
+        let req = service_attach(user, pass, role, self.version, self.dpb_auth_data.take().as_deref());
         trace("op_service_attach ->", &req);
         self.socket.write_all(&req)?;
         self.socket.flush()?;
@@ -1820,10 +1820,19 @@ pub struct ServiceClient {
 }
 
 impl ServiceClient {
-    pub fn connect(host: &str, port: u16, user: &str, pass: &str, auth: AuthPlugin) -> Result<Self, FbError> {
+    /// `role` is the role the services act with: a user who is an
+    /// administrator only through `RDB$ADMIN` names it to be one here
+    pub fn connect(
+        host: &str,
+        port: u16,
+        user: &str,
+        pass: &str,
+        role: Option<&str>,
+        auth: AuthPlugin,
+    ) -> Result<Self, FbError> {
         let mut conn =
             FirebirdWireConnection::connect(host, port, SERVICE_MANAGER, user, pass, rsfbclient_core::charset::UTF_8, auth)?;
-        let handle = conn.attach_service(user, pass)?;
+        let handle = conn.attach_service(user, pass, role)?;
         Ok(Self { conn, handle })
     }
 

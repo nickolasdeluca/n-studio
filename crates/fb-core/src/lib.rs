@@ -26,8 +26,8 @@ pub use executive::{
 };
 pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
 pub use service::{
-    run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask, ServiceUser,
-    StatisticsOptions,
+    run_service, server_version, service_users, BackupOptions, OnlineMode, Property, RestoreOptions, ServiceEnd,
+    ServiceTask, ServiceUser, ShutdownMode, ShutdownWait, StatisticsOptions,
 };
 pub use trace::{
     run_trace, trace_config, trace_database, TableCounts, TraceEnd, TraceEvent, TraceItem, TraceOptions, TraceOutcome,

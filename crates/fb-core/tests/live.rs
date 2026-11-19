@@ -5,7 +5,8 @@
 use std::sync::atomic::AtomicBool;
 
 use fb_core::{
-    run_service, server_version, service_users, BackupOptions, RestoreOptions, ServiceEnd, ServiceTask,
+    run_service, server_version, service_users, BackupOptions, OnlineMode, Property, RestoreOptions, ServiceEnd,
+    ServiceTask, ShutdownMode, ShutdownWait,
     StatisticsOptions,
 };
 use fb_core::{run_trace, trace_config, trace_database, TraceEnd, TraceItem, TraceOptions, TraceReader};
@@ -730,6 +731,73 @@ fn fixture_services_back_up_restore_and_look_after_a_database() {
     if major >= 3 {
         let online = service_output(&params, &ServiceTask::Validate { database: copy.clone(), online: true });
         assert!(online.iter().any(|l| l.contains("Validation finished")), "{online:?}");
+    }
+
+    // The copy's settings, as gfix changes them, read back from its header
+    service_output(
+        &params,
+        &ServiceTask::Properties {
+            database: copy.clone(),
+            changes: vec![Property::SweepInterval(12_345), Property::ForcedWrites(false), Property::ReserveSpace(false)],
+        },
+    );
+    {
+        let copied = Connection::open(&of_copy).expect("the copy");
+        let header = copied
+            .query("select mon$sweep_interval, mon$forced_writes, mon$reserve_space from mon$database", vec![])
+            .unwrap();
+        assert_eq!(header.rows[0][0].as_i64(), Some(12_345));
+        assert_eq!((header.rows[0][1].as_i64(), header.rows[0][2].as_i64()), (Some(0), Some(0)));
+    }
+
+    // Shut down, the copy takes no connection; brought online, it does
+    service_output(
+        &params,
+        &ServiceTask::Shutdown { database: copy.clone(), mode: ShutdownMode::Full, wait: ShutdownWait::Force, seconds: 0 },
+    );
+    assert!(Connection::open(&of_copy).is_err(), "a database shut down took a connection");
+    service_output(&params, &ServiceTask::Online { database: copy.clone(), mode: OnlineMode::Normal });
+    drop(Connection::open(&of_copy).expect("the copy, online again"));
+
+    // Mending a database with nothing wrong leaves it as it was
+    service_output(&params, &ServiceTask::Mend { database: copy.clone() });
+
+    // A physical backup of two levels, put back together as a new database
+    let run = std::process::id();
+    let levels = [format!("{dir}/services_test_{run}.nbk0"), format!("{dir}/services_test_{run}.nbk1")];
+    for (level, file) in levels.iter().enumerate() {
+        service_output(
+            &params,
+            &ServiceTask::PhysicalBackup { database: copy.clone(), file: file.clone(), level: level as u32, no_triggers: false },
+        );
+    }
+    let rebuilt = format!("{dir}/services_test_{run}_nrestore.fdb");
+    service_output(&params, &ServiceTask::PhysicalRestore { files: levels.to_vec(), database: rebuilt.clone() });
+    {
+        let mut of_rebuilt = params.clone();
+        of_rebuilt.database = rebuilt;
+        let back = Connection::open(&of_rebuilt).expect("the database nbackup put back together");
+        let rows = back.query("select count(*) from rdb$relations where rdb$relation_name = 'TIPOS'", vec![]).unwrap();
+        assert_eq!(rows.rows[0][0], Value::Integer(1));
+    }
+
+    // A path with letters past ASCII names the file it says, on Firebird 3
+    // and later, whose services read their paths as UTF-8 when told to
+    if major >= 3 {
+        let accented = format!("{dir}/serviços_ação_{run}.fbk");
+        service_output(
+            &params,
+            &ServiceTask::Backup { database: copy.clone(), file: accented.clone(), options: BackupOptions::default() },
+        );
+        let restored = service_output(
+            &params,
+            &ServiceTask::Restore {
+                file: accented,
+                database: copy.clone(),
+                options: RestoreOptions { replace: true, ..Default::default() },
+            },
+        );
+        assert!(restored.iter().any(|l| l.contains("TIPOS")), "{restored:?}");
     }
 
     let log = service_output(&params, &ServiceTask::ServerLog);

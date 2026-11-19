@@ -97,6 +97,14 @@ in the workspace manifest.
   shares the database attach's reply loop (`finish_attach`), so every
   authentication the client knows works for services too. The caller builds
   the start blocks and reads the info buffers; this crate only carries them.
+  On protocol 13 (Firebird 3 and later) the attach says
+  `isc_spb_utf8_filename`: the paths a service is given are UTF-8, and
+  without it the server read them in its own code page, so a path with an
+  accent named a file that is not there.
+  The attach also names the connection's role (`isc_spb_sql_role_name`)
+  when it has one: a user who is an administrator only through `RDB$ADMIN`
+  is one to the services only when they name it, so without it a trace
+  showed them their own attachments alone.
 - **Codes without a message.** The table of messages stops where upstream
   left it; a newer code read as "Error message not found" and lost its
   arguments. It now reads as `Server error <code>` followed by them.

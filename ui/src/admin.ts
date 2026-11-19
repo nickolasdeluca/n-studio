@@ -216,8 +216,12 @@ interface Tool {
   label: string;
   /** Asked of the backend, which knows the server's version */
   form: boolean;
-  /** What to know before starting one that asks nothing else */
+  /** What to know before starting it */
   warning?: string;
+  /** What the form says under it, when there is no warning */
+  note?: string;
+  /** A line in the menu before it */
+  separated?: boolean;
 }
 
 const tools: Tool[] = [
@@ -239,6 +243,30 @@ const tools: Tool[] = [
       "A sweep reads the whole database to collect the garbage old transactions left. On a large database it takes long and loads the server.",
   },
   { id: "server_log", label: "Server Log", form: false },
+  { id: "properties", label: "Database Settings…", form: true, separated: true },
+  {
+    id: "shutdown",
+    label: "Shut Down…",
+    form: true,
+    warning:
+      "Takes the database out of use, as gfix -shut does. This window's own connection is one of those counted: a full shutdown, or one that ends every connection, ends it too. Bring Online, here, opens the database again.",
+  },
+  { id: "online", label: "Bring Online…", form: true },
+  { id: "nbackup", label: "Physical Backup (nbackup)…", form: true, separated: true },
+  {
+    id: "nrestore",
+    label: "Physical Restore (nbackup)…",
+    form: true,
+    note: "The database is put back together from the level 0 backup and each level on top of it, in order.",
+  },
+  {
+    id: "mend",
+    label: "Mend…",
+    form: false,
+    separated: true,
+    warning:
+      "Mending is for a corrupt database that cannot be backed up: the server takes out what it cannot read, records and pages alike, and that is lost for good. Copy the database's file first, while no one is connected, and back it up as soon as the mend ends.",
+  },
 ];
 
 async function startTool(registration: string, tool: Tool) {
@@ -259,7 +287,7 @@ async function startTool(registration: string, tool: Tool) {
       type: "form",
       title: `${plain(tool.label)}: ${form.title}`,
       form,
-      note: tool.warning ? t(tool.warning) : t("It runs on the server; what it writes opens in a tab."),
+      note: tool.warning ? t(tool.warning) : t(tool.note ?? "It runs on the server; what it writes opens in a tab."),
       verb: t("Start"),
       submit: (values) => start(values),
     });
@@ -279,12 +307,15 @@ export function adminActions(id: string): (MenuItem | "separator")[] {
     { label: t("Diagram"), icon: "table", disabled: !connected, onSelect: () => openDiagram(id) },
     { label: t("Query Builder"), icon: "sql", disabled: !connected, onSelect: () => void openBuilder(id) },
     "separator",
-    ...tools.map((tool) => ({
-      label: t(tool.label),
-      icon: tool.id === "backup" || tool.id === "restore" ? "database" : undefined,
-      disabled: !connected,
-      onSelect: () => void startTool(id, tool),
-    })),
+    ...tools.flatMap((tool): (MenuItem | "separator")[] => [
+      ...(tool.separated ? ["separator" as const] : []),
+      {
+        label: t(tool.label),
+        icon: tool.id === "backup" || tool.id === "restore" || tool.id === "nbackup" || tool.id === "nrestore" ? "database" : undefined,
+        disabled: !connected,
+        onSelect: () => void startTool(id, tool),
+      },
+    ]),
   ];
 }
 

@@ -454,11 +454,21 @@ pub const SERVICE_MANAGER: &str = "service_mgr";
 
 /// Attach to the services manager (`isc_service_attach`). The parameter
 /// block carries the login as a DPB does, by protocol.
-pub fn service_attach(user: &str, pass: &str, protocol: ProtocolVersion, auth_data: Option<&[u8]>) -> Bytes {
+pub fn service_attach(
+    user: &str,
+    pass: &str,
+    role: Option<&str>,
+    protocol: ProtocolVersion,
+    auth_data: Option<&[u8]>,
+) -> Bytes {
     let mut spb = BytesMut::with_capacity(64);
     spb.put_slice(&[ibase::isc_spb_version as u8, ibase::isc_spb_current_version as u8]);
     spb.put_slice(&[ibase::isc_spb_user_name as u8, user.len() as u8]);
     spb.put_slice(user.as_bytes());
+    if let Some(role) = role.filter(|r| !r.is_empty()) {
+        spb.put_slice(&[ibase::isc_spb_sql_role_name as u8, role.len() as u8]);
+        spb.put_slice(role.as_bytes());
+    }
     match protocol {
         ProtocolVersion::V10 => {
             spb.put_slice(&[ibase::isc_spb_password as u8, pass.len() as u8]);
@@ -478,6 +488,10 @@ pub fn service_attach(user: &str, pass: &str, protocol: ProtocolVersion, auth_da
                 spb.put_slice(&[ibase::isc_spb_trusted_auth as u8, data.len() as u8]);
                 spb.put_slice(data);
             }
+            // The paths the services are given are UTF-8, as every string
+            // here is; without this Firebird 3 and later read them in the
+            // server's own code page
+            spb.put_slice(&[ibase::isc_spb_utf8_filename as u8, 0]);
         }
     }
 

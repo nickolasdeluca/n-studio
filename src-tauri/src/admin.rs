@@ -12,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fb_core::{
-    run_service, service_users, BackupOptions, ConnectParams, Connection, RestoreOptions, ServiceEnd, ServiceTask,
-    StatisticsOptions,
+    run_service, service_users, BackupOptions, ConnectParams, Connection, OnlineMode, Property, RestoreOptions,
+    ServiceEnd, ServiceTask, ShutdownMode, ShutdownWait, StatisticsOptions,
 };
 use fb_meta::ddl::{script, Context};
 use fb_meta::monitor;
@@ -309,6 +309,22 @@ pub async fn admin_view(app: AppHandle, id: String, view: String, idle: bool) ->
 // ── Forms ───────────────────────────────────────────────────────────────
 
 const SERVER_PATH: &str = "A path on the server, which is where the file is read or written.";
+
+/// The choices of the shutdown and online forms, as shown and as meant
+const SHUTDOWN_MODES: [(&str, &str); 3] =
+    [("Multi-user: SYSDBA and the owner", "multi"), ("Single-user: one connection", "single"), ("Full: no one", "full")];
+const SHUTDOWN_WAITS: [(&str, &str); 3] = [
+    ("End every connection after the seconds", "force"),
+    ("Refuse new connections; fail if some remain", "attachments"),
+    ("Refuse new transactions; fail if some remain", "transactions"),
+];
+const ONLINE_MODES: [(&str, &str); 3] =
+    [("Everyone", "normal"), ("Multi-user: SYSDBA and the owner", "multi"), ("Single-user: one connection", "single")];
+
+/// The database's header, as `MON$DATABASE` has it now
+fn header(conn: &Connection) -> AppResult<monitor::DatabaseActivity> {
+    monitor::database(conn)?.ok_or_else(|| AppError::NotFound { message: "The database's header could not be read.".into() })
+}
 const PLUGINS: [&str; 2] = ["Srp", "Legacy_UserManager"];
 
 fn check(id: &'static str, label: &'static str, on: bool) -> FormField {
@@ -404,6 +420,67 @@ fn form(conn: &Connection, params: &ConnectParams, tool: &str, key: &Option<Stri
                 check("index_pages", "Index pages", true),
                 check("record_versions", "Records and versions", false).hint("Reads every record: slow on a large database."),
                 check("system_relations", "System tables too", false),
+            ],
+        ),
+        "properties" => {
+            let header = header(conn)?;
+            (
+                params.database.clone(),
+                vec![
+                    field("sweep_interval", "Sweep interval", Number)
+                        .value(header.sweep_interval.to_string())
+                        .hint("Transactions between automatic sweeps. 0 turns them off."),
+                    check("forced_writes", "Forced writes", header.forced_writes)
+                        .hint("Each write waits for the disk. Off is faster, and a crash of the server's machine can corrupt the database."),
+                    field("page_buffers", "Page buffers", Number)
+                        .value(header.page_buffers.to_string())
+                        .hint("The cache this database asks for, in pages. 0, the server's setting."),
+                    check("read_only", "Read only", header.read_only)
+                        .hint("No one can change the database; it can be on a read-only disk."),
+                    check("reserve_space", "Reserve space for versions", header.reserve_space)
+                        .hint("Leaves room on each page for new versions of its records. Off fills the pages, for a database that will only be read."),
+                ],
+            )
+        }
+        "shutdown" => (
+            params.database.clone(),
+            vec![
+                field("mode", "Who may stay", Select)
+                    .options(SHUTDOWN_MODES.map(|(label, _)| label))
+                    .value(SHUTDOWN_MODES[0].0)
+                    .hint("Multi: SYSDBA and the owner. Single: one connection of theirs. Full: no one, so the file can be copied."),
+                field("wait", "The work still open", Select)
+                    .options(SHUTDOWN_WAITS.map(|(label, _)| label))
+                    .value(SHUTDOWN_WAITS[1].0),
+                field("seconds", "Seconds to wait", Number).value("60").required(),
+            ],
+        ),
+        "online" => (
+            params.database.clone(),
+            vec![field("mode", "Who may connect", Select)
+                .options(ONLINE_MODES.map(|(label, _)| label))
+                .value(ONLINE_MODES[0].0)],
+        ),
+        "nbackup" => (
+            params.database.clone(),
+            vec![
+                field("file", "Backup file", Text).required().hint(SERVER_PATH),
+                field("level", "Level", Select)
+                    .options(["0", "1", "2", "3", "4", "5"])
+                    .value("0")
+                    .hint("0 copies every page. Each level above copies the pages changed since the last backup of the level below it."),
+                check("no_triggers", "Do not fire database triggers", false),
+            ],
+        ),
+        "nrestore" => (
+            "a physical backup".to_string(),
+            vec![
+                field("files", "Backup files", Code)
+                    .required()
+                    .hint("Paths on the server, one per line, in order: the level 0 backup first, then each level on top of it."),
+                field("database", "Database", Text)
+                    .required()
+                    .hint("A path on the server for the database put back together. It must not exist."),
             ],
         ),
         "add_user" => ("the server".to_string(), user_fields(conn.info().major, None)),
@@ -545,9 +622,89 @@ pub async fn admin_script(
 // ── Services ────────────────────────────────────────────────────────────
 
 /// A service tool as the task it starts, on the registration's database
-fn task(tool: &str, v: &Values, database: &str, major: u32) -> AppResult<ServiceTask> {
+/// The service `tool` asks for with the form's values. `current` is the
+/// database's header as it is now, which a change of its settings is
+/// measured against.
+fn task(
+    tool: &str,
+    v: &Values,
+    database: &str,
+    major: u32,
+    current: Option<&monitor::DatabaseActivity>,
+) -> AppResult<ServiceTask> {
     let database = database.to_string();
+    let chosen = |id: &str, choices: &[(&str, &str)]| {
+        choices.iter().find(|(label, _)| *label == v.text(id)).map(|(_, value)| value.to_string())
+    };
     Ok(match tool {
+        "properties" => {
+            let Some(was) = current else { return invalid("The database's settings could not be read.") };
+            let number = |id: &str| -> AppResult<u32> {
+                v.text(id).parse().or_else(|_| invalid(format!("{} is not a number.", v.text(id))))
+            };
+            let mut changes = Vec::new();
+            let sweep = number("sweep_interval")?;
+            if i64::from(sweep) != was.sweep_interval {
+                changes.push(Property::SweepInterval(sweep));
+            }
+            if v.on("forced_writes") != was.forced_writes {
+                changes.push(Property::ForcedWrites(v.on("forced_writes")));
+            }
+            let buffers = number("page_buffers")?;
+            if i64::from(buffers) != was.page_buffers {
+                changes.push(Property::PageBuffers(buffers));
+            }
+            if v.on("reserve_space") != was.reserve_space {
+                changes.push(Property::ReserveSpace(v.on("reserve_space")));
+            }
+            // Last: a database made read-only takes no other change
+            if v.on("read_only") != was.read_only {
+                changes.push(Property::ReadOnly(v.on("read_only")));
+            }
+            if changes.is_empty() {
+                return invalid("Nothing was changed.");
+            }
+            ServiceTask::Properties { database, changes }
+        }
+        "shutdown" => {
+            let mode = match chosen("mode", &SHUTDOWN_MODES).as_deref() {
+                Some("single") => ShutdownMode::Single,
+                Some("full") => ShutdownMode::Full,
+                _ => ShutdownMode::Multi,
+            };
+            let wait = match chosen("wait", &SHUTDOWN_WAITS).as_deref() {
+                Some("force") => ShutdownWait::Force,
+                Some("transactions") => ShutdownWait::Transactions,
+                _ => ShutdownWait::Attachments,
+            };
+            let Ok(seconds) = v.text("seconds").parse() else { return invalid("The seconds to wait are a number.") };
+            ServiceTask::Shutdown { database, mode, wait, seconds }
+        }
+        "online" => ServiceTask::Online {
+            database,
+            mode: match chosen("mode", &ONLINE_MODES).as_deref() {
+                Some("multi") => OnlineMode::Multi,
+                Some("single") => OnlineMode::Single,
+                _ => OnlineMode::Normal,
+            },
+        },
+        "mend" => ServiceTask::Mend { database },
+        "nbackup" => ServiceTask::PhysicalBackup {
+            database,
+            file: v.text("file").to_string(),
+            level: v.text("level").parse().unwrap_or(0),
+            no_triggers: v.on("no_triggers"),
+        },
+        "nrestore" => {
+            let target = v.text("database");
+            if target.eq_ignore_ascii_case(&database) {
+                return invalid("That is the database you are connected to. Restore to another path.");
+            }
+            ServiceTask::PhysicalRestore {
+                files: v.text("files").lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect(),
+                database: target.to_string(),
+            }
+        }
         "backup" => ServiceTask::Backup {
             database,
             file: v.text("file").to_string(),
@@ -627,7 +784,8 @@ pub async fn service_run(
     blocking(app, move |state| {
         let params = state.params(&id)?;
         let major = state.session(&id)?.info().major;
-        let task = task(&tool, &Values(&values), &params.database, major)?;
+        let current = if tool == "properties" { Some(header(&*state.session(&id)?)?) } else { None };
+        let task = task(&tool, &Values(&values), &params.database, major, current.as_ref())?;
         let cancel = Arc::new(AtomicBool::new(false));
         state.services.0.lock().unwrap().insert(run, cancel.clone());
 
@@ -685,12 +843,77 @@ mod tests {
         }
     }
 
+    fn header() -> monitor::DatabaseActivity {
+        monitor::DatabaseActivity {
+            page_size: 8192,
+            ods: "13.0".into(),
+            pages: 100,
+            page_buffers: 2048,
+            dialect: 3,
+            created: None,
+            oldest_transaction: 1,
+            oldest_active: 2,
+            oldest_snapshot: 2,
+            next_transaction: 3,
+            sweep_interval: 20_000,
+            read_only: false,
+            forced_writes: true,
+            reserve_space: true,
+            shutdown_mode: "online",
+            backup_state: "normal",
+        }
+    }
+
+    #[test]
+    fn only_the_settings_changed_are_sent() {
+        let was = header();
+        let form = |pairs: &[(&str, &str)]| {
+            let mut v = values(&[
+                ("sweep_interval", "20000"),
+                ("forced_writes", "true"),
+                ("page_buffers", "2048"),
+                ("read_only", "false"),
+                ("reserve_space", "true"),
+            ]);
+            v.extend(pairs.iter().map(|(k, x)| (k.to_string(), x.to_string())));
+            task("properties", &Values(&v), "/data/main.fdb", 4, Some(&was))
+        };
+        assert!(form(&[]).is_err(), "nothing changed, and something was sent");
+        let ServiceTask::Properties { changes, .. } =
+            form(&[("sweep_interval", "0"), ("read_only", "true"), ("forced_writes", "false")]).unwrap()
+        else {
+            panic!("properties")
+        };
+        // Read only goes last: a database made read-only takes no other change
+        assert_eq!(changes, [Property::SweepInterval(0), Property::ForcedWrites(false), Property::ReadOnly(true)]);
+        assert!(form(&[("page_buffers", "many")]).is_err());
+    }
+
+    #[test]
+    fn a_shutdown_and_an_online_take_their_choices_by_label() {
+        let v = values(&[("mode", SHUTDOWN_MODES[2].0), ("wait", SHUTDOWN_WAITS[0].0), ("seconds", "5")]);
+        assert_eq!(
+            task("shutdown", &Values(&v), "db", 4, None).unwrap(),
+            ServiceTask::Shutdown { database: "db".into(), mode: ShutdownMode::Full, wait: ShutdownWait::Force, seconds: 5 }
+        );
+        let v = values(&[("mode", ONLINE_MODES[2].0)]);
+        assert_eq!(
+            task("online", &Values(&v), "db", 4, None).unwrap(),
+            ServiceTask::Online { database: "db".into(), mode: OnlineMode::Single }
+        );
+        let v = values(&[("files", "/b/l0.nbk\n\n  /b/l1.nbk  \n"), ("database", "/b/back.fdb")]);
+        assert_eq!(
+            task("nrestore", &Values(&v), "db", 4, None).unwrap(),
+            ServiceTask::PhysicalRestore { files: vec!["/b/l0.nbk".into(), "/b/l1.nbk".into()], database: "/b/back.fdb".into() }
+        );
+    }
+
     #[test]
     fn a_restore_never_lands_on_the_connected_database() {
         let v = values(&[("file", "/b/x.fbk"), ("database", "/Data/Main.fdb"), ("replace", "true")]);
-        assert!(task("restore", &Values(&v), "/data/main.fdb", 4).is_err());
+        assert!(task("restore", &Values(&v), "/data/main.fdb", 4, None).is_err());
         let v = values(&[("file", "/b/x.fbk"), ("database", "/data/copy.fdb"), ("page_size", "8192")]);
-        let ServiceTask::Restore { database, options, .. } = task("restore", &Values(&v), "/data/main.fdb", 4).unwrap()
+        let ServiceTask::Restore { database, options, .. } = task("restore", &Values(&v), "/data/main.fdb", 4, None).unwrap()
         else {
             panic!("a restore")
         };
@@ -701,7 +924,7 @@ mod tests {
     #[test]
     fn validation_is_online_where_the_server_has_it() {
         let v = values(&[]);
-        let online = |major| matches!(task("validate", &Values(&v), "db", major), Ok(ServiceTask::Validate { online: true, .. }));
+        let online = |major| matches!(task("validate", &Values(&v), "db", major, None), Ok(ServiceTask::Validate { online: true, .. }));
         assert!(online(3) && online(5) && !online(2));
     }
 

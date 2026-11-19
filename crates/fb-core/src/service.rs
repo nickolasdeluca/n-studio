@@ -63,6 +63,57 @@ pub struct StatisticsOptions {
     pub system_relations: bool,
 }
 
+/// A database setting the services manager changes, as `gfix` does
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "property", content = "value", rename_all = "snake_case")]
+pub enum Property {
+    /// Transactions between automatic sweeps; 0 turns them off (`gfix -h`)
+    SweepInterval(u32),
+    /// Each write waits for the disk (`gfix -w sync`) or not (`-w async`)
+    ForcedWrites(bool),
+    /// The cache this database asks for, in pages; 0 for the server's (`gfix -buffers`)
+    PageBuffers(u32),
+    /// `gfix -mode read_only` or `read_write`
+    ReadOnly(bool),
+    /// Room is kept on each page for new record versions (`gfix -use reserve`), or
+    /// pages are filled (`-use full`)
+    ReserveSpace(bool),
+}
+
+/// Who may still be connected to a database shut down
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShutdownMode {
+    /// SYSDBA and the owner, as many connections as they like
+    Multi,
+    /// SYSDBA or the owner, one connection
+    Single,
+    /// No one: the file can be copied
+    Full,
+}
+
+/// What the server does with the work still open when it shuts down
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShutdownWait {
+    /// Waits the seconds given, then ends every connection (`gfix -shut -force`)
+    Force,
+    /// Refuses new connections, and fails if any remain after the seconds (`-attach`)
+    Attachments,
+    /// Refuses new transactions, and fails if any remain after the seconds (`-tran`)
+    Transactions,
+}
+
+/// Who may connect once a database is brought back online
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnlineMode {
+    /// Everyone
+    Normal,
+    Multi,
+    Single,
+}
+
 /// One thing asked of the services manager
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "task", rename_all = "snake_case")]
@@ -77,6 +128,21 @@ pub enum ServiceTask {
     Statistics { database: String, options: StatisticsOptions },
     /// The server's own log (`firebird.log`)
     ServerLog,
+    /// Changes the database's settings, each in turn
+    Properties { database: String, changes: Vec<Property> },
+    /// Takes the database out of use (`gfix -shut`)
+    Shutdown { database: String, mode: ShutdownMode, wait: ShutdownWait, seconds: u32 },
+    /// Brings a database that was shut down back (`gfix -online`)
+    Online { database: String, mode: OnlineMode },
+    /// Prepares a corrupt database to be backed up: what cannot be read is
+    /// taken out, so it is lost (`gfix -mend -full`)
+    Mend { database: String },
+    /// A physical backup of the pages changed since the backup of the level
+    /// below (`nbackup -b`); level 0 is the whole database. Firebird 2.5+.
+    PhysicalBackup { database: String, file: String, level: u32, no_triggers: bool },
+    /// A database put back together from a level 0 backup and the levels on
+    /// top of it, in order (`nbackup -r`)
+    PhysicalRestore { files: Vec<String>, database: String },
 }
 
 /// How a service's run ended
@@ -100,7 +166,14 @@ pub struct ServiceUser {
 }
 
 pub(crate) fn attach(params: &ConnectParams) -> Result<ServiceClient> {
-    Ok(ServiceClient::connect(&params.host, params.port, &params.user, &params.password, params.auth)?)
+    Ok(ServiceClient::connect(
+        &params.host,
+        params.port,
+        &params.user,
+        &params.password,
+        params.role.as_deref(),
+        params.auth,
+    )?)
 }
 
 /// A start block: an action, then its arguments
@@ -128,6 +201,13 @@ impl Spb {
 
     fn flag(mut self, item: u32) -> Self {
         self.0.push(item as u8);
+        self
+    }
+
+    /// An item whose value is one byte: a mode
+    fn byte(mut self, item: u32, value: u32) -> Self {
+        self.0.push(item as u8);
+        self.0.push(value as u8);
         self
     }
 }
@@ -219,6 +299,90 @@ fn start_block(task: &ServiceTask) -> Result<Vec<u8>> {
                 .number(ibase::isc_spb_options, o)
         }
         ServiceTask::ServerLog => Spb::action(ibase::isc_action_svc_get_fb_log),
+        ServiceTask::Properties { database, changes } => {
+            required("the database", database)?;
+            if changes.is_empty() {
+                return Err(Error::Client { message: "nothing to change".into() });
+            }
+            let mut spb = Spb::action(ibase::isc_action_svc_properties).string(ibase::isc_spb_dbname, database)?;
+            for change in changes {
+                spb = match *change {
+                    Property::SweepInterval(n) => spb.number(ibase::isc_spb_prp_sweep_interval, n),
+                    Property::PageBuffers(n) => spb.number(ibase::isc_spb_prp_page_buffers, n),
+                    Property::ForcedWrites(on) => spb.byte(
+                        ibase::isc_spb_prp_write_mode,
+                        if on { ibase::isc_spb_prp_wm_sync } else { ibase::isc_spb_prp_wm_async },
+                    ),
+                    Property::ReadOnly(on) => spb.byte(
+                        ibase::isc_spb_prp_access_mode,
+                        if on { ibase::isc_spb_prp_am_readonly } else { ibase::isc_spb_prp_am_readwrite },
+                    ),
+                    Property::ReserveSpace(on) => spb.byte(
+                        ibase::isc_spb_prp_reserve_space,
+                        if on { ibase::isc_spb_prp_res } else { ibase::isc_spb_prp_res_use_full },
+                    ),
+                };
+            }
+            spb
+        }
+        ServiceTask::Shutdown { database, mode, wait, seconds } => {
+            required("the database", database)?;
+            let mode = match mode {
+                ShutdownMode::Multi => ibase::isc_spb_prp_sm_multi,
+                ShutdownMode::Single => ibase::isc_spb_prp_sm_single,
+                ShutdownMode::Full => ibase::isc_spb_prp_sm_full,
+            };
+            let wait = match wait {
+                ShutdownWait::Force => ibase::isc_spb_prp_force_shutdown,
+                ShutdownWait::Attachments => ibase::isc_spb_prp_attachments_shutdown,
+                ShutdownWait::Transactions => ibase::isc_spb_prp_transactions_shutdown,
+            };
+            Spb::action(ibase::isc_action_svc_properties)
+                .string(ibase::isc_spb_dbname, database)?
+                .byte(ibase::isc_spb_prp_shutdown_mode, mode)
+                .number(wait, *seconds)
+        }
+        ServiceTask::Online { database, mode } => {
+            required("the database", database)?;
+            let mode = match mode {
+                OnlineMode::Normal => ibase::isc_spb_prp_sm_normal,
+                OnlineMode::Multi => ibase::isc_spb_prp_sm_multi,
+                OnlineMode::Single => ibase::isc_spb_prp_sm_single,
+            };
+            Spb::action(ibase::isc_action_svc_properties)
+                .string(ibase::isc_spb_dbname, database)?
+                .byte(ibase::isc_spb_prp_online_mode, mode)
+        }
+        ServiceTask::Mend { database } => {
+            required("the database", database)?;
+            Spb::action(ibase::isc_action_svc_repair)
+                .string(ibase::isc_spb_dbname, database)?
+                .number(ibase::isc_spb_options, ibase::isc_spb_rpr_mend_db | ibase::isc_spb_rpr_full)
+        }
+        ServiceTask::PhysicalBackup { database, file, level, no_triggers } => {
+            required("the database", database)?;
+            required("the backup file", file)?;
+            let spb = Spb::action(ibase::isc_action_svc_nbak)
+                .string(ibase::isc_spb_dbname, database)?
+                .string(ibase::isc_spb_nbk_file, file)?
+                .number(ibase::isc_spb_nbk_level, *level);
+            if *no_triggers {
+                spb.number(ibase::isc_spb_options, ibase::isc_spb_nbk_no_triggers)
+            } else {
+                spb
+            }
+        }
+        ServiceTask::PhysicalRestore { files, database } => {
+            required("the database", database)?;
+            if files.iter().all(|f| f.trim().is_empty()) {
+                return Err(Error::Client { message: "the backup files are required".into() });
+            }
+            let mut spb = Spb::action(ibase::isc_action_svc_nrest).string(ibase::isc_spb_dbname, database)?;
+            for file in files.iter().filter(|f| !f.trim().is_empty()) {
+                spb = spb.string(ibase::isc_spb_nbk_file, file)?;
+            }
+            spb
+        }
     };
     Ok(spb.0)
 }
@@ -462,6 +626,76 @@ mod tests {
         assert_eq!(online, [30, 106, 2, 0, b'd', b'b']);
     }
 
+    /// The database's name as every block starts it after its action
+    const DB: [u8; 5] = [106, 2, 0, b'd', b'b'];
+
+    #[test]
+    fn settings_are_changed_each_in_its_own_shape() {
+        let block = start_block(&ServiceTask::Properties {
+            database: "db".into(),
+            changes: vec![
+                Property::SweepInterval(20_000),
+                Property::ForcedWrites(true),
+                Property::PageBuffers(2048),
+                Property::ReadOnly(false),
+                Property::ReserveSpace(false),
+            ],
+        })
+        .unwrap();
+        let mut expected = vec![8];
+        expected.extend(DB);
+        // A number is four bytes; a mode, one
+        expected.extend([6, 0x20, 0x4e, 0, 0, 12, 38, 5, 0, 8, 0, 0, 13, 40, 11, 35]);
+        assert_eq!(block, expected);
+        assert!(start_block(&ServiceTask::Properties { database: "db".into(), changes: vec![] }).is_err());
+    }
+
+    #[test]
+    fn a_shutdown_says_its_mode_and_how_long_it_waits() {
+        let block = start_block(&ServiceTask::Shutdown {
+            database: "db".into(),
+            mode: ShutdownMode::Single,
+            wait: ShutdownWait::Attachments,
+            seconds: 60,
+        })
+        .unwrap();
+        assert_eq!(block[block.len() - 7..], [44, 2, 42, 60, 0, 0, 0]);
+        let online = start_block(&ServiceTask::Online { database: "db".into(), mode: OnlineMode::Normal }).unwrap();
+        assert_eq!(online[online.len() - 2..], [45, 0]);
+    }
+
+    #[test]
+    fn mending_is_a_repair_that_mends() {
+        let block = start_block(&ServiceTask::Mend { database: "db".into() }).unwrap();
+        assert_eq!(block[0], 3);
+        assert_eq!(block[block.len() - 5..], [108, 0x84, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_physical_backup_names_its_level_and_a_restore_its_files_in_order() {
+        let backup = start_block(&ServiceTask::PhysicalBackup {
+            database: "db".into(),
+            file: "l1".into(),
+            level: 1,
+            no_triggers: true,
+        })
+        .unwrap();
+        let mut expected = vec![20];
+        expected.extend(DB);
+        expected.extend([6, 2, 0, b'l', b'1', 5, 1, 0, 0, 0, 108, 1, 0, 0, 0]);
+        assert_eq!(backup, expected);
+        let restore = start_block(&ServiceTask::PhysicalRestore {
+            files: vec!["l0".into(), " ".into(), "l1".into()],
+            database: "db".into(),
+        })
+        .unwrap();
+        let mut expected = vec![21];
+        expected.extend(DB);
+        expected.extend([6, 2, 0, b'l', b'0', 6, 2, 0, b'l', b'1']);
+        assert_eq!(restore, expected);
+        assert!(start_block(&ServiceTask::PhysicalRestore { files: vec![" ".into()], database: "db".into() }).is_err());
+    }
+
     #[test]
     fn a_task_without_its_database_is_refused_here() {
         assert!(start_block(&ServiceTask::Sweep { database: " ".into() }).is_err());
@@ -507,3 +741,4 @@ mod tests {
         assert_eq!(users[1].name, "B");
     }
 }
+
