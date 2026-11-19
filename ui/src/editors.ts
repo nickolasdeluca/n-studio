@@ -362,6 +362,15 @@ export const useEditors = create<State>()((set, get) => {
       try {
         await api.editorEnd(tab.registration, tab.tx, how);
         log(id, "info", endedText(how));
+        if (how === "rollback" || how === "rollback_retaining") {
+          // What a rolled back transaction read is no longer there to change:
+          // its rows go, with what was edited in them and not applied
+          const now = get().tabs[id];
+          if (now?.outcome?.result) {
+            closeResult(now);
+            patch(id, { outcome: null, edits: noEdits });
+          }
+        }
         if (how === "commit" || how === "rollback") {
           patch(id, (tab) => ({
             tx: null,
