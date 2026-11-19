@@ -72,6 +72,8 @@ export interface EditorTab {
   edits: RowEdits;
   messages: Message[];
   bottom: BottomTab;
+  /** The bottom shows its tabs only, and the text has the room */
+  minimized: boolean;
   /** The script it is running, and how far that is */
   script: { run: number; at: number; statements: number; failed: number } | null;
   scriptOptions: { stopOnError: boolean; autoDdl: boolean };
@@ -114,7 +116,9 @@ interface State {
   note(id: string, text: string): void;
   close(id: string): Promise<void>;
   setTxOptions(id: string, options: Partial<TxOptions>): void;
+  /** Shows a bottom tab, the bottom restored if it was minimized */
   setBottom(id: string, bottom: BottomTab): void;
+  setMinimized(id: string, minimized: boolean): void;
   run(id: string, mode: RunMode, input: RunInput, onError?: (range: { from: number; to: number }) => void): Promise<void>;
   /** Runs the text (or its selection) as a script: every statement, in the
    *  backend, with what fails logged and the rest carrying on or not */
@@ -204,6 +208,7 @@ export const useEditors = create<State>()((set, get) => {
             edits: noEdits,
             messages: [],
             bottom: "results",
+            minimized: false,
             script: null,
             scriptOptions: { stopOnError: false, autoDdl: true },
             viewer,
@@ -251,7 +256,11 @@ export const useEditors = create<State>()((set, get) => {
     },
 
     setBottom(id, bottom) {
-      patch(id, { bottom });
+      patch(id, { bottom, minimized: false });
+    },
+
+    setMinimized(id, minimized) {
+      patch(id, { minimized });
     },
 
     async run(id, mode, input, onError) {

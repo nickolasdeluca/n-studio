@@ -205,12 +205,15 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
   }, [id, run, end]);
 
   // A new result starts at its first row; the same rows read again after
-  // a change stay where they were, as far as there still are rows
+  // a change stay where they were, as far as there still are rows. A new
+  // one is shown, the bottom restored if it was minimized.
   const resultId = tab?.outcome?.result?.id;
   useEffect(() => {
-    const outcome = useEditors.getState().tabs[id]?.outcome;
+    const now = useEditors.getState().tabs[id];
+    const outcome = now?.outcome;
     const rows = outcome?.result?.rows ?? 0;
     setCursor((c) => (outcome?.again ? { row: Math.max(0, Math.min(c.row, rows - 1)), col: c.col } : { row: 0, col: 0 }));
+    if (resultId !== undefined && !outcome?.again && now?.minimized) useEditors.getState().setMinimized(id, false);
   }, [resultId, id]);
 
   if (!tab) {
@@ -247,13 +250,19 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
     <div className="flex h-full flex-col bg-panel" onKeyDownCapture={endKeys}>
       <EditorToolbar tab={tab} run={run} end={end} />
       <div ref={body} className="flex min-h-0 flex-1 flex-col">
-        <div ref={host} className="min-h-0 overflow-hidden" style={{ height: `${split * 100}%` }} />
         <div
-          className="h-[5px] shrink-0 cursor-row-resize border-y border-line bg-panel-2 hover:bg-accent/40"
-          onMouseDown={startSplit}
-          role="separator"
-          aria-orientation="horizontal"
+          ref={host}
+          className={`min-h-0 overflow-hidden ${tab.minimized ? "flex-1" : ""}`}
+          style={tab.minimized ? undefined : { height: `${split * 100}%` }}
         />
+        {!tab.minimized && (
+          <div
+            className="h-[5px] shrink-0 cursor-row-resize border-y border-line bg-panel-2 hover:bg-accent/40"
+            onMouseDown={startSplit}
+            role="separator"
+            aria-orientation="horizontal"
+          />
+        )}
         <Bottom tab={tab} cursor={cursor} setCursor={setCursor} select={select} insert={insert} />
       </div>
       <EditorStatus tab={tab} pos={pos} />
@@ -493,7 +502,7 @@ function Bottom(props: {
       break;
   }
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className={`flex min-h-0 flex-col ${tab.minimized ? "shrink-0 border-t border-line" : "flex-1"}`}>
       <div className="flex h-7 shrink-0 items-stretch border-b border-line bg-panel-2" role="tablist">
         {bottomTabs.map((b) => (
           <button
@@ -509,8 +518,18 @@ function Bottom(props: {
             {b.id === "messages" && errors > 0 && <span className="ml-1.5 text-danger">{errors}</span>}
           </button>
         ))}
+        <span className="flex-1" />
+        <button
+          title={tab.minimized ? t("Restore") : t("Minimize")}
+          aria-label={tab.minimized ? t("Restore") : t("Minimize")}
+          aria-expanded={!tab.minimized}
+          onClick={() => useEditors.getState().setMinimized(tab.id, !tab.minimized)}
+          className="grid w-7 place-items-center text-muted hover:bg-hover hover:text-fg"
+        >
+          <Icon name={tab.minimized ? "up" : "down"} size={13} />
+        </button>
       </div>
-      <div className="min-h-0 flex-1">{pane}</div>
+      {!tab.minimized && <div className="min-h-0 flex-1">{pane}</div>}
     </div>
   );
 }
