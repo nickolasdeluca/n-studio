@@ -13,6 +13,11 @@
 #                                            and publish that release
 #   scripts/build-release.sh --release-only  add the one already in dist/
 #
+# Once a release is published, what was built for it is deleted: the bundle
+# folder (its .app, which Spotlight would offer beside the installed one, and
+# its .dmg) and the version's files in dist/. GitHub holds them; target/
+# keeps the compiled crates, so the next build is not one from scratch.
+#
 # The release is the draft the workflow makes when the version's tag is
 # pushed, holding the Windows and Linux installers: this adds the macOS one
 # and publishes it, so a release is never seen without one of them. It is
@@ -126,6 +131,15 @@ JSON
     gh release upload "$tag" "$DIST_DIR/latest.json" --clobber
     gh release edit "$tag" --draft=false --prerelease=false --latest
     log "Published: $(gh release view "$tag" --json url -q .url)"
+    clean
+}
+
+# What was built for a published release: the release holds it now
+clean() {
+    log "Deleting what was built for v$VERSION; target/ keeps the build cache"
+    rm -rf "target/$TARGET/release/bundle"
+    rm -f "$out" "$archive" "$archive.sig" "$DIST_DIR/latest.json"
+    rmdir "$DIST_DIR" 2>/dev/null || true
 }
 
 out="$DIST_DIR/N Studio_${VERSION}_universal.dmg"

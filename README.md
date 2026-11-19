@@ -241,6 +241,11 @@ publishes the release as the latest one; installs ask for that file. The key
 is made once (`tauri signer generate`) and kept: an update signed with
 another is refused by every install there is.
 
+Once the release is published, the script deletes what it built for it: the
+bundle folder under `target/`, whose `.app` Spotlight would otherwise offer
+beside the installed one, and the version's files in `dist/`. The compiled
+crates stay in `target/`, so the next build starts from them.
+
 Without arguments the script only builds, signs and notarizes, into `dist/`
 (`cp scripts/build-release.env.example scripts/build-release.env` once, and
 fill it in).
