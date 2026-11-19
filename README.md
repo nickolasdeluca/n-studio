@@ -58,7 +58,8 @@ performance counters and cancellation stay close to the query.
 
 Completion knows tables, views, routines, generators and column types,
 including columns behind an alias; a table's columns start with its primary
-key, in the key's own order. After `JOIN`, it can write the join
+key, in the key's own order. Double-click a table, view, routine or other
+object's name, or an alias, to open it. After `JOIN`, it can write the join
 condition from a foreign key, alias included. The formatter handles SQL and
 PSQL with a style you can export and share: keyword case, indentation,
 wrapping and list layout, without changing the tokens.

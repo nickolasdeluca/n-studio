@@ -23,7 +23,7 @@ import { EditorView, keymap, ViewPlugin, type Command, type ViewUpdate } from "@
 import { api, type CatalogRelation, type CompletionCatalog, type DiagramReference, type ObjectKind, type Word } from "./api";
 import { firebirdDialect } from "./firebird";
 import { t } from "./i18n";
-import { joinsFor, qualifier, sources } from "./sqlScope";
+import { joinsFor, qualifier, sources, stored } from "./sqlScope";
 import { useStore } from "./store";
 
 interface Names {
@@ -34,6 +34,8 @@ interface Names {
    *  what is typed, and as they are listed before anything is */
   columns: Map<CatalogRelation, { typed: Completion[]; listed: Completion[] }>;
   references: DiagramReference[];
+  /** What is not a relation, by name */
+  others: Map<string, ObjectKind>;
 }
 
 /** By registration. Read when an editor first asks, and again after the
@@ -107,7 +109,9 @@ function names(catalog: CompletionCatalog): Names {
     ...catalog.relations.map((r) => word(r, { type: r.kind, boost: relationBoost[r.kind] })),
     ...catalog.others.map((o) => word(o, { type: o.kind satisfies ObjectKind, boost: -1 })),
   ];
-  return { relations, top, columns: new Map(), references: catalog.references };
+  // Of two kinds with one name, the first the catalog gives
+  const others = new Map(catalog.others.toReversed().map((o) => [o.name, o.kind]));
+  return { relations, top, columns: new Map(), references: catalog.references, others };
 }
 
 function namesOf(registration: string): Promise<Names | null> {
@@ -148,6 +152,43 @@ function columnsOf(all: Names, relation: CatalogRelation, keysFirst: boolean, bo
   }
   const options = keysFirst ? columns.listed : columns.typed;
   return boost ? options.map((c) => ({ ...c, boost: boost + (c.boost ?? 0) })) : options;
+}
+
+/**
+ * The object the name at `pos` stands for, for opening it: a relation, an
+ * alias of one in the statement there, or what else the database has by
+ * that name. Not a column, nor a name the database does not have.
+ */
+export async function objectAt(state: EditorState, pos: number, registration: string): Promise<{ kind: ObjectKind; name: string } | null> {
+  const inside = syntaxTree(state).resolveInner(pos, 1).name;
+  if (inside === "String" || inside === "LineComment" || inside === "BlockComment") return null;
+  const line = state.doc.lineAt(pos);
+  const at = pos - line.from;
+  let written: string | null = null;
+  let from = 0;
+  for (const m of line.text.matchAll(/"(?:[^"]|"")+"|[A-Za-z_][\w$]*/g)) {
+    if (m.index <= at && at <= m.index + m[0].length) {
+      written = m[0];
+      from = m.index;
+      break;
+    }
+  }
+  if (!written) return null;
+  // After a dot it is a column, or a package's member
+  if (qualifier(line.text.slice(0, from))) return null;
+
+  const all = await namesOf(registration);
+  if (!all) return null;
+  const name = stored(written);
+  const start = Math.max(0, pos - REACH);
+  const aliased = sources(state.doc.sliceString(start, Math.min(state.doc.length, pos + REACH)), pos - start).find(
+    (s) => s.alias === name,
+  );
+  const relation = all.relations.get(aliased ? aliased.relation : name);
+  // The catalog's own tables are not in the explorer either
+  if (relation) return relation.kind === "system" ? null : { kind: relation.kind, name: relation.name };
+  const kind = all.others.get(name);
+  return kind ? { kind, name } : null;
 }
 
 /** How far around the cursor a statement is looked for */
