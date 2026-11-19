@@ -1,8 +1,11 @@
 // What a select brought back: the record navigator over the grid, with the
 // blob viewer beside it. An editor's Results tab and an object viewer's Data
 // tab are both this.
-import { useCallback, useRef, type ReactNode } from "react";
-import type { ColumnKind } from "../api";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { create } from "zustand";
+import type { ColumnInfo, ColumnKind, ColumnSummary } from "../api";
+import { AGGREGATES, aggregatesFor, shortOf, valueOf, type Aggregate } from "../summary";
+import { useContextMenu } from "./ContextMenu";
 import { useEditors, type EditorTab } from "../editors";
 import { t } from "../i18n";
 import { Icon } from "../icons";
@@ -22,12 +25,54 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="grid h-full place-items-center p-4 text-center text-muted">{children}</div>;
 }
 
+const SUMMARY_ROW = "n-studio.summaryRow";
+
+/** Whether grids show their summary row, the same for all of them and kept
+ *  across runs; and what each editor's columns add up to, by column name,
+ *  so that a select run again keeps them */
+const useSummaryRow = create<{
+  shown: boolean;
+  picks: Record<string, Record<string, Aggregate>>;
+  toggle(): void;
+  pick(tab: string, column: string, aggregate: Aggregate | null): void;
+}>()((set) => ({
+  shown: (() => {
+    try {
+      return localStorage.getItem(SUMMARY_ROW) === "1";
+    } catch {
+      return false;
+    }
+  })(),
+  picks: {},
+  toggle: () =>
+    set((s) => {
+      try {
+        localStorage.setItem(SUMMARY_ROW, s.shown ? "0" : "1");
+      } catch {
+        // Shown for this run only
+      }
+      return { shown: !s.shown };
+    }),
+  pick: (tab, column, aggregate) =>
+    set((s) => {
+      const picks = { ...s.picks[tab] };
+      if (aggregate) picks[column] = aggregate;
+      else delete picks[column];
+      return { picks: { ...s.picks, [tab]: picks } };
+    }),
+}));
+
+const NO_PICKS: Record<string, Aggregate> = {};
+
 export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c: GridCursor): void; edit?: ResultsEdit }) {
   const { tab, cursor, setCursor, edit } = props;
   const grid = useRef<GridHandle>(null);
   const outcome = tab.outcome;
   const fetchMore = useCallback((max: number) => useEditors.getState().fetchMore(tab.id, max), [tab.id]);
   const sort = useCallback((col: number) => void useEditors.getState().sort(tab.id, col), [tab.id]);
+  const summaryShown = useSummaryRow((s) => s.shown);
+  const picks = useSummaryRow((s) => s.picks[tab.id] ?? NO_PICKS);
+  const summaries = useSummaries(tab, summaryShown, picks);
   if (!outcome) return <Empty>{t("Execute a statement with F9 or Ctrl+Enter.")}</Empty>;
   const { executed, result } = outcome;
 
@@ -110,6 +155,16 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
             </button>
           </>
         )}
+        <button
+          type="button"
+          title={t("Summary Row: what each column adds up to")}
+          aria-label={t("Summary Row")}
+          aria-pressed={summaryShown}
+          onClick={() => useSummaryRow.getState().toggle()}
+          className={`grid size-6 place-items-center rounded hover:bg-hover ${summaryShown ? "bg-selected-inactive text-accent" : "text-fg"}`}
+        >
+          <Icon name="sum" size={13} />
+        </button>
         <Nav
           icon="export"
           label={t("Export Rows… (fetches all)")}
@@ -127,6 +182,23 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
             onFetchMore={fetchMore}
             onSort={sort}
             edit={edit}
+            footer={
+              summaryShown
+                ? {
+                    gutter: <Icon name="sum" size={12} />,
+                    cell: (col) => (
+                      <SummaryCell
+                        column={executed.columns[col]}
+                        aggregate={picks[executed.columns[col].name] ?? null}
+                        summary={summaries.by[col]}
+                        eof={result.eof}
+                        edited={pending > 0}
+                        onOpen={(at) => summaries.menu(col, at)}
+                      />
+                    ),
+                  }
+                : undefined
+            }
             ref={grid}
           />
         </div>
@@ -137,6 +209,110 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
         )}
       </div>
     </div>
+  );
+}
+
+/** What the picked columns of a result add up to, worked out once every
+ *  row is fetched; and the menu a summary cell opens */
+function useSummaries(tab: EditorTab, shown: boolean, picks: Record<string, Aggregate>) {
+  const result = tab.outcome?.result ?? null;
+  const columns = tab.outcome?.executed.columns;
+  const [held, setHeld] = useState<{ result: number; by: Record<number, ColumnSummary> }>({ result: -1, by: {} });
+  const by = held.result === result?.id ? held.by : {};
+  const showMenu = useContextMenu((m) => m.show);
+
+  const work = useCallback(
+    async (cols: number[]) => {
+      if (!result || cols.length === 0) return {};
+      const got = await useEditors.getState().summarize(tab.id, cols);
+      if (!got) return null;
+      const more = Object.fromEntries(cols.map((c, i) => [c, got[i]]));
+      setHeld((h) => ({ result: result.id, by: { ...(h.result === result.id ? h.by : {}), ...more } }));
+      return more;
+    },
+    [tab.id, result],
+  );
+
+  // Once every row is here, the picked columns are worked out on their own:
+  // before, that would fetch every row of a select nobody asked to
+  const missing = shown && result?.eof && columns ? columns.flatMap((c, i) => (picks[c.name] && !by[i] ? [i] : [])) : [];
+  const key = missing.length > 0 ? `${result?.id}:${missing.join(",")}` : "";
+  const busy = tab.running || tab.fetching;
+  /** Asked for and not answered yet: the fetch ends before the answer comes */
+  const asked = useRef("");
+  useEffect(() => {
+    if (!key || busy || asked.current === key) return;
+    asked.current = key;
+    void work(missing).finally(() => {
+      if (asked.current === key) asked.current = "";
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, busy, work]);
+
+  const menu = async (col: number, at: DOMRect) => {
+    const column = columns?.[col];
+    if (!column || busy) return;
+    const summary = by[col] ?? (await work([col]))?.[col];
+    const current = useSummaryRow.getState().picks[tab.id]?.[column.name] ?? null;
+    const pick = (a: Aggregate | null) => useSummaryRow.getState().pick(tab.id, column.name, a);
+    const value = summary && current ? valueOf(summary, current) : null;
+    showMenu(at.left, at.top, [
+      { label: t("None"), icon: current ? undefined : "commit", onSelect: () => pick(null) },
+      ...aggregatesFor(column.kind).map((a) => {
+        const v = summary ? valueOf(summary, a) : null;
+        const label = AGGREGATES.find((x) => x.value === a)!.label;
+        return {
+          label: summary ? t("{label} = {value}", { label: t(label), value: v ?? "—" }) : t(label),
+          icon: current === a ? "commit" : undefined,
+          onSelect: () => pick(a),
+        };
+      }),
+      ...(value !== null
+        ? ["separator" as const, { label: t("Copy {value}", { value }), icon: "copy", onSelect: () => void navigator.clipboard.writeText(value) }]
+        : []),
+    ], true);
+  };
+
+  return { by, menu };
+}
+
+/** A column's cell in the summary row: what it adds up to, or a place to
+ *  choose that */
+function SummaryCell(props: {
+  column: ColumnInfo;
+  aggregate: Aggregate | null;
+  summary: ColumnSummary | undefined;
+  eof: boolean;
+  /** Rows were changed and not applied: the summary is of them as read */
+  edited: boolean;
+  onOpen(at: DOMRect): void;
+}) {
+  const { column, aggregate, summary } = props;
+  const value = aggregate && summary ? valueOf(summary, aggregate) : null;
+  const shown = !aggregate ? "" : summary ? (value ?? (summary.overflow ? t("too large") : "—")) : "?";
+  const hint = !aggregate
+    ? t("Choose what {column} adds up to", { column: column.name })
+    : !summary && !props.eof
+      ? t("Click to fetch every row and add them up")
+      : summary?.overflow && aggregate === "sum"
+        ? t("The sum is past 38 digits")
+        : props.edited
+          ? t("Of the rows as they were read, without the changes not applied")
+          : t("Of every row");
+  return (
+    <button
+      type="button"
+      title={aggregate ? `${shortOf(aggregate)} = ${shown}\n${hint}` : hint}
+      onClick={(e) => props.onOpen(e.currentTarget.getBoundingClientRect())}
+      className={`group flex h-full w-full items-center gap-1 truncate px-1.5 font-mono text-[12px] hover:bg-hover ${
+        aggregate ? "text-fg" : "text-faint"
+      } ${column.kind === "integer" || column.kind === "decimal" || column.kind === "float" ? "justify-end" : ""}`}
+    >
+      {/* The value is what matters: the name gives way first */}
+      {aggregate && <span className="min-w-0 shrink-[1000] truncate font-sans text-[10px] text-muted">{shortOf(aggregate)}</span>}
+      <span className="min-w-0 truncate">{shown}</span>
+      <span className={`shrink-0 text-[10px] text-faint ${aggregate ? "hidden group-hover:inline" : ""}`}>▾</span>
+    </button>
   );
 }
 

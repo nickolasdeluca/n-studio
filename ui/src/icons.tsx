@@ -34,6 +34,8 @@ const glyphs: Record<string, ReactNode> = {
     </>
   ),
   domain: <path d="M8 2.2 13 5v6L8 13.8 3 11V5zM3 5l5 2.8L13 5M8 7.8v6" />,
+  // A sigma: the summary row
+  sum: <path d="M12 3.5V3H4l4.5 5L4 13h8v-.5" />,
   table: (
     <>
       <rect x="2.2" y="3" width="11.6" height="10" rx="1" />

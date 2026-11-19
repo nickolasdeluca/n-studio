@@ -7,7 +7,17 @@
 // applied, and shown over the rows as they were read. New rows come before
 // the fetched ones, where more rows arriving does not move them.
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState, type Ref } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { api, type Cell, type ColumnInfo, type ColumnKind, type ResultView } from "../api";
 import { PAGE } from "../editors";
 import { t } from "../i18n";
@@ -67,6 +77,9 @@ interface Props {
   /** A header was clicked: sort by that column, or stop sorting */
   onSort(col: number): void;
   edit?: GridEdit;
+  /** A row kept at the bottom, under every column: what the column adds
+   *  up to */
+  footer?: { gutter: ReactNode; cell(col: number): ReactNode };
   ref?: Ref<GridHandle>;
 }
 
@@ -89,7 +102,7 @@ function initialWidth(c: ColumnInfo): number {
   return Math.round(Math.max(60, Math.min(Math.max(name, content), 360)));
 }
 
-export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort, edit, ref }: Props) {
+export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort, edit, footer, ref }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, Cell[][]>());
   const inflight = useRef(new Set<number>());
@@ -369,7 +382,15 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       aria-rowcount={total}
       aria-colcount={columns.length}
     >
-      <div style={{ height: rows.getTotalSize(), width, position: "relative" }}>
+      <div
+        style={{
+          height: rows.getTotalSize(),
+          // The footer stays at the bottom when the rows do not reach it
+          minHeight: footer ? `calc(100% - ${ROW_H}px)` : undefined,
+          width,
+          position: "relative",
+        }}
+      >
         <div className="sticky top-0 z-20 flex border-b border-line bg-panel-2 font-sans" style={{ height: ROW_H, width }}>
           <div className="sticky left-0 z-10 shrink-0 border-r border-line bg-panel-2" style={{ width: GUTTER_W }} />
           {virtualCols.map((c) => {
@@ -502,6 +523,26 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
           );
         })}
       </div>
+      {footer && (
+        <div
+          role="row"
+          aria-label={t("Summary")}
+          className="sticky bottom-0 z-20 flex border-t border-line bg-panel-2 font-sans"
+          style={{ height: ROW_H, width }}
+        >
+          <div
+            className="sticky left-0 z-10 grid shrink-0 place-items-center border-r border-line bg-panel-2 text-faint"
+            style={{ width: GUTTER_W }}
+          >
+            {footer.gutter}
+          </div>
+          {virtualCols.map((c) => (
+            <div key={c.key} className="absolute top-0 h-full border-r border-line" style={{ left: c.start, width: c.size }}>
+              {footer.cell(c.index)}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

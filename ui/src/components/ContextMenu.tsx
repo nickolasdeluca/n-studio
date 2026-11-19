@@ -13,14 +13,16 @@ export interface MenuItem {
 type Entry = MenuItem | "separator";
 
 interface MenuState {
-  open: { x: number; y: number; items: Entry[] } | null;
-  show(x: number, y: number, items: Entry[]): void;
+  /** `up`: the menu ends at `y` rather than starting there, as one opened
+   *  from the bottom of something */
+  open: { x: number; y: number; items: Entry[]; up?: boolean } | null;
+  show(x: number, y: number, items: Entry[], up?: boolean): void;
   close(): void;
 }
 
 export const useContextMenu = create<MenuState>()((set) => ({
   open: null,
-  show: (x, y, items) => set({ open: { x, y, items } }),
+  show: (x, y, items, up) => set({ open: { x, y, items, up } }),
   close: () => set({ open: null }),
 }));
 
@@ -36,7 +38,7 @@ export function ContextMenuHost() {
     const { width, height } = ref.current.getBoundingClientRect();
     setPos({
       x: Math.min(open.x, window.innerWidth - width - 4),
-      y: Math.min(open.y, window.innerHeight - height - 4),
+      y: open.up ? Math.max(4, open.y - height) : Math.min(open.y, window.innerHeight - height - 4),
     });
     setActive(-1);
     ref.current.focus();

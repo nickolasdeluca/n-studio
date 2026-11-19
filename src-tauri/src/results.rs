@@ -164,10 +164,15 @@ impl Rows {
     pub fn kinds(&self) -> &[ColumnKind] {
         &self.kinds
     }
+
+    /// Every cell of column `col`, in fetch order
+    pub fn column(&self, col: usize) -> impl Iterator<Item = Option<&str>> {
+        (0..self.len).map(move |r| self.cell(r, col))
+    }
 }
 
 /// Two cells of a column, by its kind; null first
-fn compare(kind: ColumnKind, a: Option<&str>, b: Option<&str>) -> Ordering {
+pub(crate) fn compare(kind: ColumnKind, a: Option<&str>, b: Option<&str>) -> Ordering {
     let (a, b) = match (a, b) {
         (Some(a), Some(b)) => (a, b),
         (a, b) => return a.is_some().cmp(&b.is_some()),

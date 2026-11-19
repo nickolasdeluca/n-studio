@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import {
   api,
+  type ColumnSummary,
   errorText,
   isAppError,
   type ColumnInfo,
@@ -168,6 +169,9 @@ interface State {
   /** Sorts the last select's rows by a column: ascending, descending, then
    *  back to fetch order. Fetches the rest first. */
   sort(id: string, column: number): Promise<void>;
+  /** What columns of the last select add up to, fetching every row first;
+   *  null when it could not be worked out */
+  summarize(id: string, columns: number[]): Promise<ColumnSummary[] | null>;
   /** Writes the last select's rows to a file, fetching the rest first */
   exportRows(id: string, path: string, options: ExportOptions): Promise<void>;
   setEdits(id: string, edits: RowEdits): void;
@@ -521,6 +525,19 @@ export const useEditors = create<State>()((set, get) => {
       const now = result.sort?.column === column ? result.sort : null;
       const next = !now ? { column, descending: false } : !now.descending ? { column, descending: true } : null;
       await whileFetching(id, result.id, () => api.resultSort(result.id, next));
+    },
+
+    async summarize(id, columns) {
+      const tab = get().tabs[id];
+      const result = tab?.outcome?.result;
+      if (!result || tab.running || tab.fetching) return null;
+      let summaries: ColumnSummary[] | null = null;
+      await whileFetching(id, result.id, async () => {
+        const [view, got] = await api.resultSummary(result.id, columns);
+        summaries = got;
+        return view;
+      });
+      return summaries;
     },
 
     async exportRows(id, path, options) {

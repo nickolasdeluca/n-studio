@@ -19,6 +19,7 @@ mod results;
 mod script;
 mod secrets;
 mod session;
+mod summary;
 mod tools;
 mod trace;
 mod update;
@@ -119,6 +120,7 @@ fn main() {
             editor::result_fetch,
             editor::result_rows,
             editor::result_sort,
+            editor::result_summary,
             editor::result_export,
             editor::result_blob,
             editor::result_blob_save,

@@ -169,6 +169,19 @@ export interface Performance {
 export type Cell = string | null;
 
 /** A select's rows, held by the backend */
+/** What a column of a result adds up to, over every row; what does not
+ *  apply to its kind is null */
+export interface ColumnSummary {
+  count: number;
+  distinct: number | null;
+  min: string | null;
+  max: string | null;
+  sum: string | null;
+  avg: string | null;
+  /** The sum is past 38 digits */
+  overflow: boolean;
+}
+
 export interface ResultView {
   id: number;
   /** Fetched so far */
@@ -1010,6 +1023,8 @@ export const api = {
   formatStyleImport: (path: string) => invoke<FormatStyle>("format_style_import", { path }),
   resultClose: (result: number) => invoke<void>("result_close", { result }),
   resultSort: (result: number, sort: Sort | null) => invoke<ResultView>("result_sort", { result, sort }),
+  resultSummary: (result: number, columns: number[]) =>
+    invoke<[ResultView, ColumnSummary[]]>("result_summary", { result, columns }),
   resultExport: (result: number, path: string, options: ExportOptions) =>
     invoke<ExportSummary>("result_export", { result, path, options }),
   scriptRun: (id: string, run: number, tx: number | null, txOptions: TxOptions, text: string, options: ScriptOptions) =>

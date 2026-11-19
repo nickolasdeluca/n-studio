@@ -281,6 +281,28 @@ pub async fn result_sort(app: AppHandle, result: u64, sort: Option<Sort>) -> App
     .await
 }
 
+/// What columns `columns` of a result add up to, over every row: the rows
+/// not fetched yet are fetched first, as for a sort
+#[tauri::command]
+pub async fn result_summary(
+    app: AppHandle,
+    result: u64,
+    columns: Vec<usize>,
+) -> AppResult<(ResultView, Vec<crate::summary::ColumnSummary>)> {
+    blocking(app, move |state| {
+        let set = state.results.get(result)?;
+        let mut set = set.lock().unwrap();
+        let cols = set.rows.kinds().len();
+        if let Some(&bad) = columns.iter().find(|&&c| c >= cols) {
+            return Err(AppError::Invalid { message: format!("The result has no column {bad}.") });
+        }
+        set.fetch(usize::MAX)?;
+        let summaries = columns.iter().map(|&c| crate::summary::summarize(&set.rows, c)).collect();
+        Ok((set.view(result), summaries))
+    })
+    .await
+}
+
 /// What an export wrote
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
