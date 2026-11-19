@@ -28,7 +28,14 @@ fn counts_agree_with_the_lists() {
     assert_eq!(counts.iter().map(|(k, _)| *k).collect::<Vec<_>>(), kinds);
 
     for (kind, count) in counts {
-        let list = objects(&conn, kind).unwrap();
+        let mut list = objects(&conn, kind).unwrap();
+        let mut count = count;
+        if list.len() as u64 != count {
+            // Another test may have made one in between: on Firebird 5 the
+            // profiler's first session makes its role and tables
+            count = fb_meta::counts(&conn).unwrap().into_iter().find(|(k, _)| *k == kind).unwrap().1;
+            list = objects(&conn, kind).unwrap();
+        }
         assert_eq!(list.len() as u64, count, "{kind:?}");
         let mut sorted = names(&list);
         sorted.sort();

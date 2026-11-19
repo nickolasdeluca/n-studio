@@ -202,8 +202,9 @@ pub fn report(conn: &Connection, id: i64) -> Result<Option<Profile>> {
     .collect();
     let runs = rows(
         conn,
-        "select statement_id, count(*), sum(total_elapsed_time) from plg$prof_requests \
-         where profile_id = ? group by statement_id",
+        // Without DETAILED_REQUESTS a statement has one row of requests in all,
+        // which this view reads its count and time from
+        "select statement_id, counter, total_elapsed_time from plg$prof_statement_stats_view where profile_id = ?",
         key(),
     )?;
     for r in &runs {
@@ -212,9 +213,7 @@ pub fn report(conn: &Connection, id: i64) -> Result<Option<Profile>> {
             s.total = r.int(2).unwrap_or(0);
         }
     }
-    statements.sort_by(|a, b| b.total.cmp(&a.total).then(a.id.cmp(&b.id)));
-
-    let lines = rows(
+    let lines: Vec<ProfiledLine> = rows(
         conn,
         &format!(
             "select first {LINES} statement_id, line_num, column_num, counter, min_elapsed_time, max_elapsed_time, \
@@ -235,7 +234,7 @@ pub fn report(conn: &Connection, id: i64) -> Result<Option<Profile>> {
     })
     .collect();
 
-    let sources = rows(
+    let sources: Vec<ProfiledSource> = rows(
         conn,
         &format!(
             "select first {SOURCES} statement_id, cursor_id, cursor_name, cursor_line_num, record_source_id, \
@@ -261,6 +260,16 @@ pub fn report(conn: &Connection, id: i64) -> Result<Option<Profile>> {
         total: r.int(10).unwrap_or(0),
     })
     .collect();
+
+    // A request the server had not closed when the session finished has
+    // no time of its own yet: its slowest line or record source, measured
+    // as they ran, is the least it took
+    for s in statements.iter_mut().filter(|s| s.total == 0) {
+        let line = lines.iter().filter(|l| l.statement == s.id).map(|l| l.total).max();
+        let source = sources.iter().filter(|r| r.statement == s.id).map(|r| r.total).max();
+        s.total = line.max(source).unwrap_or(0);
+    }
+    statements.sort_by(|a, b| b.total.cmp(&a.total).then(a.id.cmp(&b.id)));
 
     Ok(Some(Profile { session: found, statements, lines, sources }))
 }
