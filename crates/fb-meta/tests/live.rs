@@ -147,6 +147,10 @@ fn the_fixture_completes_its_names() {
     let pedido: Vec<_> = relation("PEDIDO").columns.iter().map(|c| (c.word.name.as_str(), c.key)).collect();
     assert!(pedido.contains(&("ID", primary)) && pedido.contains(&("CLIENTE", unique)) && pedido.contains(&("EMISSAO", unique)));
     assert!(keys("V_PEDIDO_TOTAL").iter().all(Option::is_none));
+    // Where each is in its key, which is the order a list shows them in
+    let at = |name: &str, column: &str| relation(name).columns.iter().find(|c| c.word.name == column).unwrap().key_position;
+    assert_eq!((at("PEDIDO_ITEM", "PEDIDO"), at("PEDIDO_ITEM", "ITEM"), at("PEDIDO_ITEM", "QTD")), (Some(0), Some(1), None));
+    assert_eq!((at("PEDIDO", "ID"), at("PEDIDO", "CLIENTE"), at("PEDIDO", "EMISSAO")), (Some(0), Some(0), Some(1)));
     // The foreign keys a join is written from
     let reference = catalog.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").expect("FK_ITEM_PEDIDO");
     assert_eq!((reference.from.as_str(), reference.to.as_str()), ("PEDIDO_ITEM", "PEDIDO"));

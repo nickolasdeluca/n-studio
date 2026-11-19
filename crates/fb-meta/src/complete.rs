@@ -54,6 +54,9 @@ pub struct Column {
     /// The key it is part of, the primary one before a unique one: what a
     /// row is usually looked up by, so what a list of columns starts with
     pub key: Option<Key>,
+    /// Where it is in that key, from 0: a key's columns are listed in the
+    /// order the key declares them, not in the relation's or by name
+    pub key_position: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -125,12 +128,14 @@ pub fn catalog(conn: &Connection) -> Result<Catalog> {
             word: Word::new(column, dialect),
             data_type,
             key: None,
+            key_position: None,
         });
     }
 
     // The columns of every unique index, a primary key's told apart
     let keys = "select trim(i.rdb$relation_name), trim(s.rdb$field_name), \
-                       case when rc.rdb$constraint_type = 'PRIMARY KEY' then 1 else 0 end \
+                       case when rc.rdb$constraint_type = 'PRIMARY KEY' then 1 else 0 end, \
+                       s.rdb$field_position \
                 from rdb$indices i \
                 join rdb$index_segments s on s.rdb$index_name = i.rdb$index_name \
                 left join rdb$relation_constraints rc on rc.rdb$index_name = i.rdb$index_name \
@@ -144,10 +149,13 @@ pub fn catalog(conn: &Connection) -> Result<Catalog> {
             continue;
         };
         if let Some(column) = relations[at].columns.iter_mut().find(|c| c.word.name == column) {
+            let position = row.int(3).and_then(|p| u32::try_from(p).ok());
             if primary == 1 {
                 column.key = Some(Key::Primary);
+                column.key_position = position;
             } else if column.key.is_none() {
                 column.key = Some(Key::Unique);
+                column.key_position = position;
             }
         }
     }

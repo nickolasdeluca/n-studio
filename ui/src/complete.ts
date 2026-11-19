@@ -95,6 +95,10 @@ const word = (w: Word, rest: Partial<Completion>): Named => ({ label: w.name, ap
 /** What a list of columns starts with before anything is typed: the
  *  primary key, then the unique ones. Small, so that it only breaks ties. */
 const KEY_BOOST = { primary: 2, unique: 1 };
+/** A key's columns in the order the key declares them: each one a little
+ *  less than the one before, never as little as the next kind of key */
+const keyBoost = (key: keyof typeof KEY_BOOST, position: number | null) =>
+  KEY_BOOST[key] - Math.min(position ?? 0, 99) / 100;
 const KEY_NAMES = { primary: "PK", unique: "UK" };
 
 function names(catalog: CompletionCatalog): Names {
@@ -136,8 +140,8 @@ function columnsOf(all: Names, relation: CatalogRelation, keysFirst: boolean, bo
       word(c, { type: "column", detail: `${c.key ? `${KEY_NAMES[c.key]} · ` : ""}${c.type} · ${relation.name}` }),
     );
     const listed = typed.map((option, i) => {
-      const key = relation.columns[i].key;
-      return key ? { ...option, boost: KEY_BOOST[key] } : option;
+      const { key, key_position } = relation.columns[i];
+      return key ? { ...option, boost: keyBoost(key, key_position) } : option;
     });
     columns = { typed, listed };
     all.columns.set(relation, columns);
