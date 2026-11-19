@@ -254,11 +254,26 @@ export function objectLinks(registration: () => string | undefined | null): Exte
        *  at every key, only when something else reads it */
       failed: string | null = null;
       gone = false;
+      stop: () => void;
       constructor(view: EditorView) {
         this.find(view);
+        // Connected, disconnected or refreshed with the text as it was:
+        // nothing in the view changes, so it is told
+        const watched = (s: ReturnType<typeof useStore.getState>) => {
+          const id = registration();
+          return id ? `${!!s.servers[id]}:${!!s.trees[id]?.loading}` : "";
+        };
+        let was = watched(useStore.getState());
+        this.stop = useStore.subscribe((state) => {
+          const now = watched(state);
+          if (now === was) return;
+          was = now;
+          if (!this.gone) queueMicrotask(() => !this.gone && view.dispatch({ effects: catalogRead.of(null) }));
+        });
       }
       destroy() {
         this.gone = true;
+        this.stop();
       }
       update(update: ViewUpdate) {
         const arrived = update.transactions.some((tr) => tr.effects.some((e) => e.is(catalogRead)));
@@ -270,6 +285,8 @@ export function objectLinks(registration: () => string | undefined | null): Exte
         const id = registration();
         if (!id || !useStore.getState().servers[id]) {
           this.decorations = Decoration.none;
+          // Connected again, it is read again: what failed may work now
+          this.failed = null;
           return;
         }
         const all = ready.get(id) ?? null;
