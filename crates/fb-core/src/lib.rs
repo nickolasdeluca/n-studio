@@ -22,7 +22,8 @@ pub use editor::{
 };
 pub use error::{Error, Result};
 pub use executive::{
-    run_executive, Connector, RunOptions, RunOutcome, RunStep, RunSummary, Target, Within, DEEPEST_INPUT, NO_CONNECTION,
+    run_executive, Connector, Picks, Rows, RunOptions, RunOutcome, RunStep, RunSummary, Target, Within, DEEPEST_INPUT,
+    NO_CONNECTION, SHOWN,
 };
 pub use script::{run_script, ScriptOptions, ScriptSummary, Step, StepOutcome};
 pub use service::{

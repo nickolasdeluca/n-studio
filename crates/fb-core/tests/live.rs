@@ -452,6 +452,7 @@ fn executive_options() -> RunOptions {
         rollback_on_stop: true,
         on_switch: TxEnd::Commit,
         tx_options: TxOptions::default(),
+        allow_shell: false,
     }
 }
 
@@ -459,8 +460,21 @@ fn executive_options() -> RunOptions {
 struct FromEnv(ConnectParams);
 
 impl Connector for FromEnv {
+    /// Each parameter is 7
+    fn values(&mut self, _: &str, names: &[Option<String>], _: &[fb_core::ColumnInfo]) -> Option<Vec<Option<String>>> {
+        Some(vec![Some("7".into()); names.len()])
+    }
+
     fn connect(&mut self, target: &fb_sql::isql::Connect, charset: Option<&str>) -> fb_core::Result<Connection> {
         Connection::open(&self.0.with_connect(target, charset))
+    }
+
+    fn create(
+        &mut self,
+        create: &fb_sql::isql::CreateDatabase,
+        charset: Option<&str>,
+    ) -> fb_core::Result<Connection> {
+        Connection::create(&self.0.with_connect(&create.connect, charset), create.page_size, create.charset.as_deref())
     }
 }
 
@@ -485,7 +499,7 @@ fn execute_in(
     let mut steps = Vec::new();
     let mut connector = FromEnv(ConnectParams::from_env().unwrap());
     let summary =
-        run_executive(target, script, folder, only, options, &mut connector, &never, |s, _| steps.push(s.clone()))
+        run_executive(target, script, folder, only, &Default::default(), options, &mut connector, &never, |s, _| steps.push(s.clone()))
             .unwrap();
     (steps, summary)
 }
@@ -568,7 +582,7 @@ fn fixture_set_autoddl_off_holds_an_executives_ddl_back() {
     let _catalog = catalog();
     let target = std::sync::Mutex::new(Target::new(Some(connect().unwrap())));
     let (steps, summary) = execute(&target, "SET AUTODDL OFF; CREATE TABLE EXEC_C (ID INTEGER);", None, executive_options());
-    assert_eq!(steps[0].outcome, RunOutcome::Applied, "{steps:?}");
+    assert_eq!(steps[0].outcome, RunOutcome::Applied { note: None }, "{steps:?}");
     assert!(summary.active, "{steps:?}");
     // Not committed: no one else sees it
     assert_eq!(tables(&conn, "'EXEC_C'"), 0);
@@ -621,8 +635,8 @@ fn fixture_a_script_connects_by_its_own_connect() {
     let (steps, summary) = execute(&target, &script, None, executive_options());
     let outcomes: Vec<&RunOutcome> = steps.iter().map(|s| &s.outcome).collect();
     assert!(matches!(outcomes[0], RunOutcome::Failed { message, .. } if message == fb_core::NO_CONNECTION));
-    assert_eq!(outcomes[1], &RunOutcome::Applied);
-    assert_eq!(outcomes[2], &RunOutcome::Applied, "{outcomes:?}");
+    assert_eq!(outcomes[1], &RunOutcome::Applied { note: None });
+    assert_eq!(outcomes[2], &RunOutcome::Applied { note: None }, "{outcomes:?}");
     assert!(matches!(outcomes[3], RunOutcome::Done { .. }), "{outcomes:?}");
     // A CONNECT that fails leaves nothing to run on
     assert!(matches!(outcomes[4], RunOutcome::Failed { .. }), "{outcomes:?}");
@@ -630,6 +644,43 @@ fn fixture_a_script_connects_by_its_own_connect() {
     assert_eq!((summary.done, summary.failed, summary.active), (3, 3, false));
     // No password in what is reported
     assert!(steps.iter().all(|s| !format!("{s:?}").contains("masterkey")));
+}
+
+/// A script creates a database beside the fixture's, goes on on it as isql
+/// does, and drops it at its end
+#[test]
+fn fixture_a_script_creates_and_drops_a_database() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let dir = params.database.rsplit_once('/').map(|(dir, _)| dir).expect("the fixture's path");
+    let target = std::sync::Mutex::new(Target::new(None));
+    let script = format!(
+        "CREATE DATABASE '{}/{}:{dir}/exec_created_{}.fdb' USER 'SYSDBA' PASSWORD 'masterkey'\n\
+           PAGE_SIZE 8192 DEFAULT CHARACTER SET UTF8 DIFFERENCE FILE '{dir}/x.delta';\n\
+         CREATE TABLE CREATED (A INTEGER);\n\
+         INSERT INTO CREATED VALUES (1);\n\
+         COMMIT;\n\
+         select mon$page_size, (select trim(rdb$character_set_name) from rdb$database) from mon$database;\n\
+         DROP DATABASE;\n\
+         select 1 from rdb$database;",
+        params.host,
+        params.port,
+        std::process::id()
+    );
+    let (steps, summary) = execute(&target, &script, None, executive_options());
+    let outcomes: Vec<&RunOutcome> = steps.iter().map(|s| &s.outcome).collect();
+    // Created, saying what of it was not applied
+    assert!(
+        matches!(outcomes[0], RunOutcome::Applied { note: Some(note) } if note.contains("DIFFERENCE")),
+        "{outcomes:?}"
+    );
+    assert!(outcomes[1..5].iter().all(|o| matches!(o, RunOutcome::Done { .. })), "{outcomes:?}");
+    assert_eq!(outcomes[5], &RunOutcome::Applied { note: None }, "{outcomes:?}");
+    // Dropped, nothing is left to run on
+    assert!(matches!(outcomes[6], RunOutcome::Failed { message, .. } if message == fb_core::NO_CONNECTION));
+    assert_eq!((summary.failed, summary.active), (1, false));
 }
 
 /// Asks only who the server is: fine against any server
@@ -927,4 +978,47 @@ fn fixture_a_trace_session_writes_down_what_a_connection_runs() {
     assert!(events.iter().any(|e| e.kind == "START_TRANSACTION" && e.transaction == statement.transaction), "{text}");
     assert!(events.iter().any(|e| e.kind == "DETACH_DATABASE" && e.attachment == statement.attachment), "{text}");
     assert!(events.iter().all(|e| !e.kind.is_empty() && e.at.len() == 24), "{text}");
+}
+
+/// A select's first rows come with its step, SHOW is answered from the
+/// catalog, and OUTPUT writes every row to its file. Writes nothing to the
+/// database.
+#[test]
+fn fixture_a_script_shows_rows_and_writes_them_out() {
+    if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+        return;
+    }
+    let Some(params) = ConnectParams::from_env() else { return };
+    let target = std::sync::Mutex::new(Target::new(Some(Connection::open(&params).unwrap())));
+    let folder = std::env::temp_dir().join(format!("n-studio-output-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let script = "select rdb$relation_id as id, cast(null as integer) as nothing from rdb$relations order by 1;\n\
+                  select cast(? as integer) + 1, cast(:a as integer) * cast(:a as integer) from rdb$database;\n\
+                  SHOW TABLES;\n\
+                  SHOW VERSION;\n\
+                  OUTPUT 'rows.txt';\n\
+                  select first 3 rdb$relation_id from rdb$relations order by 1;\n\
+                  OUTPUT;\n\
+                  select 1 from rdb$database;";
+    let (steps, summary) = execute_in(&target, script, Some(&folder), None, executive_options());
+    let rows = |i: usize| match &steps[i].outcome {
+        RunOutcome::Done { rows: Some(rows), .. } => rows.clone(),
+        other => panic!("{i}: {other:?}"),
+    };
+    // Its parameters were asked, one value for :a used twice
+    assert_eq!(rows(1).rows, [["8", "49"]]);
+    let all = rows(0);
+    assert_eq!(all.columns, ["ID", "NOTHING"]);
+    // More system tables than are shown
+    assert_eq!((all.rows.len(), all.more), (fb_core::SHOWN, true));
+    assert_eq!(all.rows[0], ["0", "<null>"]);
+    assert_eq!(rows(2).columns, ["Table"]);
+    assert!(rows(3).rows[0][0].contains('.'), "{:?}", rows(3));
+    let written = std::fs::read_to_string(folder.join("rows.txt")).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    assert_eq!(lines, ["RDB$RELATION_ID", "0", "1", "2", ""], "{written:?}");
+    assert_eq!(rows(7).rows, [["1"]]);
+    assert_eq!(summary.failed, 0, "{steps:?}");
+    let _ = std::fs::remove_dir_all(&folder);
+    target.lock().unwrap().end(TxEnd::Rollback).unwrap();
 }

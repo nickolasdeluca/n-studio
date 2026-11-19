@@ -105,6 +105,12 @@ in the workspace manifest.
   when it has one: a user who is an administrator only through `RDB$ADMIN`
   is one to the services only when they name it, so without it a trace
   showed them their own attachments alone.
+- **Creating a database.** `create_database` read a single reply after
+  `op_create`, so a server that authenticates in rounds (Srp on Firebird 3
+  and later) left it reading the wrong packet; it now shares the attach's
+  reply loop (`finish_attach`). It also takes the new database's default
+  character set (`isc_dpb_set_db_charset`), through
+  `RustFbClient::create_database_with`.
 - **Codes without a message.** The table of messages stops where upstream
   left it; a newer code read as "Error message not found" and lost its
   arguments. It now reads as `Server error <code>` followed by them.

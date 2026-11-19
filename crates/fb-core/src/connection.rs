@@ -64,6 +64,10 @@ fn answer<T>(busy: &Mutex<bool>, reply: Reply<T>, result: Result<T>) {
 }
 
 enum Request {
+    /// DROP DATABASE: the database is deleted, and the connection ends with it
+    Drop {
+        reply: Reply<()>,
+    },
     Query {
         sql: String,
         params: Vec<Value>,
@@ -116,6 +120,17 @@ enum Request {
 impl Connection {
     /// Connects and attaches. Blocks until the server answers or refuses.
     pub fn open(params: &ConnectParams) -> Result<Self> {
+        Self::start(params, None)
+    }
+
+    /// Creates the database `params` names, as `CREATE DATABASE` does, and
+    /// connects to it: `page_size` and `charset`, its default character
+    /// set, the server's defaults when not given
+    pub fn create(params: &ConnectParams, page_size: Option<u32>, charset: Option<&str>) -> Result<Self> {
+        Self::start(params, Some((page_size, charset.map(str::to_owned))))
+    }
+
+    fn start(params: &ConnectParams, create: Option<(Option<u32>, Option<String>)>) -> Result<Self> {
         let charset = charset_by_name(&params.charset).ok_or_else(|| Error::Client {
             message: format!("unknown connection character set {:?}", params.charset),
         })?;
@@ -137,7 +152,7 @@ impl Connection {
         thread::Builder::new()
             .name(format!("fb {}:{}", params.host, params.database))
             .spawn(move || {
-                let mut actor = match Actor::attach(charset, &config, dialect) {
+                let mut actor = match Actor::attach(charset, &config, dialect, create) {
                     Ok(actor) => {
                         let _ = ready_tx.send(Ok(actor.cli.cancel_handle()));
                         actor
@@ -151,6 +166,15 @@ impl Connection {
                 for request in rx {
                     *running.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     match request {
+                        Request::Drop { reply } => {
+                            let dropped = actor.drop_database();
+                            let gone = dropped.is_ok();
+                            answer(&running, reply, dropped);
+                            if gone {
+                                // Nothing is left to detach from
+                                return;
+                            }
+                        }
                         Request::Query { sql, params, reply } => {
                             answer(&running, reply, actor.query(&sql, params));
                         }
@@ -268,6 +292,12 @@ impl Connection {
         self.call(|reply| Request::CloseCursor { cursor, reply })
     }
 
+    /// Deletes the database, as `DROP DATABASE` does: no one else may be
+    /// connected to it. The connection ends with it.
+    pub fn drop_database(&self) -> Result<()> {
+        self.call(|reply| Request::Drop { reply })
+    }
+
     fn call<T>(&self, request: impl FnOnce(Reply<T>) -> Request) -> Result<T> {
         let (reply, rx) = channel();
         self.tx.send(request(reply)).map_err(|_| Error::Closed)?;
@@ -326,10 +356,14 @@ impl Actor {
         charset: rsfbclient_core::Charset,
         config: &RustFbClientAttachmentConfig,
         dialect: Dialect,
+        create: Option<(Option<u32>, Option<String>)>,
     ) -> Result<Self> {
         let mut cli = RustFbClient::new(charset);
         let dialect = dialect.into();
-        let db = cli.attach_database(config, dialect, false)?;
+        let db = match create {
+            None => cli.attach_database(config, dialect, false)?,
+            Some((page_size, set)) => cli.create_database_with(config, page_size, set.as_deref(), dialect)?,
+        };
         Ok(Self {
             cli,
             db,
@@ -648,6 +682,14 @@ impl Actor {
         Ok(Performance::between(before, &after, |id| {
             relations.get(&id).cloned().unwrap_or_else(|| format!("relation {id}"))
         }))
+    }
+
+    fn drop_database(&mut self) -> Result<()> {
+        for (_, mut tr) in self.transactions.drain() {
+            let _ = self.cli.transaction_operation(&mut tr, TrOp::Rollback);
+        }
+        self.cursors.clear();
+        Ok(self.cli.drop_database(&mut self.db)?)
     }
 
     fn detach(mut self) {

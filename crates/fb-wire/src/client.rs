@@ -245,6 +245,20 @@ impl FirebirdClientDbOps for RustFbClient {
         page_size: Option<u32>,
         dialect: Dialect,
     ) -> Result<RustDbHandle, FbError> {
+        self.create_database_with(config, page_size, None, dialect)
+    }
+}
+
+impl RustFbClient {
+    /// Creates the database and attaches, `db_charset` its default
+    /// character set when given
+    pub fn create_database_with(
+        &mut self,
+        config: &RustFbClientAttachmentConfig,
+        page_size: Option<u32>,
+        db_charset: Option<&str>,
+        dialect: Dialect,
+    ) -> Result<RustDbHandle, FbError> {
         let host = config.host.as_str();
         let port = config.port;
         let db_name = config.db_name.as_str();
@@ -269,7 +283,7 @@ impl FirebirdClientDbOps for RustFbClient {
             )?,
         };
 
-        let attach_result = conn.create_database(db_name, user, pass, page_size, role, dialect);
+        let attach_result = conn.create_database(db_name, user, pass, page_size, role, dialect, db_charset);
 
         // Put the connection back
         self.conn.replace(conn);
@@ -709,6 +723,7 @@ impl FirebirdWireConnection {
         page_size: Option<u32>,
         role_name: Option<&str>,
         dialect: Dialect,
+        db_charset: Option<&str>,
     ) -> Result<DbHandle, FbError> {
         self.socket.write_all(&create(
             db_name,
@@ -720,12 +735,12 @@ impl FirebirdWireConnection {
             role_name.clone(),
             dialect,
             self.dpb_auth_data.take().as_deref(),
+            db_charset,
         ))?;
         self.socket.flush()?;
 
-        let resp = self.read_response()?;
-
-        Ok(DbHandle(resp.handle))
+        // The same authentication rounds an attach goes through
+        Ok(DbHandle(self.finish_attach(user, pass)?))
     }
 
     /// Connect to a database, returning a database handle

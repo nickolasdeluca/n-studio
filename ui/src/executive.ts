@@ -7,12 +7,15 @@ import { create } from "zustand";
 import {
   api,
   errorText,
+  type Compared,
   type ExecutiveEnd,
   type ExecutiveOptions,
+  type ExecutiveParamsAsk,
   type ExecutivePasswordAsk,
   type ExecutiveProgress,
   type ExecutiveStep,
   type FileFormat,
+  type InputOutline,
   type Operation,
   type ScriptBlock,
   type SubjectKind,
@@ -21,9 +24,10 @@ import { metadataChanged } from "./changes";
 import { baseName, openAdminPanel, panelTitle, setPanelTitle } from "./dock";
 import { ms } from "./editors";
 import { t } from "./i18n";
+import { askParams, paramFields } from "./params";
 import { useStore } from "./store";
 
-export type ExecutiveTab = "script" | "statements" | "options";
+export type ExecutiveTab = "script" | "statements" | "compare" | "options";
 
 export interface ExecutiveMessage {
   level: "info" | "error";
@@ -56,8 +60,12 @@ export interface Executive {
   blocks: ScriptBlock[];
   /** Statements left out of Run Checked, by index; all are checked at first */
   unchecked: Record<number, true>;
+  /** The files of the INPUTs shown in the list, by the INPUT's index */
+  inputs: Record<number, InputList>;
   /** What happened to each statement in the last run, by index */
   steps: Record<number, ExecutiveStep>;
+  /** The script compared with its database, when it was asked */
+  compared?: Comparing;
   run: ExecutiveRun | null;
   /** A run whose transaction is still active, for the user to end */
   active: number | null;
@@ -124,6 +132,7 @@ export function openExecutive(registration: string | null, text?: string): strin
     options: defaultOptions,
     blocks: [],
     unchecked: {},
+    inputs: {},
     steps: {},
     run: null,
     active: null,
@@ -163,10 +172,19 @@ function listening(): Promise<unknown> {
   subscribed ??= Promise.all([
     listen<ExecutiveProgress>("executive-progress", (e) => progress.get(e.payload.run)?.(e.payload)),
     listen<ExecutivePasswordAsk>("executive-password", (e) => askPassword(e.payload)),
+    listen<ExecutiveParamsAsk>("executive-params", (e) => void askValues(e.payload)),
   ]).catch(() => {
     // Outside Tauri there are no events: the run's end still tells all
   });
   return subscribed;
+}
+
+/** The values of a script statement's parameters, asked as the editor asks
+ *  them and remembered per panel */
+async function askValues(ask: ExecutiveParamsAsk) {
+  const panel = Object.values(useExecutives.getState().panels).find((p) => p.run?.id === ask.run);
+  const values = panel ? await askParams(panel.id, paramFields(ask.names, ask.types)) : null;
+  void api.executiveParams(ask.run, values);
 }
 
 function askPassword(ask: ExecutivePasswordAsk) {
@@ -199,6 +217,7 @@ function stepMessages(id: string, steps: ExecutiveStep[]): ExecutiveMessage[] {
     const where = step.within ? `${baseName(step.within.file)}, ${t("line {n}", { n: step.within.line })}: ` : "";
     if (step.status === "failed") out.push({ level: "error", text: where + step.message, index: step.index, line: line(step.index) });
     else if (step.status === "skipped" && step.note) out.push({ level: "info", text: where + step.note, index: step.index, line: line(step.index) });
+    else if (step.status === "applied" && step.note) out.push({ level: "info", text: where + step.note, index: step.index, line: line(step.index) });
   }
   return out;
 }
@@ -217,6 +236,29 @@ function take(id: string, run: number, steps: ExecutiveStep[], at?: number) {
 }
 
 const n = (v: number) => v.toLocaleString();
+
+/** A comparison of the script with its database */
+export interface Comparing {
+  busy: boolean;
+  items?: Compared[];
+  error?: string;
+}
+
+/** Compares what the script creates or changes with what the database has */
+export async function compareExecutive(id: string): Promise<void> {
+  const panel = get(id);
+  if (!panel || panel.compared?.busy) return;
+  const set = (compared: Comparing) => patchExecutive(id, { compared, tab: "compare" });
+  if (panel.disk) return set({ busy: false, error: t("A file run from disk is not compared: open it in the editor.") });
+  if (!panel.registration) return set({ busy: false, error: t("Choose the database to compare with.") });
+  set({ busy: true, items: panel.compared?.items });
+  try {
+    const items = await api.executiveCompare(panel.registration, texts.get(id)?.read() ?? "");
+    set({ busy: false, items });
+  } catch (e) {
+    set({ busy: false, error: errorText(e) });
+  }
+}
 
 /** Runs the panel's script, or the statements of it numbered in `only` */
 export async function runExecutive(id: string, only: number[] | null = null): Promise<void> {
@@ -244,7 +286,7 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
     }
     if (only && blocks.length !== get(id)?.blocks.length) {
       // What was checked was another text's statements
-      patchExecutive(id, { blocks, unchecked: {} });
+      patchExecutive(id, { blocks, unchecked: {}, inputs: {} });
       log(id, [{ level: "error", text: t("The script changed since its statements were listed: check them again.") }]);
       return;
     }
@@ -261,7 +303,7 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
     progress.set(run, (e) => take(id, run, e.steps, e.at));
     try {
       const options = get(id)?.options ?? defaultOptions;
-      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "text", text, path: panel.file?.path ?? null }, only, options);
+      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "text", text, path: panel.file?.path ?? null }, only, withinOf(panel), options);
       take(id, run, end.steps);
       finish(id, run, end);
     } catch (e) {
@@ -298,7 +340,7 @@ async function runDisk(id: string, only: number[] | null): Promise<void> {
     progress.set(run, (e) => take(id, run, e.steps, e.at));
     try {
       const options = get(id)?.options ?? defaultOptions;
-      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "file", path: panel.disk!.path }, only, options);
+      const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "file", path: panel.disk!.path }, only, withinOf(panel), options);
       take(id, run, end.steps);
       finish(id, run, end);
     } catch (e) {
@@ -387,7 +429,7 @@ export async function chooseCharset(id: string, charset: string | null) {
 export function closeDisk(id: string) {
   const panel = get(id);
   if (!panel?.disk || panel.run) return;
-  patchExecutive(id, { disk: null, blocks: [], steps: {}, unchecked: {} });
+  patchExecutive(id, { disk: null, blocks: [], steps: {}, unchecked: {}, inputs: {} });
   void outlineExecutive(id);
 }
 
@@ -494,10 +536,63 @@ export async function outlineExecutive(id: string): Promise<void> {
     if (!before || before.run || before.disk) return;
     // Other statements: what was checked and what ran were about the old ones
     const same = blocks.length === before.blocks.length;
-    patchExecutive(id, { blocks, ...(same ? {} : { unchecked: {}, steps: {} }) });
+    patchExecutive(id, { blocks, ...(same ? {} : { unchecked: {}, inputs: {}, steps: {}, compared: undefined }) });
   } catch {
     // Outlining again is for show; the run outlines what it sends
   }
+}
+
+/** An INPUT's file, as the list shows it */
+export interface InputList {
+  open: boolean;
+  outline?: InputOutline;
+  error?: string;
+  /** Its statements left out, by index */
+  unchecked: Record<number, true>;
+}
+
+/** Whether a statement is an INPUT, and the file it names */
+export function inputName(block: ScriptBlock): string | null {
+  if (block.kind !== "isql") return null;
+  const m = /^\s*INPUT\s+(?:'((?:[^']|'')*)'|"((?:[^"]|"")*)"|(\S+))/i.exec(block.summary);
+  return m ? (m[1]?.replace(/''/g, "'") ?? m[2]?.replace(/""/g, '"') ?? m[3]) : null;
+}
+
+/** What is left out of the INPUTs' files, for the run */
+function withinOf(panel: Executive): Record<number, number[]> | null {
+  const within: Record<number, number[]> = {};
+  for (const [index, list] of Object.entries(panel.inputs ?? {})) {
+    const out = Object.keys(list.unchecked).map(Number);
+    if (out.length > 0) within[Number(index)] = out;
+  }
+  return Object.keys(within).length ? within : null;
+}
+
+/** Shows or hides the statements of the file an INPUT names, reading it the first time */
+export async function toggleInput(id: string, index: number, name: string) {
+  const panel = get(id);
+  if (!panel) return;
+  const was = panel.inputs?.[index];
+  const set = (list: InputList) => patchExecutive(id, (p) => ({ inputs: { ...(p.inputs ?? {}), [index]: list } }));
+  if (was?.outline) return set({ ...was, open: !was.open });
+  set({ open: true, unchecked: {} });
+  try {
+    const outline = await api.executiveInputOutline(name, panel.file?.path ?? panel.disk?.path ?? null, panel.charset);
+    set({ open: true, outline, unchecked: {} });
+  } catch (e) {
+    set({ open: true, error: errorText(e), unchecked: {} });
+  }
+}
+
+export function toggleInputStatement(id: string, index: number, inner: number) {
+  patchExecutive(id, (p) => {
+    const list = p.inputs?.[index];
+    if (!list) return {};
+    const unchecked = { ...list.unchecked };
+    if (unchecked[inner]) delete unchecked[inner];
+    else unchecked[inner] = true;
+    return { inputs: { ...p.inputs, [index]: { ...list, unchecked } } };
+  });
 }
 
 /** The statements checked, by index */
@@ -587,8 +682,10 @@ export async function addConnect(id: string, registration: string, withPassword:
   }
 }
 
-/** Whether the script names its database with a CONNECT */
-export const connectsItself = (panel: Executive) => panel.blocks.some((b) => b.subject.operation === "connect");
+/** Whether the script names its database with a CONNECT or a CREATE DATABASE */
+export const connectsItself = (panel: Executive) => panel.blocks.some(
+    (b) => b.subject.operation === "connect" || (b.subject.operation === "create" && b.subject.kind === "database"),
+  );
 
 /** The database a panel starts on */
 export function chooseDatabase(id: string, registration: string | null) {

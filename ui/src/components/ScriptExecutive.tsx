@@ -7,11 +7,16 @@ import { Decoration, EditorView, GutterMarker, gutterLineClass, keymap, type Dec
 import type { IDockviewPanelProps } from "dockview-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ExecutiveOptions, ExecutiveStep, Operation, ScriptBlock, SubjectKind } from "../api";
+import type { Compared, ExecutiveOptions, ExecutiveStep, Operation, ScriptBlock, StepRows, SubjectKind } from "../api";
 import { ms } from "../editors";
 import {
   checkedOf,
   checkOnly,
+  compareExecutive,
+  inputName,
+  toggleInput,
+  toggleInputStatement,
+  type InputList,
   chooseCharset,
   chooseDatabase,
   connectsItself,
@@ -37,6 +42,7 @@ import {
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
 import { scriptTree, type TreeItem } from "../scriptTree";
+import { lineDiff } from "../lineDiff";
 import { prepareCompletion } from "../complete";
 import { sqlExtensions } from "../sqlView";
 import { useStore } from "../store";
@@ -121,6 +127,7 @@ function panelKeys(id: string) {
 const tabs: [ExecutiveTab, string][] = [
   ["script", "Script"],
   ["statements", "Statements"],
+  ["compare", "Compare"],
   ["options", "Options"],
 ];
 
@@ -285,6 +292,11 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
               {panel.tab === "statements" && (
                 <div className="absolute inset-0 bg-panel">
                   <StatementsTab panel={panel} select={select} />
+                </div>
+              )}
+              {panel.tab === "compare" && (
+                <div className="absolute inset-0 bg-panel">
+                  <CompareTab panel={panel} select={select} />
                 </div>
               )}
               {panel.tab === "options" && (
@@ -457,6 +469,12 @@ function OptionsTab({ panel }: { panel: Executive }) {
         t("As isql's SET AUTODDL ON: what follows a CREATE TABLE can use the table. The script can still turn it off."),
       )}
       {check(t("When an error stops the script, roll back what was not committed"), o.rollbackOnStop, (v) => set({ rollbackOnStop: v }))}
+      {check(
+        t("Run SHELL commands"),
+        !!o.allowShell,
+        (v) => set({ allowShell: v }),
+        t("A script's SHELL starts a program, in the script's folder. Off, it is passed over and said so: turn it on only for scripts you trust."),
+      )}
       <fieldset className="flex flex-col gap-1.5">
         <legend className="mb-1">{t("With a transaction still active at the end:")}</legend>
         {(
@@ -669,7 +687,23 @@ function StatementsTab({ panel, select }: { panel: Executive; select(index: numb
                       />
                     </span>
                     <span className="px-1.5 text-right text-muted tabular-nums">{block.line}</span>
-                    <span className="truncate px-1.5">{operationLabel(block) || <span className="text-faint">{block.kind === "isql" ? t("isql command") : ""}</span>}</span>
+                    <span className="flex min-w-0 items-center gap-1 px-1.5">
+                      {inputName(block) !== null && (
+                        <button
+                          type="button"
+                          aria-label={panel.inputs?.[block.index]?.open ? t("Hide its file's statements") : t("Show its file's statements")}
+                          aria-expanded={!!panel.inputs?.[block.index]?.open}
+                          className="grid size-4 shrink-0 place-items-center rounded text-muted hover:bg-hover hover:text-fg"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void toggleInput(panel.id, block.index, inputName(block)!);
+                          }}
+                        >
+                          <Icon name="chevron" size={11} className={panel.inputs?.[block.index]?.open ? "rotate-90" : ""} />
+                        </button>
+                      )}
+                      <span className="truncate">{operationLabel(block) || <span className="text-faint">{block.kind === "isql" ? t("isql command") : ""}</span>}</span>
+                    </span>
                     <span className="truncate px-1.5 font-mono text-[11.5px] text-muted">{block.summary}</span>
                     <span className={`px-1.5 ${state ? stateClass[state] : ""}`}>{state ? t(stateLabels[state]) : ""}</span>
                     <span className="px-1.5 text-right text-muted tabular-nums">{step ? ms(step.ms) : ""}</span>
@@ -678,7 +712,16 @@ function StatementsTab({ panel, select }: { panel: Executive; select(index: numb
                   {step?.status === "failed" && (
                     <div className="py-1 pr-2 pl-[84px] whitespace-pre-wrap text-danger">{step.message}</div>
                   )}
-                  {step?.status === "skipped" && step.note && <div className="py-1 pr-2 pl-[84px] text-muted">{step.note}</div>}
+                  {(step?.status === "skipped" || step?.status === "applied") && step.note && <div className="py-1 pr-2 pl-[84px] text-muted">{step.note}</div>}
+                  {step?.status === "done" && step.rows && <StepTable rows={step.rows} />}
+                  {panel.inputs?.[block.index]?.open && (
+                    <InputRows
+                      list={panel.inputs[block.index]}
+                      cols={cols}
+                      disabled={running || !!panel.unchecked[block.index]}
+                      toggle={(inner) => toggleInputStatement(panel.id, block.index, inner)}
+                    />
+                  )}
                 </div>
               );
             })}
@@ -795,6 +838,171 @@ function Explorer({ panel, select }: { panel: Executive; select(index: number): 
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** The rows a select returned, under its row: the first ones only */
+function StepTable({ rows }: { rows: StepRows }) {
+  return (
+    <div className="pr-2 pb-1.5 pl-[84px]">
+      <div className="scroll-thin max-h-56 overflow-auto rounded border border-line">
+        <table className="border-collapse font-mono text-[11.5px] select-text">
+          <thead className="sticky top-0 bg-panel-2 text-left text-muted">
+            <tr>
+              {rows.columns.map((c, i) => (
+                <th key={i} className="px-2 py-0.5 font-normal whitespace-nowrap">
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.rows.map((row, r) => (
+              <tr key={r} className="border-t border-line">
+                {row.map((v, c) => (
+                  <td key={c} className={`max-w-[40ch] truncate px-2 py-0.5 whitespace-nowrap ${v === "<null>" ? "text-faint" : ""}`} title={v}>
+                    {v}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.more && <p className="pt-0.5 text-muted">{t("The first {n} rows: it returned more.", { n: rows.rows.length })}</p>}
+    </div>
+  );
+}
+
+/** The statements of the file an INPUT names, to leave some out */
+function InputRows({ list, cols, disabled, toggle }: { list: InputList; cols: string; disabled: boolean; toggle(inner: number): void }) {
+  if (list.error) return <div className="py-1 pr-2 pl-[84px] text-danger">{list.error}</div>;
+  if (!list.outline) return <div className="py-1 pr-2 pl-[84px] text-muted">{t("Reading…")}</div>;
+  const { outline } = list;
+  return (
+    <div className="border-t border-line/50 bg-panel-2/60">
+      <div className="truncate py-0.5 pr-2 pl-[84px] text-muted" title={outline.file}>
+        {outline.file}
+      </div>
+      {outline.blocks.map((b) => (
+        <div key={b.index} className={`${cols} h-6`}>
+          <span />
+          <span className="grid place-items-center">
+            <input
+              type="checkbox"
+              aria-label={t("Run statement {n} of the file", { n: b.index + 1 })}
+              className="accent-[var(--accent)]"
+              disabled={disabled}
+              checked={!list.unchecked[b.index]}
+              onChange={() => toggle(b.index)}
+            />
+          </span>
+          <span className="truncate px-1.5 text-muted">
+            {t("line {line}", { line: b.line })} · {operationLabel(b) || (b.kind === "isql" ? t("isql command") : "")}
+          </span>
+          <span className="col-span-4 truncate px-1.5 font-mono text-[11.5px] text-muted">{b.summary}</span>
+        </div>
+      ))}
+      {outline.total > outline.blocks.length && (
+        <div className="py-0.5 pr-2 pl-[84px] text-muted">
+          {t("Only its first {n} statements are listed; those past them always run.", { n: outline.blocks.length })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const compareStates = { new: "New", same: "Same", differs: "Differs" } as const;
+const stateOfCompared = (c: Compared) => (c.current === null ? "new" : c.same ? "same" : "differs");
+
+/** What the script creates or changes, beside what the database has */
+function CompareTab({ panel, select }: { panel: Executive; select(index: number): void }) {
+  const compared = panel.compared;
+  const [open, setOpen] = useState<number | null>(null);
+  const items = compared?.items ?? [];
+  const shown = items.find((c) => c.index === open) ?? null;
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
+        <TextButton
+          icon="refresh"
+          label={compared ? t("Compare again") : t("Compare with the database")}
+          disabled={!!compared?.busy || !!panel.run}
+          onClick={() => compareExecutive(panel.id)}
+        />
+        {compared?.busy && <span className="text-muted">{t("Comparing…")}</span>}
+        {compared?.items && !compared.busy && (
+          <span className="text-muted">
+            {t("{n} new, {d} differ, {s} the same", {
+              n: items.filter((c) => c.current === null).length,
+              d: items.filter((c) => c.current !== null && !c.same).length,
+              s: items.filter((c) => c.same).length,
+            })}
+          </span>
+        )}
+      </div>
+      {compared?.error ? (
+        <div className="p-3 text-danger">{compared.error}</div>
+      ) : !compared?.items ? (
+        <div className="grid flex-1 place-items-center px-6 text-center text-muted">
+          {t("Compares each object the script creates or changes with what the database has of it now, before you run it.")}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="grid flex-1 place-items-center text-muted">{t("The script creates or changes no object.")}</div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <div className="scroll-thin w-72 shrink-0 overflow-auto border-r border-line">
+            {items.map((c) => {
+              const state = stateOfCompared(c);
+              return (
+                <button
+                  key={c.index}
+                  type="button"
+                  className={`flex h-6 w-full items-center gap-1.5 px-2 text-left hover:bg-hover ${open === c.index ? "bg-accent/15" : ""}`}
+                  onClick={() => setOpen(c.index)}
+                  onDoubleClick={() => select(c.index)}
+                  title={t("Double-click to find it in the script")}
+                >
+                  <Icon name={c.kind} size={13} className={kindColor[c.kind] ?? ""} />
+                  <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                  <span className={state === "same" ? "text-muted" : state === "new" ? "text-ok" : "text-warn"}>
+                    {t(compareStates[state])}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="scroll-thin min-w-0 flex-1 overflow-auto">
+            {shown ? <CompareDiff item={shown} /> : <div className="grid h-full place-items-center text-muted">{t("Choose an object to see what the script changes in it.")}</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The database's statement against the script's, line by line */
+function CompareDiff({ item }: { item: Compared }) {
+  const lines = useMemo(() => (item.current === null ? null : lineDiff(item.current, item.script)), [item]);
+  const mark = { same: "", removed: "bg-danger/12 text-danger", added: "bg-ok/12 text-ok" } as const;
+  const sign = { same: " ", removed: "-", added: "+" } as const;
+  return (
+    <div className="p-2">
+      <p className="pb-1.5 text-muted">
+        {item.current === null
+          ? t("The database has no such object: the script creates it.")
+          : t("Lines with - are the database's, lines with + the script's.")}
+      </p>
+      <pre className="font-mono text-[11.5px] leading-[1.5] select-text">
+        {lines === null
+          ? item.script
+          : lines.map((l, i) => (
+              <div key={i} className={mark[l.kind]}>
+                {sign[l.kind]} {l.text}
+              </div>
+            ))}
+      </pre>
     </div>
   );
 }

@@ -242,10 +242,17 @@ pub fn create(
     role_name: Option<&str>,
     dialect: Dialect,
     auth_data: Option<&[u8]>,
+    db_charset: Option<&str>,
 ) -> Bytes {
     let dpb = build_dpb(
         user, pass, protocol, charset, page_size, role_name, dialect, false, auth_data,
     );
+    // The new database's default character set
+    let mut dpb = BytesMut::from(&dpb[..]);
+    if let Some(set) = db_charset.filter(|s| !s.is_empty()) {
+        dpb.put_slice(&[ibase::isc_dpb_set_db_charset as u8, set.len() as u8]);
+        dpb.put_slice(set.as_bytes());
+    }
 
     let mut create = BytesMut::with_capacity(16 + db_name.len() + dpb.len());
 

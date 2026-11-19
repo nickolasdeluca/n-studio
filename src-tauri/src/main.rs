@@ -12,10 +12,10 @@ mod executive;
 mod export;
 mod files;
 mod formatter;
-mod profiler;
 mod history;
 mod ibexpert;
 mod objects;
+mod profiler;
 mod registry;
 mod results;
 mod script;
@@ -138,6 +138,9 @@ fn main() {
             executive::executive_run,
             executive::executive_cancel,
             executive::executive_password,
+            executive::executive_params,
+            executive::executive_input_outline,
+            executive::executive_compare,
             executive::executive_end,
             executive::executive_connect_lines,
             profiler::profiler_start,

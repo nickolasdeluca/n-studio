@@ -783,10 +783,18 @@ export interface ScriptBlock {
   summary: string;
 }
 
+/** A select's first rows, or what SHOW answers, as text */
+export interface StepRows {
+  columns: string[];
+  rows: string[][];
+  /** It returned more than these */
+  more: boolean;
+}
+
 export type RunOutcome =
-  | { status: "done"; statementType: string; records: Records }
-  /** An isql command followed: SET AUTODDL, SET NAMES, CONNECT */
-  | { status: "applied" }
+  | { status: "done"; statementType: string; records: Records; rows?: StepRows }
+  /** An isql command followed: SET AUTODDL, SET NAMES, CONNECT, CREATE DATABASE, SHELL */
+  | { status: "applied"; note?: string }
   | { status: "skipped"; note: string | null }
   | { status: "failed"; sqlcode: number; message: string };
 
@@ -809,6 +817,8 @@ export interface ExecutiveOptions {
   rollbackOnStop: boolean;
   /** A transaction still active at the end */
   atEnd: "ask" | "commit" | "rollback";
+  /** Run what SHELL asks of the system's shell; saved panels before it have none */
+  allowShell?: boolean;
 }
 
 export interface ExecutiveEnd {
@@ -849,6 +859,32 @@ export interface ExecutivePasswordAsk {
   run: number;
   database: string;
   user: string;
+}
+
+/** A run asks the values of a statement's parameters */
+/** A script statement that creates or changes an object, beside the
+ *  object's DDL in the database: `current` is null when it has none */
+export interface Compared {
+  index: number;
+  kind: string;
+  name: string;
+  script: string;
+  current: string | null;
+  same: boolean;
+}
+
+/** The statements of the file an INPUT names */
+export interface InputOutline {
+  file: string;
+  blocks: ScriptBlock[];
+  total: number;
+}
+
+export interface ExecutiveParamsAsk {
+  run: number;
+  sql: string;
+  names: (string | null)[];
+  types: ColumnInfo[];
 }
 
 export interface ScriptProgress {
@@ -1104,14 +1140,20 @@ export const api = {
     charset: string | null,
     source: ExecutiveSource,
     only: number[] | null,
+    /** What is left out of the files its INPUTs read, by the INPUT's index */
+    within: Record<number, number[]> | null,
     options: ExecutiveOptions,
-  ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, source, only, options }),
+  ) => invoke<ExecutiveEnd>("executive_run", { run, registration, charset, source, only, within, options }),
+  executiveCompare: (registration: string, text: string) => invoke<Compared[]>("executive_compare", { registration, text }),
+  executiveInputOutline: (name: string, script: string | null, charset: string | null) =>
+    invoke<InputOutline>("executive_input_outline", { name, script, charset }),
   executiveConnectLines: (registration: string, withPassword: boolean) =>
     invoke<string>("executive_connect_lines", { registration, withPassword }),
   executiveOutlineFile: (path: string, charset: string | null) =>
     invoke<FileOutline>("executive_outline_file", { path, charset }),
   executiveCancel: (run: number) => invoke<boolean>("executive_cancel", { run }),
   executivePassword: (run: number, password: string | null) => invoke<void>("executive_password", { run, password }),
+  executiveParams: (run: number, values: (string | null)[] | null) => invoke<void>("executive_params", { run, values }),
   executiveEnd: (run: number, how: "commit" | "rollback") => invoke<void>("executive_end", { run, how }),
   /** The grids of the activity monitor ("monitor", `idle` for the idle
    *  statements too) or of the server's users ("users") */

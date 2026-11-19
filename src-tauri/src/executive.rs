@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 
 use fb_core::{
     run_executive, split_database, Within, ConnectParams, Connection, Connector, RunOptions, RunOutcome, RunStep, RunSummary,
-    Target, TxEnd, TxOptions,
+    ColumnInfo, Target, TxEnd, TxOptions,
 };
-use fb_sql::isql::Connect;
+use fb_sql::isql::{Connect, CreateDatabase};
 use fb_sql::{StatementKind, Subject};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -36,6 +36,8 @@ pub const PROGRESS: &str = "executive-progress";
 /// The event a run asks for a password through, waiting for
 /// [`executive_password`]
 pub const PASSWORD: &str = "executive-password";
+/// The event a run asks the values of a statement's parameters through
+pub const PARAMS: &str = "executive-params";
 
 /// Runs by the id the panel gave each: running, or over with a transaction
 /// left active for the panel to end
@@ -243,6 +245,47 @@ pub async fn executive_outline(text: String) -> Vec<Block> {
     tauri::async_runtime::spawn_blocking(move || outline(&text)).await.unwrap_or_default()
 }
 
+/// The statements of the file an `INPUT` names, for the panel to choose from
+#[derive(Serialize)]
+pub struct InputOutline {
+    /// Where it was found
+    file: String,
+    blocks: Vec<Block>,
+    /// Its statements, past the ones listed too
+    total: usize,
+}
+
+/// How many statements of an `INPUT`'s file are listed to choose from
+const INPUT_LISTED: usize = 5_000;
+
+/// Outlines the file `name` names, found as a run finds it: in full, or in
+/// the folder of `script`, the script's own file
+#[tauri::command]
+pub async fn executive_input_outline(
+    name: String,
+    script: Option<String>,
+    charset: Option<String>,
+) -> AppResult<InputOutline> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let named = std::path::Path::new(&name);
+        let path = match script.as_deref().and_then(|s| std::path::Path::new(s).parent()) {
+            _ if named.is_absolute() => named.to_path_buf(),
+            Some(folder) => folder.join(named),
+            None => {
+                return Err(AppError::Invalid {
+                    message: "The script is in no folder: save it, or name the file in full.".into(),
+                })
+            }
+        };
+        let file = path.display().to_string();
+        let (text, _, _) = read_script(&file, charset.as_deref())?;
+        let (blocks, total) = outline_some(&text, INPUT_LISTED);
+        Ok(InputOutline { file, blocks, total })
+    })
+    .await
+    .map_err(|e| AppError::Connection { message: format!("The worker failed: {e}") })?
+}
+
 /// What to do with a transaction still active when a script ends
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -260,6 +303,9 @@ pub struct ExecutiveOptions {
     auto_ddl: bool,
     rollback_on_stop: bool,
     at_end: AtEnd,
+    /// Panels saved before it have none
+    #[serde(default)]
+    allow_shell: bool,
 }
 
 impl ExecutiveOptions {
@@ -272,6 +318,7 @@ impl ExecutiveOptions {
             // unless the panel said to roll back
             on_switch: if self.at_end == AtEnd::Rollback { TxEnd::Rollback } else { TxEnd::Commit },
             tx_options: TxOptions::default(),
+            allow_shell: self.allow_shell,
         }
     }
 }
@@ -375,9 +422,15 @@ struct AppConnector {
 impl AppConnector {
     /// Asks the panel, and waits for the answer or for the run to stop
     fn ask(&self, ask: Ask) -> Option<String> {
+        self.question(PASSWORD, &ask)
+    }
+
+    /// Sends `event` with `payload`, and waits for the answer or for the run
+    /// to stop
+    fn question(&self, event: &str, payload: &impl Serialize) -> Option<String> {
         let (tx, rx): (Sender<Option<String>>, Receiver<Option<String>>) = channel();
         *self.run.answer.lock().unwrap() = Some(tx);
-        let _ = self.app.emit(PASSWORD, &ask);
+        let _ = self.app.emit(event, payload);
         let answer = loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(answer) => break answer,
@@ -398,6 +451,25 @@ impl Connector for AppConnector {
     }
 
     fn connect(&mut self, to: &Connect, charset: Option<&str>) -> fb_core::Result<Connection> {
+        Connection::open(&self.params_for(to, charset)?)
+    }
+
+    fn values(&mut self, sql: &str, names: &[Option<String>], types: &[ColumnInfo]) -> Option<Vec<Option<String>>> {
+        let ask = ParamsAsk { run: self.id, sql, names, types };
+        serde_json::from_str(&self.question(PARAMS, &ask)?).ok()
+    }
+
+    fn create(&mut self, create: &CreateDatabase, charset: Option<&str>) -> fb_core::Result<Connection> {
+        let params = self.params_for(&create.connect, charset)?;
+        Connection::create(&params, create.page_size, create.charset.as_deref())
+    }
+}
+
+impl AppConnector {
+    /// How to reach what a `CONNECT` or a `CREATE DATABASE` names: a
+    /// registration's settings when one matches, and its password when it
+    /// is known, asked for otherwise
+    fn params_for(&mut self, to: &Connect, charset: Option<&str>) -> fb_core::Result<ConnectParams> {
         let state = self.app.state::<AppState>();
         let registrations = state.registry.lock().unwrap().all().to_vec();
         let registration = matching(&registrations, to);
@@ -426,7 +498,7 @@ impl Connector for AppConnector {
                 self.ask(ask).ok_or_else(|| fb_core::Error::Client { message: "No password was given.".into() })?
             }
         };
-        Connection::open(&params)
+        Ok(params)
     }
 }
 
@@ -501,6 +573,7 @@ pub async fn executive_run(
     charset: Option<String>,
     source: Source,
     only: Option<Vec<usize>>,
+    within: Option<std::collections::HashMap<usize, Vec<usize>>>,
     options: ExecutiveOptions,
 ) -> AppResult<RunEnd> {
     let state = app.state::<AppState>();
@@ -537,6 +610,7 @@ pub async fn executive_run(
             &text,
             folder.as_deref(),
             only.as_deref(),
+            &within.unwrap_or_default().into_iter().map(|(i, chosen)| (i, chosen.into_iter().collect())).collect(),
             options.run_options(),
             &mut connector,
             &worker.cancel,
@@ -607,6 +681,27 @@ pub fn executive_cancel(state: State<'_, AppState>, run: u64) -> bool {
     true
 }
 
+/// What a [`PARAMS`] question asks: the statement, and its parameters'
+/// names and types, as the editor's dialog takes them
+#[derive(Serialize)]
+struct ParamsAsk<'a> {
+    run: u64,
+    sql: &'a str,
+    names: &'a [Option<String>],
+    types: &'a [ColumnInfo],
+}
+
+/// The answer to a [`PARAMS`] question: the values by position, `None` for
+/// a NULL; `None` when the user would not give them
+#[tauri::command]
+pub fn executive_params(state: State<'_, AppState>, run: u64, values: Option<Vec<Option<String>>>) {
+    if let Some(this) = state.executives.get(run) {
+        if let Some(answer) = this.answer.lock().unwrap().take() {
+            let _ = answer.send(values.and_then(|v| serde_json::to_string(&v).ok()));
+        }
+    }
+}
+
 /// The answer to a [`PASSWORD`] question: `None` when the user would not
 /// give one
 #[tauri::command]
@@ -648,6 +743,16 @@ pub async fn executive_end(app: AppHandle, run: u64, how: String) -> AppResult<(
 mod tests {
     use super::*;
     use crate::registry::{Auth, FirebirdSettings};
+
+    #[test]
+    fn a_statement_is_the_same_but_for_spaces_case_and_create_or_alter() {
+        let db = normalized("CREATE TABLE T (\n    ID INTEGER NOT NULL /* key */\n)");
+        assert_eq!(normalized("create or alter table t (id integer not null)"), db);
+        assert_eq!(normalized("recreate  table T(ID  integer\nnot null) -- new"), db);
+        assert_ne!(normalized("create table t (id bigint not null)"), db);
+        // What is quoted keeps its case
+        assert_ne!(normalized("create table \"t\" (id integer not null)"), normalized("create table \"T\" (id integer not null)"));
+    }
 
     #[test]
     fn an_outline_numbers_and_places_each_statement() {
@@ -791,4 +896,126 @@ mod tests {
         assert_eq!(find(&connect("db", None, None), Some(&unsaved)), None);
         assert_eq!(find(&connect("db", None, None), None), None);
     }
+}
+
+/// A statement of a script that creates or changes an object, beside what
+/// the database has of that object now
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Compared {
+    /// Its index among the script's statements, as the outline numbers them
+    index: usize,
+    kind: fb_meta::ObjectKind,
+    /// As the catalog stores it when it exists, else as the script names it
+    name: String,
+    /// The script's statement
+    script: String,
+    /// The object's DDL as the database has it, `None` when it has none:
+    /// of it, the statement that starts as the script's does when there is
+    /// one, as `CREATE TABLE T (` does
+    current: Option<String>,
+    /// The script's statement is one of the object's, but for spaces,
+    /// comments, the case of keywords and CREATE or ALTER
+    same: bool,
+}
+
+/// The objects a script compares: what it can show the DDL of
+fn meta_kind(kind: fb_sql::ObjectKind) -> Option<fb_meta::ObjectKind> {
+    use fb_meta::ObjectKind as M;
+    use fb_sql::ObjectKind as S;
+    Some(match kind {
+        S::Table => M::Table,
+        S::View => M::View,
+        S::Procedure => M::Procedure,
+        S::Function => M::Function,
+        S::Package => M::Package,
+        S::Trigger => M::Trigger,
+        S::Domain => M::Domain,
+        S::Generator => M::Generator,
+        S::Exception => M::Exception,
+        S::Index => M::Index,
+        S::Role => M::Role,
+        S::Udf => M::Udf,
+        S::User | S::Database | S::Block => return None,
+    })
+}
+
+/// A statement's code for comparing: no spaces or comments, words in upper
+/// case, and the leading CREATE, ALTER, RECREATE or OR left out
+fn normalized(sql: &str) -> Vec<String> {
+    let mut tokens = fb_sql::lexer::tokenize(sql)
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| {
+            let text = &sql[t.range.clone()];
+            if t.kind == fb_sql::lexer::TokenKind::Word {
+                text.to_ascii_uppercase()
+            } else {
+                text.to_string()
+            }
+        })
+        .peekable();
+    while tokens.next_if(|w| matches!(w.as_str(), "CREATE" | "ALTER" | "RECREATE" | "OR")).is_some() {}
+    tokens.collect()
+}
+
+/// The statements of `text` that create or change an object, each beside
+/// that object's DDL in the database `registration` is connected to
+#[tauri::command]
+pub async fn executive_compare(
+    state: State<'_, AppState>,
+    registration: String,
+    text: String,
+) -> AppResult<Vec<Compared>> {
+    let conn = state.session(&registration)?;
+    tauri::async_runtime::spawn_blocking(move || compare_script(&conn, &text))
+        .await
+        .map_err(|e| AppError::Connection { message: format!("The worker failed: {e}") })?
+}
+
+fn compare_script(conn: &Connection, text: &str) -> AppResult<Vec<Compared>> {
+    use fb_sql::Operation as Op;
+    let mut names: std::collections::HashMap<fb_meta::ObjectKind, Vec<String>> = Default::default();
+    let mut out = Vec::new();
+    let statements = fb_sql::Splitter::new(text).filter(|s| !matches!(s.kind, StatementKind::SetTerm { .. }));
+    for (index, statement) in statements.enumerate() {
+        let sql = &text[statement.range.clone()];
+        let subject = fb_sql::classify(sql);
+        if !matches!(subject.operation, Op::Create | Op::Alter | Op::CreateOrAlter | Op::Recreate) {
+            continue;
+        }
+        let (Some(kind), Some(name)) = (subject.kind.and_then(meta_kind), subject.name) else { continue };
+        if !names.contains_key(&kind) {
+            let objects = fb_meta::objects(conn, kind)?;
+            names.insert(kind, objects.into_iter().map(|o| o.name).collect());
+        }
+        let found = names[&kind].iter().find(|n| **n == name).cloned();
+        let current = match &found {
+            Some(found) if kind == fb_meta::ObjectKind::Generator => {
+                // Its value is data, not its shape
+                let mut generator = fb_meta::generator(conn, found)?;
+                generator.value = None;
+                let ctx = fb_meta::ddl::Context::of(conn.info());
+                Some(fb_meta::ddl::script(&fb_meta::ddl::generator(&generator, &ctx)))
+            }
+            Some(found) => Some(fb_meta::extract::script(conn, kind, found)?),
+            None => None,
+        };
+        let wanted = normalized(sql);
+        let head = &wanted[..wanted.len().min(3)];
+        let mut same = false;
+        let current = current.map(|ddl| {
+            let statements: Vec<&str> = fb_sql::Splitter::new(&ddl)
+                .filter(|s| !matches!(s.kind, StatementKind::SetTerm { .. }))
+                .map(|s| &ddl[s.range.clone()])
+                .collect();
+            same = statements.iter().any(|s| normalized(s) == wanted);
+            match statements.iter().find(|s| normalized(s).starts_with(head)) {
+                Some(s) => s.to_string(),
+                None => ddl.clone(),
+            }
+        });
+        out.push(Compared { index, kind, name: found.unwrap_or(name), script: sql.to_string(), current, same });
+    }
+    Ok(out)
 }
