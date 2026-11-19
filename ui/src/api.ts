@@ -1101,10 +1101,11 @@ export const api = {
     invoke<boolean>("debug_command", { run, command, breakpoints }),
   sqlStatements: (text: string) => invoke<StatementRange[]>("sql_statements", { text }),
   statementParameters: (sql: string) => invoke<Parameters>("statement_parameters", { sql }),
-  /** Starts Claude Code in `folder`, or with no project in the app's own
+  /** Starts the agent, Claude Code or Codex, in `folder`, or with no project in the app's own
    *  folder, ending one that runs: which start it
    *  is, what its `agent-output` and `agent-exit` events carry */
-  agentStart: (folder: string | null, cols: number, rows: number) => invoke<number>("agent_start", { folder, cols, rows }),
+  agentStart: (kind: AgentKind, folder: string | null, cols: number, rows: number) =>
+    invoke<number>("agent_start", { kind, folder, cols, rows }),
   agentInput: (run: number, data: string) => invoke<null>("agent_input", { run, data }),
   agentResize: (run: number, cols: number, rows: number) => invoke<null>("agent_resize", { run, cols, rows }),
   agentStop: () => invoke<null>("agent_stop"),
@@ -1114,6 +1115,9 @@ export const api = {
   agentShare: (run: number, label: string, database: string, columns: SharedColumn[], rows: Cell[][]) =>
     invoke<string>("agent_share", { run, label, database, columns, rows }),
 };
+
+/** Which agent the panel runs: the user's own `claude` or `codex` */
+export type AgentKind = "claude" | "codex";
 
 export interface SharedColumn {
   name: string;

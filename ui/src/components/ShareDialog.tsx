@@ -2,13 +2,14 @@
 // told where they go.
 import { useState } from "react";
 import { api, errorText, SHARE_ROWS } from "../api";
-import { editorLabel, share } from "../agent";
+import { AGENTS, editorLabel, share, useAgent } from "../agent";
 import { useEditors } from "../editors";
 import { t } from "../i18n";
 import { useStore } from "../store";
 import { Button, Field, inputClass, Modal } from "./Modal";
 
 export function ShareDialog({ tab, row }: { tab: string; row: number | null }) {
+  const agent = AGENTS[useAgent((s) => s.kind)];
   const editor = useEditors((s) => s.tabs[tab]);
   const result = editor?.outcome?.result ?? null;
   const fetched = result?.rows ?? 0;
@@ -41,7 +42,7 @@ export function ShareDialog({ tab, row }: { tab: string; row: number | null }) {
 
   return (
     <Modal
-      title={t("Share with Claude Code")}
+      title={t("Share with {agent}", { agent: agent.name })}
       width="w-[30rem]"
       onCancel={close}
       onSubmit={() => void submit()}
@@ -84,8 +85,8 @@ export function ShareDialog({ tab, row }: { tab: string; row: number | null }) {
         </Field>
         <p className="text-muted">
           {t(
-            "All {columns} columns of these rows go to Claude Code, and from it to Anthropic under your account: their values leave this computer. They are kept for this run of Claude Code only.",
-            { columns: executed.columns.length },
+            "All {columns} columns of these rows go to {agent}, and from it to {vendor} under your account: their values leave this computer. They are kept for this run of {agent} only.",
+            { columns: executed.columns.length, agent: agent.name, vendor: agent.vendor },
           )}
         </p>
         {error && <p className="rounded border border-danger/40 px-2.5 py-1.5 text-danger">{error}</p>}

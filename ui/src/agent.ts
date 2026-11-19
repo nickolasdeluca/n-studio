@@ -1,4 +1,4 @@
-// The agent: the user's own Claude Code, run by the backend in a terminal
+// The agent: the user's own Claude Code or Codex, run by the backend in a terminal
 // and drawn here with xterm.js. What it asks of the window (a query to run
 // where the user sees it, SQL to open) is answered here too, and so is the
 // user's sharing of rows with it.
@@ -6,7 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { create } from "zustand";
-import { api, errorText, SHARE_CHARS, SHARE_ROWS, type AgentRequest, type Cell, type SharedColumn } from "./api";
+import { api, errorText, SHARE_CHARS, SHARE_ROWS, type AgentKind, type AgentRequest, type Cell, type SharedColumn } from "./api";
 import { activatePanel, editorTitle, openEditor } from "./dock";
 import { useEditors } from "./editors";
 import { t } from "./i18n";
@@ -15,6 +15,27 @@ import { editCount } from "./rowEdits";
 import { useStore } from "./store";
 
 const FOLDER = "n-studio.agent.folder";
+const KIND = "n-studio.agent.kind";
+
+/** What each agent is called, who runs the model behind it, and how it is
+ *  installed */
+export const AGENTS: Record<AgentKind, { name: string; short: string; vendor: string; install: string }> = {
+  claude: {
+    name: "Claude Code",
+    short: "Claude",
+    vendor: "Anthropic",
+    install: "Install it from claude.com/claude-code, sign in once in a terminal with `claude`, then start it here again.",
+  },
+  codex: {
+    name: "Codex",
+    short: "Codex",
+    vendor: "OpenAI",
+    install: "Install it with `npm install -g @openai/codex` or `brew install --cask codex`, sign in once in a terminal with `codex`, then start it here again.",
+  },
+};
+
+/** The name of the agent chosen, as the window shows it */
+export const agentName = () => AGENTS[useAgent.getState().kind].name;
 
 export type AgentStatus = "stopped" | "starting" | "running" | "ended";
 
@@ -22,7 +43,10 @@ interface AgentState {
   status: AgentStatus;
   /** The start running, which its events are told by */
   run: number | null;
-  /** How the last one ended: 127 is the shell not finding `claude` */
+  /** Which agent starts; kept across runs */
+  kind: AgentKind;
+  setKind(kind: AgentKind): void;
+  /** How the last one ended: 127 is the shell not finding the agent */
   exitCode: number | null;
   error: string | null;
   /** The project folder it starts in, kept across runs; none, and it works
@@ -31,6 +55,14 @@ interface AgentState {
   setFolder(folder: string | null): void;
   start(): Promise<void>;
   stop(): Promise<void>;
+}
+
+function savedKind(): AgentKind {
+  try {
+    return localStorage.getItem(KIND) === "codex" ? "codex" : "claude";
+  } catch {
+    return "claude";
+  }
 }
 
 function savedFolder(): string | null {
@@ -47,6 +79,18 @@ export const useAgent = create<AgentState>()((set, get) => ({
   exitCode: null,
   error: null,
   folder: savedFolder(),
+  kind: savedKind(),
+
+  setKind(kind) {
+    const { status } = get();
+    if (status === "running" || status === "starting") return;
+    try {
+      localStorage.setItem(KIND, kind);
+    } catch {
+      // Chosen again next time
+    }
+    set({ kind, exitCode: null, error: null });
+  },
 
   setFolder(folder) {
     try {
@@ -59,7 +103,7 @@ export const useAgent = create<AgentState>()((set, get) => ({
   },
 
   async start() {
-    const { folder, status } = get();
+    const { folder, kind, status } = get();
     if (status === "starting") return;
     listening();
     const term = terminal();
@@ -67,7 +111,7 @@ export const useAgent = create<AgentState>()((set, get) => ({
     fit.fit();
     set({ status: "starting", error: null, exitCode: null, run: null });
     try {
-      const run = await api.agentStart(folder, term.cols, term.rows);
+      const run = await api.agentStart(kind, folder, term.cols, term.rows);
       set({ status: "running", run });
       term.focus();
     } catch (e) {
@@ -152,7 +196,7 @@ export function listening() {
     listen<{ run: number; code: number | null }>("agent-exit", (e) => {
       if (e.payload.run !== useAgent.getState().run) return;
       useAgent.setState({ status: "ended", run: null, exitCode: e.payload.code });
-      terminal().write(`\r\n\x1b[2m${t("[Claude Code ended]")}\x1b[0m\r\n`);
+      terminal().write(`\r\n\x1b[2m${t("[{agent} ended]", { agent: agentName() })}\x1b[0m\r\n`);
     }),
     listen<AgentRequest>("agent-request", (e) => void answer(e.payload)),
   ]).catch(() => {
@@ -188,7 +232,7 @@ function registrationName(id: string): string {
 }
 
 function open(request: Extract<AgentRequest, { kind: "open" }>) {
-  const title = `Claude · ${request.title ?? registrationName(request.registration)}`;
+  const title = `${AGENTS[useAgent.getState().kind].short} · ${request.title ?? registrationName(request.registration)}`;
   const tab = openEditor(request.registration, request.sql, { title });
   return tab ? { ok: true } : { ok: false, error: t("The database is not connected in N Studio.") };
 }
@@ -216,7 +260,7 @@ function agentEditor(registration: string, sql: string): string | null {
     activatePanel(tab.id);
     return tab.id;
   }
-  const id = openEditor(registration, sql, { title: `Claude · ${registrationName(registration)}` });
+  const id = openEditor(registration, sql, { title: `${AGENTS[useAgent.getState().kind].short} · ${registrationName(registration)}` });
   if (!id) return null;
   editorsState.setTxOptions(id, { readOnly: true });
   editors.set(registration, id);
@@ -283,7 +327,7 @@ export function fitShare(rows: Cell[][]): Cell[][] {
  *  prompt, for the user to go on with: the number of rows shared */
 export async function share(registration: string, label: string, columns: SharedColumn[], rows: Cell[][]): Promise<number> {
   const { run } = useAgent.getState();
-  if (run === null) throw new Error(t("Claude Code is not running."));
+  if (run === null) throw new Error(t("{agent} is not running.", { agent: agentName() }));
   const kept = fitShare(rows);
   const id = await api.agentShare(run, label, registrationName(registration), columns, kept);
   activatePanel("agent");

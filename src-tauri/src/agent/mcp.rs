@@ -326,6 +326,29 @@ mod tests {
         assert!(text.contains("list_databases"), "{text}\n{}", String::from_utf8_lossy(&output.stderr));
     }
 
+    /// Codex itself, signed in, reaches the server as the panel configures
+    /// it (the overrides, the token in the environment) and calls a tool
+    /// that is approved without asking. It spends a little of the account it
+    /// is signed in to: `cargo test -p n-studio -- --ignored codex_calls`
+    #[test]
+    #[ignore]
+    fn codex_calls_a_tool() {
+        let server = Server::listen(Arc::new(Fake)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new("codex")
+            .arg("exec")
+            .args(["--skip-git-repo-check", "--ephemeral", "-C"])
+            .arg(dir.path())
+            .args(crate::agent::codex_args(&format!("http://127.0.0.1:{}/mcp", server.port())))
+            .arg("Call the list_databases tool of the n-studio server once and reply with the value of `called` it returns, nothing else.")
+            .env(crate::agent::TOKEN_VAR, TOKEN)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("codex is installed");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("list_databases"), "{text}\n{}", String::from_utf8_lossy(&output.stderr));
+    }
+
     #[test]
     fn what_is_not_json_or_not_a_method_is_an_error() {
         assert_eq!(handle("{", no_tool).unwrap()["error"]["code"], -32700);

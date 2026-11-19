@@ -45,7 +45,7 @@ fn view_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         view.prepend_items(&[
             &MenuItem::with_id(app, "view:explorer", "Database Explorer", true, None::<&str>)?,
             &MenuItem::with_id(app, "view:objects", "Objects", true, None::<&str>)?,
-            &MenuItem::with_id(app, "view:agent", "Claude Code", true, None::<&str>)?,
+            &MenuItem::with_id(app, "view:agent", "AI Agent", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "view:reset", "Reset Layout", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,

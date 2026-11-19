@@ -30,7 +30,7 @@ import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { AdminView, ServiceOutput } from "./AdminPanels";
 import { AgentPanel } from "./AgentPanel";
-import { useAgent } from "../agent";
+import { AGENTS, agentName, useAgent } from "../agent";
 import { CompareView } from "./CompareView";
 import { DebugView } from "./DebugView";
 import { DiagramView } from "./DiagramView";
@@ -86,7 +86,7 @@ const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeader
 const panels: { id: string; title: string; right?: boolean }[] = [
   { id: "explorer", title: "Database Explorer" },
   { id: "objects", title: "Objects" },
-  { id: "agent", title: "Claude Code", right: true },
+  { id: "agent", title: "AI Agent", right: true },
 ];
 
 export function Shell() {
@@ -137,10 +137,16 @@ export function Shell() {
     dock.current = e.api;
     setDock(e.api);
     if (!restore(e.api)) defaultLayout(e.api);
+    // The panel is called after the agent chosen, which a stopped panel can
+    // change
+    e.api.getPanel("agent")?.api.setTitle(agentName());
+    useAgent.subscribe((now, before) => {
+      if (now.kind !== before.kind) e.api.getPanel("agent")?.api.setTitle(agentName());
+    });
     void restoreSession();
     // An editor's tab closing ends its transaction
     e.api.onDidRemovePanel((panel) => {
-      // Claude Code goes with its panel
+      // The agent goes with its panel
       if (panel.id === "agent") {
         void useAgent.getState().stop();
         agentClosed(e.api);
@@ -324,11 +330,13 @@ function showPanel(api: DockviewApi, id: string) {
   if (!known) return;
   const panel = api.getPanel(id);
   if (panel) panel.api.setActive();
+  else if (id === "agent") openBesideCenter(api, id, agentName());
   else if (known.right) openBesideCenter(api, id, t(known.title));
   else api.addPanel({ id, component: id, title: t(known.title), position: { direction: "left" }, initialWidth: 300 });
 }
 
 function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
+  const agent = AGENTS[useAgent((s) => s.kind)].name;
   const selection = useStore((s) => s.selection);
   const connected = useStore((s) => (selection ? !!s.servers[selection.id] : false));
   const connecting = useStore((s) => (selection ? !!s.connecting[selection.id] : false));
@@ -367,7 +375,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
       <ToolButton icon="folder" label={t("Open Script… (Ctrl+O)")} disabled={!connected} onClick={() => id && openScripts(id)} />
       <ToolButton icon="run" label={t("Script Executive (Ctrl+F12)")} onClick={() => openExecutive(id ?? null)} />
-      <ToolButton icon="agent" label={t("Claude Code")} onClick={() => dock.current && showPanel(dock.current, "agent")} />
+      <ToolButton icon="agent" label={t("AI Agent ({agent})", { agent })} onClick={() => dock.current && showPanel(dock.current, "agent")} />
       <Separator />
       <ToolButton
         icon="edit"

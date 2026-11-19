@@ -6,7 +6,7 @@ import { create } from "zustand";
 import type { ColumnInfo, ColumnKind, ColumnSummary } from "../api";
 import { AGGREGATES, aggregatesFor, shortOf, valueOf, type Aggregate } from "../summary";
 import { useContextMenu } from "./ContextMenu";
-import { useAgent } from "../agent";
+import { agentName, useAgent } from "../agent";
 import { useEditors, type EditorTab } from "../editors";
 import { t } from "../i18n";
 import { Icon } from "../icons";
@@ -170,7 +170,7 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
         {agentRunning && (
           <Nav
             icon="agent"
-            label={t("Share with Claude Code…")}
+            label={t("Share with {agent}…", { agent: agentName() })}
             disabled={tab.running || tab.fetching || result.rows === 0}
             onClick={() =>
               useStore.getState().openDialog({ type: "share", tab: tab.id, row: onNew || total === 0 ? null : cursor.row - added })

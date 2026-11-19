@@ -1,19 +1,22 @@
-// Claude Code, in a terminal: the folder it works in, starting and stopping
-// it, and what to do when it is not installed.
+// The agent, Claude Code or Codex, in a terminal: which one, the folder it
+// works in, starting and stopping it, and what to do when it is not
+// installed.
 import { open } from "@tauri-apps/plugin-dialog";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
-import { attachTerminal, fitTerminal, listening, useAgent } from "../agent";
+import { AGENTS, attachTerminal, fitTerminal, listening, useAgent } from "../agent";
+import type { AgentKind } from "../api";
 import { baseName } from "../dock";
 import { t } from "../i18n";
 import { Icon } from "../icons";
 
-/** What the shell says when it finds no `claude` */
+/** What the shell says when it finds no agent */
 const NOT_FOUND = 127;
 
 export function AgentPanel() {
   const host = useRef<HTMLDivElement>(null);
-  const { status, folder, error, exitCode } = useAgent();
+  const { status, folder, error, exitCode, kind } = useAgent();
+  const agent = AGENTS[kind];
   const running = status === "running" || status === "starting";
 
   useEffect(() => {
@@ -27,18 +30,32 @@ export function AgentPanel() {
   }, []);
 
   const pick = async () => {
-    const picked = await open({ title: t("The Project Folder Claude Code Works In"), directory: true, defaultPath: folder ?? undefined });
+    const picked = await open({ title: t("The Project Folder {agent} Works In", { agent: agent.name }), directory: true, defaultPath: folder ?? undefined });
     if (typeof picked === "string") useAgent.getState().setFolder(picked);
   };
 
   return (
     <div className="flex h-full flex-col bg-panel">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-1.5 text-muted">
+        <select
+          value={kind}
+          disabled={running}
+          onChange={(e) => useAgent.getState().setKind(e.target.value as AgentKind)}
+          title={running ? t("Stop the agent to change it") : t("The agent to run")}
+          aria-label={t("The agent to run")}
+          className="h-6 shrink-0 rounded border border-line bg-panel px-1 text-fg hover:bg-hover disabled:text-muted disabled:hover:bg-transparent"
+        >
+          {(Object.keys(AGENTS) as AgentKind[]).map((k) => (
+            <option key={k} value={k}>
+              {AGENTS[k].name}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
           onClick={pick}
           disabled={running}
-          title={folder ?? t("No project: Claude Code works with the databases only. Choose a folder to give it a project's files too.")}
+          title={folder ?? t("No project: {agent} works with the databases only. Choose a folder to give it a project's files too.", { agent: agent.name })}
           className="flex h-6 min-w-0 items-center gap-1.5 rounded px-1.5 text-fg hover:bg-hover disabled:text-muted disabled:hover:bg-transparent"
         >
           <Icon name="folder" size={13} />
@@ -60,7 +77,7 @@ export function AgentPanel() {
           <button
             type="button"
             onClick={() => void useAgent.getState().stop()}
-            className="flex h-6 items-center gap-1.5 rounded px-2 text-fg hover:bg-hover"
+            className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-2 text-fg hover:bg-hover"
           >
             <Icon name="stop" size={12} className="text-danger" />
             {t("Stop")}
@@ -69,10 +86,10 @@ export function AgentPanel() {
           <button
             type="button"
             onClick={() => void useAgent.getState().start()}
-            className="flex h-6 items-center gap-1.5 rounded px-2 text-fg hover:bg-hover disabled:text-faint disabled:hover:bg-transparent"
+            className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-2 text-fg hover:bg-hover disabled:text-faint disabled:hover:bg-transparent"
           >
             <Icon name="run" size={12} className="text-ok" />
-            {status === "ended" ? t("Start Again") : t("Start Claude Code")}
+            {status === "ended" ? t("Start Again") : t("Start {agent}", { agent: agent.name })}
           </button>
         )}
       </div>
@@ -82,13 +99,14 @@ export function AgentPanel() {
             <p className="text-danger">{error}</p>
           ) : exitCode === NOT_FOUND ? (
             <p>
-              <span className="text-danger">{t("Claude Code was not found.")} </span>
-              {t("Install it from claude.com/claude-code, sign in once in a terminal with `claude`, then start it here again.")}
+              <span className="text-danger">{t("{agent} was not found.", { agent: agent.name })} </span>
+              {t(agent.install)}
             </p>
           ) : status === "stopped" ? (
             <p>
               {t(
-                "Claude Code runs here with your own sign-in: with the databases only, or in a project folder you choose. It can read the metadata of the connected databases and run SELECTs whose rows only you see; rows reach it only when you share them from a grid.",
+                "{agent} runs here with your own sign-in: with the databases only, or in a project folder you choose. It can read the metadata of the connected databases and run SELECTs whose rows only you see; rows reach it only when you share them from a grid.",
+                { agent: agent.name },
               )}
             </p>
           ) : null}

@@ -51,7 +51,7 @@ const MAX_COLUMNS: usize = 300;
 
 /// How long a query may take, the user's fetching included, and how long
 /// the window may take to open an editor
-const RUN_WAIT: Duration = Duration::from_secs(60 * 60);
+pub(super) const RUN_WAIT: Duration = Duration::from_secs(60 * 60);
 const OPEN_WAIT: Duration = Duration::from_secs(60);
 /// How long the user may take over a connection's password, and the window
 /// over a disconnection

@@ -1,7 +1,7 @@
-//! The agent: the user's own Claude Code, run in a terminal panel, with a
-//! way into the connected databases that this app gives the shape of.
+//! The agent: the user's own Claude Code or Codex, run in a terminal panel,
+//! with a way into the connected databases that this app gives the shape of.
 //!
-//! The app does not talk to a model. It starts `claude` in a
+//! The app does not talk to a model. It starts `claude` or `codex` in a
 //! pseudo-terminal, in a folder the user picked, signed in as the user
 //! signed it in, and hands it an MCP server of its own (`mcp`) whose tools
 //! (`tools`) read metadata and never data. A query the agent runs is shown
@@ -192,7 +192,7 @@ impl Utf8Stream {
     }
 }
 
-/// What the agent is told about the app it runs in, after Claude Code's own
+/// What the agent is told about the app it runs in, after its own
 /// instructions
 fn instructions() -> String {
     format!(
@@ -243,64 +243,172 @@ fn write_private(path: &PathBuf, text: &str) -> AppResult<()> {
     file.write_all(text.as_bytes()).map_err(|e| AppError::storage(path, e))
 }
 
+/// Which agent the panel runs: the user's own, as installed on the machine
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// Anthropic's Claude Code, `claude`
+    Claude,
+    /// OpenAI's Codex CLI, `codex`
+    Codex,
+}
+
+impl Kind {
+    fn program(self) -> &'static str {
+        match self {
+            Kind::Claude => "claude",
+            Kind::Codex => "codex",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Claude => "Claude Code",
+            Kind::Codex => "Codex",
+        }
+    }
+}
+
+/// The environment variable Codex reads the MCP server's token from: kept
+/// out of its arguments, which any process of the user's can list
+const TOKEN_VAR: &str = "N_STUDIO_MCP_TOKEN";
+
+/// What an agent is started with
+struct Launch {
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    /// Written for this start, and deleted when it ends
+    files: Vec<PathBuf>,
+}
+
 /// The tools the agent runs without asking the user each time: they read
 /// metadata, or what the user shared
 fn allowed_tools() -> String {
     tools::READ_ONLY.iter().map(|t| format!("mcp__{SERVER_NAME}__{t}")).collect::<Vec<_>>().join(",")
 }
 
-/// `claude` with its arguments, started as the user's shell would find it
-fn command(config: &PathBuf, prompt: &PathBuf) -> CommandBuilder {
-    let args = [
+/// Claude Code takes its MCP server and its instructions as files
+fn claude_launch(dir: &std::path::Path, url: &str, token: &str) -> AppResult<Launch> {
+    let config = dir.join(format!("mcp-{}.json", std::process::id()));
+    let prompt = dir.join(format!("instructions-{}.md", std::process::id()));
+    let mcp_config = serde_json::json!({
+        "mcpServers": {
+            SERVER_NAME: {
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": format!("Bearer {token}") },
+            }
+        }
+    });
+    write_private(&config, &mcp_config.to_string())?;
+    write_private(&prompt, &instructions())?;
+    Ok(Launch { args: claude_args(&config, &prompt), env: Vec::new(), files: vec![config, prompt] })
+}
+
+fn claude_args(config: &std::path::Path, prompt: &std::path::Path) -> Vec<String> {
+    vec![
         "--mcp-config".to_string(),
         config.display().to_string(),
         "--append-system-prompt-file".to_string(),
         prompt.display().to_string(),
         "--allowedTools".to_string(),
         allowed_tools(),
+    ]
+}
+
+/// A TOML string: JSON's escapes are TOML's too
+fn toml_string(text: &str) -> String {
+    Value::String(text.to_string()).to_string()
+}
+
+/// Codex takes its MCP server and its instructions as overrides of its
+/// configuration, for this run only: the user's `~/.codex/config.toml` is
+/// not touched. The token comes from the environment.
+fn codex_launch(url: &str, token: &str) -> Launch {
+    Launch { args: codex_args(url), env: vec![(TOKEN_VAR.to_string(), token.to_string())], files: Vec::new() }
+}
+
+fn codex_args(url: &str) -> Vec<String> {
+    let server = format!("mcp_servers.{SERVER_NAME}");
+    // A query waits for the user's editor as long as the tool lets it
+    let timeout = tools::RUN_WAIT.as_secs() + 60;
+    let mut overrides = vec![
+        format!("{server}.url={}", toml_string(url)),
+        format!("{server}.bearer_token_env_var={}", toml_string(TOKEN_VAR)),
+        format!("{server}.startup_timeout_sec=30"),
+        format!("{server}.tool_timeout_sec={timeout}"),
+        // Everything asks, but what reads metadata or what was shared
+        format!("{server}.default_tools_approval_mode=\"prompt\""),
     ];
+    overrides.extend(tools::READ_ONLY.iter().map(|t| format!("{server}.tools.{t}.approval_mode=\"approve\"")));
+    overrides.push(format!("developer_instructions={}", toml_string(&instructions())));
+    overrides.into_iter().flat_map(|o| ["-c".to_string(), o]).collect()
+}
+
+/// The agent with its arguments, started as the user's shell would find it
+fn command(kind: Kind, launch: &Launch) -> CommandBuilder {
     #[cfg(unix)]
     {
         // A GUI app gets a short PATH; the user's login shell knows where
-        // `claude` is. The arguments go through the environment, never
+        // the agent is. The arguments go through the environment, never
         // through the shell's quoting.
         let shell = std::env::var("SHELL")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }.to_string());
         let mut cmd = CommandBuilder::new(shell);
-        let mut script = String::from("exec claude");
-        for (i, arg) in args.iter().enumerate() {
+        let mut script = format!("exec {}", kind.program());
+        for (i, arg) in launch.args.iter().enumerate() {
             let var = format!("N_STUDIO_AGENT_ARG{i}");
             cmd.env(&var, arg);
             script.push_str(&format!(" \"${var}\""));
+        }
+        for (name, value) in &launch.env {
+            cmd.env(name, value);
         }
         cmd.args(["-l", "-i", "-c", &script]);
         cmd
     }
     #[cfg(windows)]
     {
-        let mut cmd = CommandBuilder::new(windows_claude());
-        cmd.args(args);
+        let program = windows_program(kind);
+        let mut cmd = if program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd")) {
+            // npm's shim is a batch file, which only cmd.exe runs
+            let mut cmd = CommandBuilder::new("cmd.exe");
+            cmd.arg("/d");
+            cmd.arg("/c");
+            cmd.arg(program);
+            cmd
+        } else {
+            CommandBuilder::new(program)
+        };
+        cmd.args(&launch.args);
+        for (name, value) in &launch.env {
+            cmd.env(name, value);
+        }
         cmd
     }
 }
 
-/// `claude.exe` on the PATH, else where its installer puts it
+/// The agent's program on the PATH, else where its installer puts it
 #[cfg(windows)]
-fn windows_claude() -> PathBuf {
-    let on_path = std::env::var_os("PATH")
-        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("claude.exe")).find(|p| p.is_file()));
+fn windows_program(kind: Kind) -> PathBuf {
+    let program = kind.program();
+    let names = [format!("{program}.exe"), format!("{program}.cmd")];
+    let on_path = std::env::var_os("PATH").and_then(|path| {
+        names.iter().find_map(|name| std::env::split_paths(&path).map(|dir| dir.join(name)).find(|p| p.is_file()))
+    });
     on_path
         .or_else(|| {
             std::env::var_os("USERPROFILE")
-                .map(|home| PathBuf::from(home).join(".local").join("bin").join("claude.exe"))
+                .map(|home| PathBuf::from(home).join(".local").join("bin").join(&names[0]))
+                .filter(|p| p.is_file())
         })
-        .unwrap_or_else(|| PathBuf::from("claude.exe"))
+        .unwrap_or_else(|| PathBuf::from(&names[0]))
 }
 
 /// Where the agent works without a project: an empty folder of the app's
-/// own, so it reaches none of the user's files and Claude Code asks to
+/// own, so it reaches none of the user's files and the agent asks to
 /// trust it once
 fn workspace(app: &AppHandle) -> AppResult<PathBuf> {
     let dir = app
@@ -317,13 +425,13 @@ fn workspace(app: &AppHandle) -> AppResult<PathBuf> {
 /// workspace, in a terminal of `cols` by `rows`, ending one that runs.
 /// Returns which start it is, which its output and its end are told with.
 #[tauri::command]
-pub async fn agent_start(app: AppHandle, folder: Option<String>, cols: u16, rows: u16) -> AppResult<u64> {
-    tauri::async_runtime::spawn_blocking(move || start(&app, folder, cols, rows))
+pub async fn agent_start(app: AppHandle, kind: Kind, folder: Option<String>, cols: u16, rows: u16) -> AppResult<u64> {
+    tauri::async_runtime::spawn_blocking(move || start(&app, kind, folder, cols, rows))
         .await
         .map_err(|e| AppError::Connection { message: format!("The worker failed: {e}") })?
 }
 
-fn start(app: &AppHandle, folder: Option<String>, cols: u16, rows: u16) -> AppResult<u64> {
+fn start(app: &AppHandle, kind: Kind, folder: Option<String>, cols: u16, rows: u16) -> AppResult<u64> {
     let agents = app.state::<Agents>();
     agents.stop();
     let folder = match folder.filter(|f| !f.is_empty()) {
@@ -344,32 +452,23 @@ fn start(app: &AppHandle, folder: Option<String>, cols: u16, rows: u16) -> AppRe
     let run = agents.next.fetch_add(1, Ordering::Relaxed) + 1;
     let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
 
-    let dir = start_dir(app)?;
-    let config = dir.join(format!("mcp-{}.json", std::process::id()));
-    let prompt = dir.join(format!("instructions-{}.md", std::process::id()));
-    let mcp_config = serde_json::json!({
-        "mcpServers": {
-            SERVER_NAME: {
-                "type": "http",
-                "url": format!("http://127.0.0.1:{port}/mcp"),
-                "headers": { "Authorization": format!("Bearer {token}") },
-            }
-        }
-    });
-    write_private(&config, &mcp_config.to_string())?;
-    write_private(&prompt, &instructions())?;
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let launch = match kind {
+        Kind::Claude => claude_launch(&start_dir(app)?, &url, &token)?,
+        Kind::Codex => codex_launch(&url, &token),
+    };
 
     let pty = native_pty_system()
         .openpty(PtySize { rows: rows.max(2), cols: cols.max(10), pixel_width: 0, pixel_height: 0 })
         .map_err(|e| AppError::Connection { message: format!("No terminal could be opened: {e}") })?;
-    let mut cmd = command(&config, &prompt);
+    let mut cmd = command(kind, &launch);
     cmd.cwd(&folder);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     let mut child = pty
         .slave
         .spawn_command(cmd)
-        .map_err(|e| AppError::Connection { message: format!("Claude Code could not be started: {e}") })?;
+        .map_err(|e| AppError::Connection { message: format!("{} could not be started: {e}", kind.name()) })?;
     // The child has its end; ours reads when it is the only one left open
     drop(pty.slave);
     let killer = child.clone_killer();
@@ -388,7 +487,7 @@ fn start(app: &AppHandle, folder: Option<String>, cols: u16, rows: u16) -> AppRe
         writer,
         master: pty.master,
         killer,
-        files: vec![config, prompt],
+        files: launch.files,
         shared: Vec::new(),
     });
 
@@ -536,7 +635,7 @@ mod tests {
 
     /// `claude` starts in a terminal as the panel starts it: found by the
     /// login shell, its arguments taken. Needs Claude Code installed:
-    /// `cargo test -p n-studio -- --ignored claude_starts`
+    /// `cargo test -p n-studio -- --ignored starts_in_a_terminal`
     #[test]
     #[ignore]
     fn claude_starts_in_a_terminal() {
@@ -545,10 +644,24 @@ mod tests {
         let prompt = dir.path().join("instructions.md");
         fs::write(&config, r#"{"mcpServers":{}}"#).unwrap();
         fs::write(&prompt, instructions()).unwrap();
+        let launch = Launch { args: claude_args(&config, &prompt), env: Vec::new(), files: Vec::new() };
+        starts_in_a_terminal(Kind::Claude, &launch, dir.path());
+    }
+
+    /// The same for `codex`, with every override it is given: Codex refuses
+    /// to start on one it cannot read. Needs Codex installed.
+    #[test]
+    #[ignore]
+    fn codex_starts_in_a_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        starts_in_a_terminal(Kind::Codex, &codex_launch("http://127.0.0.1:9/mcp", "token"), dir.path());
+    }
+
+    fn starts_in_a_terminal(kind: Kind, launch: &Launch, dir: &std::path::Path) {
         let pty =
             native_pty_system().openpty(PtySize { rows: 30, cols: 100, pixel_width: 0, pixel_height: 0 }).unwrap();
-        let mut cmd = command(&config, &prompt);
-        cmd.cwd(dir.path());
+        let mut cmd = command(kind, launch);
+        cmd.cwd(dir);
         cmd.env("TERM", "xterm-256color");
         let mut child = pty.slave.spawn_command(cmd).unwrap();
         drop(pty.slave);
@@ -575,8 +688,30 @@ mod tests {
         }
         let alive = child.try_wait().unwrap().is_none();
         let _ = child.kill();
-        assert!(alive, "claude ended:\n{seen}");
-        assert!(!seen.contains("command not found") && !seen.contains("unknown option"), "{seen}");
+        assert!(alive, "{} ended:\n{seen}", kind.program());
+        for refusal in ["command not found", "unknown option", "Error loading config", "invalid", "unknown variant"] {
+            assert!(!seen.contains(refusal), "{seen}");
+        }
+    }
+
+    #[test]
+    fn codex_is_given_the_server_and_asks_for_what_is_not_metadata() {
+        let launch = codex_launch("http://127.0.0.1:4242/mcp", "secret-token");
+        let args = launch.args.join(" ");
+        assert!(args.contains(r#"mcp_servers.n-studio.url="http://127.0.0.1:4242/mcp""#));
+        assert!(args.contains(r#"mcp_servers.n-studio.bearer_token_env_var="N_STUDIO_MCP_TOKEN""#));
+        assert!(args.contains(r#"mcp_servers.n-studio.default_tools_approval_mode="prompt""#));
+        assert!(args.contains(r#"mcp_servers.n-studio.tools.get_object_ddl.approval_mode="approve""#));
+        for asked in ["run_query", "open_in_editor", "connect_database", "disconnect_database"] {
+            assert!(!args.contains(&format!(".tools.{asked}.")), "{asked} runs without asking");
+        }
+        // The token goes by the environment only
+        assert!(!args.contains("secret-token"));
+        assert_eq!(launch.env, vec![("N_STUDIO_MCP_TOKEN".to_string(), "secret-token".to_string())]);
+        // Each override is a -c of its own, the instructions one TOML string
+        assert_eq!(launch.args.iter().filter(|a| *a == "-c").count() * 2, launch.args.len());
+        let instructions = launch.args.last().unwrap().strip_prefix("developer_instructions=").unwrap();
+        assert_eq!(serde_json::from_str::<String>(instructions).unwrap(), super::instructions());
     }
 
     #[test]

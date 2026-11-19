@@ -465,26 +465,33 @@ the 256 MB limit has been split, not run.
 
 ### M11 — The agent
 
-Claude Code inside the app, the way an editor hosts it: N Studio does not
-talk to a model itself. It runs the user's own `claude`, signed in to the
-user's own account, in a terminal panel, and gives it a way into the
-databases that the app decides the shape of. Claude Code owns the sign-in,
+Claude Code or Codex inside the app, the way an editor hosts them: N Studio
+does not talk to a model itself. It runs the user's own `claude` or `codex`,
+whichever the panel is set to, signed in to the user's own account, in a
+terminal panel, and gives it a way into the databases that the app decides
+the shape of. The agent owns the sign-in,
 the conversation, the permissions it asks for and the files of the project
 folder it is started in, when it is given one; N Studio owns what the agent may know about a
 database. That is the line the owner drew: **the agent sees metadata, never
 data, unless the user hands it some.**
 
 - **The panel** (`src-tauri/src/agent.rs`, `ui/src/components/AgentPanel.tsx`):
-  a pseudo-terminal running `claude`, drawn with xterm.js: in a project folder
+  a pseudo-terminal running `claude` or `codex`, drawn with xterm.js: in a project folder
   the user picks, or, with none, in an empty folder of the app's own
   (`agent/workspace` in its data folder), where it reaches none of the
-  user's files and works with the databases only. The app finds `claude` as the user's shell would (a login shell
+  user's files and works with the databases only. The app finds the agent as the user's shell would (a login shell
   on macOS and Linux, whose `PATH` a GUI app does not get); without it, the
   panel says how to install it. Closing the panel ends the process.
 - **A door of its own** (`src-tauri/src/agent/mcp.rs`): an MCP server on
   `127.0.0.1`, a port the system picks and a token made for each start,
-  handed to `claude` with `--mcp-config`. Nothing but the process the panel
-  started knows the token. Its tools:
+  handed to `claude` with `--mcp-config`, and to `codex` as `-c` overrides
+  of its configuration for that run (`mcp_servers.n-studio.*`, the token
+  read from an environment variable, the instructions as
+  `developer_instructions`), so the user's `~/.codex/config.toml` is never
+  written. Nothing but the process the panel started knows the token. What
+  reads metadata runs without asking (`--allowedTools` for Claude Code,
+  `approval_mode = "approve"` for Codex); everything else is asked for each
+  time. Its tools:
   - `list_databases`: every registration, connected or not, with its
     explorer folder; a connected one with server version, dialect and
     character set. No server, path or user: the agent has no need of them.
@@ -494,7 +501,7 @@ data, unless the user hands it some.**
   - `disconnect_database`: refused while the user has a transaction open
     on the database (the agent's own read-only editors aside), a statement
     running, grid changes not applied or an object viewer's changes not
-    compiled. Both are asked for by Claude Code each time.
+    compiled. Both are asked for by the agent each time.
   - `list_objects`, `get_object_ddl`, `get_dependencies`, `find_columns`:
     what `fb-meta` reads, as the extract and the object viewers show it,
     less what holds values: a generator's current value is left out.
@@ -523,7 +530,8 @@ data, unless the user hands it some.**
   told an id to read them by.
 
 Decided with the owner: no sign-in of the app's own (a third party may not
-offer a Claude subscription's sign-in; the user's `claude` already has one);
+offer a Claude subscription's sign-in; the user's `claude` already has one,
+and `codex` its own);
 metadata only by default; queries the agent runs are shown to the user and
 not to it.
 
