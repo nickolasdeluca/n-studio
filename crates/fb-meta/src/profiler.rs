@@ -93,8 +93,25 @@ fn run(conn: &Connection, sql: &str, params: Vec<Value>) -> Result<Vec<Value>> {
     let tx = conn.begin(TxOptions::default())?;
     match conn.execute(tx, sql, params, ExecuteOptions { plan: false, performance: false }) {
         Ok(done) => {
-            conn.end(tx, TxEnd::Commit)?;
-            Ok(done.rows.into_iter().next().unwrap_or_default())
+            // A select's row is read from its cursor
+            let row = match done.cursor {
+                Some(cursor) => {
+                    let fetched = conn.fetch(cursor, 1);
+                    conn.close_cursor(cursor).ok();
+                    fetched.map(|f| f.rows.into_iter().next())
+                }
+                None => Ok(done.rows.into_iter().next()),
+            };
+            match row {
+                Ok(row) => {
+                    conn.end(tx, TxEnd::Commit)?;
+                    Ok(row.unwrap_or_default())
+                }
+                Err(e) => {
+                    conn.end(tx, TxEnd::Rollback).ok();
+                    Err(e)
+                }
+            }
         }
         Err(e) => {
             conn.end(tx, TxEnd::Rollback).ok();
@@ -108,8 +125,7 @@ fn run(conn: &Connection, sql: &str, params: Vec<Value>) -> Result<Vec<Value>> {
 pub fn start(conn: &Connection, description: &str) -> Result<i64> {
     let row = run(
         conn,
-        "execute block (description varchar(255) = ?) returns (id bigint) as \
-         begin id = rdb$profiler.start_session(:description); end",
+        "select rdb$profiler.start_session(cast(? as varchar(255))) from rdb$database",
         vec![Value::Text(description.to_string())],
     )?;
     Ok(row.first().and_then(Value::as_i64).unwrap_or(0))
