@@ -498,6 +498,31 @@ pub fn run_service(
     cancel: &AtomicBool,
     mut on_line: impl FnMut(&str),
 ) -> Result<ServiceEnd> {
+    // The server takes one change of a database's settings at a time:
+    // Firebird 3 and later refuse two together as an "incompatible switch
+    // combination", and 2.5 makes only one of them
+    if let ServiceTask::Properties { database, changes } = task {
+        if changes.len() > 1 {
+            for change in changes {
+                let one = ServiceTask::Properties { database: database.clone(), changes: vec![change.clone()] };
+                match run_one(params, &one, cancel, &mut on_line)? {
+                    ServiceEnd::Finished => {}
+                    other => return Ok(other),
+                }
+            }
+            return Ok(ServiceEnd::Finished);
+        }
+    }
+    run_one(params, task, cancel, &mut on_line)
+}
+
+/// One service action, run to its end
+fn run_one(
+    params: &ConnectParams,
+    task: &ServiceTask,
+    cancel: &AtomicBool,
+    mut on_line: &mut dyn FnMut(&str),
+) -> Result<ServiceEnd> {
     let block = start_block(task)?;
     let mut service = attach(params)?;
     service.start(&block)?;
