@@ -71,8 +71,10 @@ wrapping and list layout, without changing the tokens.
 ### Keep your work
 
 Scripts retain their encoding and line endings when saved — `WIN1252` with
-CR LF as well as UTF-8. Open tabs return on the next launch, and each editor's
-History tab searches queries for that database.
+CR LF as well as UTF-8. Each database keeps its workspace, as IBExpert does:
+its SQL editors close when it disconnects and come back, every page and
+the one in front, when it connects again, in the same run or a later one.
+Each editor's History tab searches queries for that database.
 
 Blobs load on demand beside the grid as text, images, formatted JSON or XML,
 or hex. Save the full value to a file when you need it outside the app.

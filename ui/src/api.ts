@@ -350,12 +350,13 @@ export interface SessionTab {
   pages: SessionPage[];
   /** Which was in front */
   page: number;
+  /** It was the one in front of its registration's editors */
+  front: boolean;
 }
 
+/** Every database's SQL editors, each one's in the order they were shown */
 export interface Session {
   tabs: SessionTab[];
-  /** Which of them was in front */
-  active: number | null;
 }
 
 /** A name, and how SQL writes it in its database */

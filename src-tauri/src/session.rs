@@ -1,5 +1,6 @@
-//! The editors that were open, kept across runs: `session.json`, beside the
-//! registrations. It holds what the user typed and has nowhere else, so it
+//! The editors of each database, kept while it is not connected and across
+//! runs: `session.json`, beside the registrations. A database's editors
+//! close when it disconnects and come back when it connects. It holds what the user typed and has nowhere else, so it
 //! is replaced whole and never half-written; and it is a convenience, so a
 //! file that cannot be read is an empty session and not an app that does
 //! not start.
@@ -37,14 +38,16 @@ pub struct SessionTab {
     pages: Vec<SessionPage>,
     /// Which of them was in front
     page: usize,
+    /// It was the one of its registration's editors in front
+    #[serde(default)]
+    front: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
+    /// Every registration's, each one's in the order they were shown
     tabs: Vec<SessionTab>,
-    /// Which of them was in front
-    active: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -79,14 +82,16 @@ impl From<FileV1> for Session {
         let tabs = old
             .tabs
             .into_iter()
-            .map(|tab| SessionTab {
+            .enumerate()
+            .map(|(i, tab)| SessionTab {
                 registration: tab.registration,
                 title: tab.title,
                 pages: vec![SessionPage { file: tab.file, format: tab.format, text: tab.text }],
                 page: 0,
+                front: old.active == Some(i),
             })
             .collect();
-        Session { tabs, active: old.active }
+        Session { tabs }
     }
 }
 
@@ -150,15 +155,16 @@ mod tests {
                     title: "SQL Editor 1".into(),
                     pages: vec![page(None, Some("select 1 from rdb$database"))],
                     page: 0,
+                    front: false,
                 },
                 SessionTab {
                     registration: "r1".into(),
                     title: "SQL Editor 2".into(),
                     pages: vec![page(None, Some("select 2 from rdb$database")), page(Some("/scripts/report.sql"), None)],
                     page: 1,
+                    front: true,
                 },
             ],
-            active: Some(1),
         }
     }
 
@@ -178,8 +184,8 @@ mod tests {
             "format":{"encoding":"win1252","crlf":true},"text":null}],"active":0}"#;
         fs::write(dir.path().join("session.json"), v1).unwrap();
         let session = SessionStore::new(dir.path()).load();
-        assert_eq!(session.active, Some(0));
         assert_eq!(session.tabs.len(), 1);
+        assert!(session.tabs[0].front);
         assert_eq!(session.tabs[0].title, "report.sql");
         assert_eq!(session.tabs[0].page, 0);
         assert_eq!(session.tabs[0].pages[0].file, Some(PathBuf::from("/scripts/report.sql")));
@@ -192,7 +198,7 @@ mod tests {
         let store = SessionStore::new(dir.path());
         fs::write(dir.path().join("session.json"), b"{ not json").unwrap();
         assert_eq!(store.load(), Session::default());
-        fs::write(dir.path().join("session.json"), br#"{"version":99,"tabs":[],"active":null}"#).unwrap();
+        fs::write(dir.path().join("session.json"), br#"{"version":99,"tabs":[]}"#).unwrap();
         assert_eq!(store.load(), Session::default());
         // And is written over by the next one
         store.save(sample()).unwrap();
