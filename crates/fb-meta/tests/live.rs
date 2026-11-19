@@ -58,7 +58,13 @@ fn the_fixture_lists_what_it_seeded() {
     let Some(conn) = connect() else { return };
     let fb3 = Generation::of(conn.info()) == Generation::Fb3;
     let major = conn.info().major;
-    let list = |kind| objects(&conn, kind).unwrap();
+    // What the fixture seeded: on Firebird 5 the profiler test, running
+    // beside this one, makes its own PLG$ tables, sequence and indices
+    let list = |kind| {
+        let mut found = objects(&conn, kind).unwrap();
+        found.retain(|o| !o.name.starts_with("PLG$"));
+        found
+    };
 
     assert_eq!(names(&list(ObjectKind::Domain)), ["D_FLAG", "D_ID", "D_MONEY"]);
     let mut tables = vec!["BULK_ROWS", "CMP_SOURCE", "CMP_TARGET", "PEDIDO", "PEDIDO_ITEM", "TIPOS"];
