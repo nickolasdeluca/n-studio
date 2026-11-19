@@ -603,10 +603,18 @@ fn the_monitor_sees_this_connection() {
     assert_eq!(monitor::statement_text(&conn, this.id).unwrap(), None);
 
     let memory = monitor::memory(&conn).unwrap();
-    assert!(memory.used > 0 && memory.peak >= memory.used, "{memory:?}");
+    // The database's own counters are 0 on Classic, where each connection is
+    // a process: only the attachments' are there on every architecture
+    assert!(memory.peak >= memory.used, "{memory:?}");
     assert!(memory.attachments.iter().any(|a| a.id == own[0].id && a.used > 0), "{memory:?}");
     // Its own statement is the one reading: never listed
     assert!(memory.statements.iter().all(|s| s.attachment != own[0].id), "{memory:?}");
+    // Long transactions: never its own, each a minute old at least, none of
+    // them a read-only read committed one, the oldest first
+    let long = &memory.transactions;
+    assert!(long.len() <= 5 && long.iter().all(|t| t.attachment != own[0].id && t.seconds >= 60), "{long:?}");
+    assert!(long.iter().all(|t| t.snapshot || !t.read_only), "{long:?}");
+    assert!(long.windows(2).all(|w| w[0].seconds >= w[1].seconds), "{long:?}");
     // Idle ones included, it is still there. Only its own are counted: the
     // other tests' statements come and go between two readings.
     assert!(monitor::statements(&conn, false).unwrap().iter().any(|s| s.attachment == own[0].id));
@@ -1070,4 +1078,54 @@ fn the_fixtures_routines_debug_to_what_they_return() {
     let text = |s: &str| Some(s.to_string());
     assert_eq!(seen.rows, [[text("7001"), text("kept too")], [text("11"), text("kept too")]]);
     assert!(served("select id from cmp_target where id >= 7001").is_empty());
+}
+
+/// The profiler of Firebird 5 measures what its attachment runs, writes it
+/// down when it finishes, and forgets it when told to. It writes to the
+/// database: only against the fixture.
+#[test]
+fn fixture_the_profiler_measures_lines_and_plans() {
+    use fb_meta::profiler;
+    let Some(conn) = fixture() else { return };
+    if conn.info().major < 5 {
+        return;
+    }
+    let id = profiler::start(&conn, "live test").unwrap();
+    assert!(id > 0);
+    conn.query("select count(*) from rdb$relations r join rdb$fields f on f.rdb$field_name = r.rdb$relation_name", vec![])
+        .unwrap();
+    conn.query(
+        "execute block returns (n integer) as\n\
+         declare i integer = 0;\n\
+         begin\n\
+           while (i < 100) do\n\
+             i = i + 1;\n\
+           n = i;\n\
+           suspend;\n\
+         end",
+        vec![],
+    )
+    .unwrap();
+    profiler::finish(&conn).unwrap();
+
+    assert!(profiler::sessions(&conn).unwrap().iter().any(|s| s.id == id && s.finished.is_some()));
+    let profile = profiler::report(&conn, id).unwrap().expect("the session written down");
+    assert_eq!(profile.session.description.as_deref(), Some("live test"));
+    let block = profile
+        .statements
+        .iter()
+        .find(|s| s.sql.as_deref().is_some_and(|sql| sql.contains("while (i < 100)")))
+        .expect("the block among the statements");
+    assert!(block.runs >= 1 && block.total > 0, "{block:?}");
+    // The loop's body ran a hundred times
+    assert!(profile.lines.iter().any(|l| l.statement == block.id && l.count >= 100), "{:?}", profile.lines);
+    let join = profile
+        .statements
+        .iter()
+        .find(|s| s.sql.as_deref().is_some_and(|sql| sql.contains("join rdb$fields")))
+        .expect("the join among the statements");
+    assert!(profile.sources.iter().any(|s| s.statement == join.id && s.access_path.is_some()), "{:?}", profile.sources);
+
+    profiler::delete(&conn, id).unwrap();
+    assert_eq!(profiler::report(&conn, id).unwrap(), None);
 }

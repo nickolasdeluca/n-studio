@@ -293,6 +293,29 @@ pub struct Memory {
     /// A sort's buffers are the statement's memory, so a large sort shows
     /// here; what a sort wrote to temporary files the server does not tell.
     pub statements: Vec<MemoryUse>,
+    /// The transactions open a long while that hold garbage back, the
+    /// oldest first: see [`LONG_TRANSACTION`]
+    pub transactions: Vec<OpenTransaction>,
+}
+
+/// Seconds a transaction is open before it is a long one
+pub const LONG_TRANSACTION: i64 = 60;
+
+/// A transaction open a long while. While it is, no record version made
+/// after it started can be collected as garbage, in any table: the database
+/// grows and reading it slows down. A read-only read committed transaction
+/// holds nothing back, so it is not one of these.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct OpenTransaction {
+    pub id: i64,
+    pub attachment: i64,
+    pub user: Option<String>,
+    pub address: Option<String>,
+    /// The client program, when the server knows it
+    pub process: Option<String>,
+    pub seconds: i64,
+    pub snapshot: bool,
+    pub read_only: bool,
 }
 
 pub fn memory(conn: &Connection) -> Result<Memory> {
@@ -347,7 +370,36 @@ pub fn memory(conn: &Connection) -> Result<Memory> {
             peak: flag_or(r, 6),
         })
         .collect();
+    memory.transactions = long_transactions(conn)?;
     Ok(memory)
+}
+
+/// The transactions open longer than [`LONG_TRANSACTION`] that hold garbage
+/// back, the oldest first, five at most
+pub fn long_transactions(conn: &Connection) -> Result<Vec<OpenTransaction>> {
+    let sql = format!(
+        "select first 5 t.mon$transaction_id, t.mon$attachment_id, a.mon$user, a.mon$remote_address, \
+         a.mon$remote_process, datediff(second from t.mon$timestamp to current_timestamp), \
+         t.mon$isolation_mode, t.mon$read_only \
+         from mon$transactions t join mon$attachments a on a.mon$attachment_id = t.mon$attachment_id \
+         where t.mon$attachment_id <> current_connection \
+         and datediff(second from t.mon$timestamp to current_timestamp) >= {LONG_TRANSACTION} \
+         and not (t.mon$read_only = 1 and t.mon$isolation_mode >= 2) \
+         order by t.mon$timestamp"
+    );
+    Ok(rows(conn, &sql, vec![])?
+        .iter()
+        .map(|r| OpenTransaction {
+            id: flag_or(r, 0),
+            attachment: flag_or(r, 1),
+            user: r.text(2),
+            address: r.text(3),
+            process: r.text(4),
+            seconds: flag_or(r, 5),
+            snapshot: flag_or(r, 6) < 2,
+            read_only: r.flag(7),
+        })
+        .collect())
 }
 
 /// The whole text of a statement, while it is still there

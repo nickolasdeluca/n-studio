@@ -22,8 +22,9 @@ import { Icon } from "../icons";
 import { openRecorded, startMonitor, stopMonitor, useMonitor, type MonitorSession } from "../monitor";
 import { useStore } from "../store";
 import { TextButton } from "./ObjectViewer";
+import { ProfilerPane } from "./ProfilerPane";
 
-type Tab = "overview" | "live" | "statements" | "connections" | "memory" | "sessions";
+type Tab = "overview" | "live" | "statements" | "connections" | "memory" | "sessions" | "profiler";
 const tabs: [Tab, string][] = [
   ["overview", "Overview"],
   ["live", "Live"],
@@ -32,6 +33,8 @@ const tabs: [Tab, string][] = [
   ["memory", "Sorts and memory"],
   ["sessions", "Recorded sessions"],
 ];
+/** Firebird 5 and later */
+const profilerTab: [Tab, string] = ["profiler", "Profiler"];
 
 const standings = {
   recording: "Recording",
@@ -55,6 +58,15 @@ function took(ms: number): string {
   if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)} min`;
   if (ms >= 1000) return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)} s`;
   return `${ms >= 10 || Number.isInteger(ms) ? Math.round(ms) : ms.toFixed(1)} ms`;
+}
+
+/** How long something has been open: minutes, then hours, then days */
+function openFor(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ${minutes % 60} min`;
+  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 
 function bytes(value: number): string {
@@ -283,8 +295,26 @@ interface Finding {
 }
 
 /** What stands out in the statements that cost the most */
-function findings(top: TraceStatement[], sorting: TraceStatement[], errors: number, session: MonitorSession): Finding[] {
+function findings(
+  top: TraceStatement[],
+  sorting: TraceStatement[],
+  errors: number,
+  session: MonitorSession,
+  memory: TraceMemory | null,
+): Finding[] {
   const found: Finding[] = [];
+  // First: while one is open, the garbage of every table piles up
+  for (const tx of memory?.transactions.slice(0, 2) ?? []) {
+    found.push({
+      kind: t("Long"),
+      tone: tx.seconds >= 3600 ? "text-danger" : "text-warn",
+      text: t("Transaction {id} has been open for {time}. While it is, no record version made since it started can be collected as garbage, in any table.", {
+        id: tx.id,
+        time: openFor(tx.seconds),
+      }),
+      where: [`ATT_${tx.attachment}`, tx.user, tx.process, tx.address, tx.read_only ? t("read only") : null].filter(Boolean).join(" · "),
+    });
+  }
   // A program that connects for every statement or two: connecting costs
   // more than most statements do
   const connects = session.seconds.reduce((sum, s) => sum + s.connects, 0);
@@ -350,7 +380,8 @@ function Overview({ session, open }: { session: MonitorSession; open(seq: number
   const statements = recent.reduce((sum, s) => sum + s.statements, 0);
   const average = statements ? recent.reduce((sum, s) => sum + s.average * s.statements, 0) / statements : 0;
   const errors = session.seconds.reduce((sum, s) => sum + s.errors, 0);
-  const found = findings(byNatural, sorting, errors, session);
+  const memory = useTraceMemory(session);
+  const found = findings(byNatural, sorting, errors, session, memory);
   const tiles: [string, string, string, string?][] = [
     [t("Statements per second"), n(mean((s) => s.statements)), t("{n} events recorded", { n: n(session.tick.total) })],
     [t("Average statement time"), took(average), t("95 in 100 under {time}", { time: took(Math.max(0, ...recent.map((s) => s.high))) })],
@@ -797,9 +828,8 @@ function Statements({ session, open }: { session: MonitorSession; open(seq: numb
   );
 }
 
-function MemoryTab({ session, open }: { session: MonitorSession; open(seq: number): void }) {
-  const [by, setBy] = useState("memory");
-  const sorting = useTop(session, by, true, 200);
+/** What the monitoring tables said last, read again every five seconds while it records */
+function useTraceMemory(session: MonitorSession): TraceMemory | null {
   const [memory, setMemory] = useState<TraceMemory | null>(null);
   const recording = session.tick.standing === "recording";
   useEffect(() => {
@@ -816,6 +846,13 @@ function MemoryTab({ session, open }: { session: MonitorSession; open(seq: numbe
       clearInterval(timer);
     };
   }, [session.run, recording]);
+  return memory;
+}
+
+function MemoryTab({ session, open }: { session: MonitorSession; open(seq: number): void }) {
+  const [by, setBy] = useState("memory");
+  const sorting = useTop(session, by, true, 200);
+  const memory = useTraceMemory(session);
 
   const who = (m: { attachment: number; user: string | null; address: string | null }) =>
     [`ATT_${m.attachment}`, m.user, m.address].filter(Boolean).join(" · ");
@@ -941,6 +978,7 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
   const recording = session?.tick.standing === "recording";
   // Firebird 2.5 has no plan but the short one
   const trees = useStore((s) => (s.servers[panel.registration]?.major ?? 0) >= 3);
+  const profiling = useStore((s) => (s.servers[panel.registration]?.major ?? 0) >= 5);
 
   // The clock of a recording
   useEffect(() => {
@@ -978,7 +1016,8 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
   );
 
   let pane: ReactNode;
-  if (tab === "connections") pane = grids;
+  if (tab === "profiler") pane = <ProfilerPane registration={panel.registration} />;
+  else if (tab === "connections") pane = grids;
   else if (tab === "sessions") pane = <Sessions panel={panel} session={session} />;
   else if (!session) pane = nothing;
   else if (tab === "overview") pane = <Overview session={session} open={open} />;
@@ -1075,7 +1114,7 @@ export function ActivityMonitor({ panel, grids }: { panel: AdminPanel; grids: Re
         </p>
       )}
       <div className="flex h-7 shrink-0 items-stretch border-b border-line bg-panel-2" role="tablist">
-        {tabs.map(([id, label]) => (
+        {(profiling ? [...tabs, profilerTab] : tabs).map(([id, label]) => (
           <button
             key={id}
             role="tab"

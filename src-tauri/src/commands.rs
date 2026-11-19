@@ -42,6 +42,11 @@ pub struct AppState {
     /// a connection of its own, to the same server as the same user. Kept
     /// only while connected, and only in memory.
     params: Mutex<HashMap<String, ConnectParams>>,
+    /// The connection the activity monitor's grids read through, by
+    /// registration, with the attachment id of the registration's own: reading
+    /// the monitoring tables is a query, and a slow one on a busy server, that
+    /// should neither wait behind the user's work nor hold it up
+    monitors: Mutex<HashMap<String, (Arc<Connection>, i64)>>,
     pub(crate) session_store: SessionStore,
     pub(crate) history: History,
     pub(crate) style_store: StyleStore,
@@ -66,6 +71,7 @@ impl AppState {
             debuggers: Debuggers::default(),
             traces,
             params: Mutex::default(),
+            monitors: Mutex::default(),
             session_store,
             history,
             style_store,
@@ -95,6 +101,24 @@ impl AppState {
         registry.all().iter().map(|r| (r.clone(), sessions.get(&r.id).cloned())).collect()
     }
 
+    /// The connection the monitor reads through, opened the first time it is
+    /// asked for, and the attachment id of the registration's own connection
+    pub(crate) fn monitor(&self, id: &str) -> AppResult<(Arc<Connection>, i64)> {
+        if let Some(found) = self.monitors.lock().unwrap().get(id) {
+            return Ok(found.clone());
+        }
+        let main = self.session(id)?;
+        let own = main.query("select current_connection from rdb$database", vec![])?.rows[0][0].as_i64().unwrap_or(0);
+        let monitor = (Arc::new(Connection::open(&self.params(id)?)?), own);
+        // Asked twice at once, the first one opened is the one kept
+        Ok(self.monitors.lock().unwrap().entry(id.to_string()).or_insert(monitor).clone())
+    }
+
+    /// The monitor's connection is done with, or failed: the next read opens another
+    pub(crate) fn forget_monitor(&self, id: &str) {
+        self.monitors.lock().unwrap().remove(id);
+    }
+
     /// How a connected registration reaches its server
     pub(crate) fn params(&self, id: &str) -> AppResult<ConnectParams> {
         self.params
@@ -108,6 +132,7 @@ impl AppState {
     fn forget(&self, id: &str) {
         self.sessions.lock().unwrap().remove(id);
         self.params.lock().unwrap().remove(id);
+        self.monitors.lock().unwrap().remove(id);
         self.results.close_session(id);
     }
 }
@@ -288,6 +313,7 @@ pub async fn connect(
         let info = conn.info().clone();
         // Replacing a session drops the old connection, which detaches.
         state.results.close_session(&id);
+        state.forget_monitor(&id);
         state.params.lock().unwrap().insert(id.clone(), params);
         state.sessions.lock().unwrap().insert(id, Arc::new(conn));
         Ok(info)

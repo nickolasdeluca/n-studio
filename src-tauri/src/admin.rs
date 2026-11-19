@@ -229,12 +229,23 @@ fn statements_section(list: &[monitor::Statement], own: Option<i64>) -> GridSect
     section
 }
 
-fn monitor_sections(conn: &Connection, idle: bool) -> AppResult<Vec<GridSection>> {
-    let attachments = monitor::attachments(conn)?;
-    let own = attachments.iter().find(|a| a.current).map(|a| a.id);
+/// The monitor's grids, read through `conn`, a connection of the monitor's
+/// own: what it is and runs is left out, and `own`, the attachment the
+/// user works on, is the one shown as this connection
+fn monitor_sections(conn: &Connection, own: i64, idle: bool) -> AppResult<Vec<GridSection>> {
+    let mut attachments = monitor::attachments(conn)?;
+    let reader = attachments.iter().find(|a| a.current).map(|a| a.id);
+    attachments.retain(|a| Some(a.id) != reader);
+    for a in &mut attachments {
+        a.current = a.id == own;
+    }
+    let mut statements = monitor::statements(conn, !idle)?;
+    statements.retain(|s| Some(s.attachment) != reader);
+    let mut transactions = monitor::transactions(conn)?;
+    transactions.retain(|t| Some(t.attachment) != reader);
     let mut sections = vec![attachments_section(&attachments)];
-    sections.push(statements_section(&monitor::statements(conn, !idle)?, own));
-    sections.push(transactions_section(&monitor::transactions(conn)?));
+    sections.push(statements_section(&statements, Some(own)));
+    sections.push(transactions_section(&transactions));
     if let Some(database) = monitor::database(conn)? {
         sections.push(database_section(&database));
     }
@@ -296,9 +307,12 @@ fn users_section(list: &[User], major: u32) -> GridSection {
 #[tauri::command]
 pub async fn admin_view(app: AppHandle, id: String, view: String, idle: bool) -> AppResult<Vec<GridSection>> {
     blocking(app, move |state| {
+        if view == "monitor" {
+            let (monitor, own) = state.monitor(&id)?;
+            return monitor_sections(&monitor, own, idle).inspect_err(|_| state.forget_monitor(&id));
+        }
         let conn = state.session(&id)?;
         match view.as_str() {
-            "monitor" => monitor_sections(&conn, idle),
             "users" => Ok(vec![users_section(&user_list(&conn, &state.params(&id)?)?, conn.info().major)]),
             _ => invalid(format!("There is no view {view}.")),
         }

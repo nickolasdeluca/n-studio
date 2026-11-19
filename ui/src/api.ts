@@ -654,11 +654,78 @@ export interface MemoryUse {
   peak: number;
 }
 
+/** A transaction open a long while, holding garbage back */
+export interface OpenTransaction {
+  id: number;
+  attachment: number;
+  user: string | null;
+  address: string | null;
+  process: string | null;
+  seconds: number;
+  snapshot: boolean;
+  read_only: boolean;
+}
+
 export interface TraceMemory {
   used: number;
   peak: number;
   attachments: MemoryUse[];
   statements: MemoryUse[];
+  /** Open a minute or more, the oldest first */
+  transactions: OpenTransaction[];
+}
+
+/** A session of the Firebird 5 profiler, written down in the database */
+export interface ProfileSession {
+  id: number;
+  attachment: number;
+  user: string | null;
+  description: string | null;
+  started: string | null;
+  finished: string | null;
+}
+
+/** Times are nanoseconds */
+export interface ProfiledStatement {
+  id: number;
+  parent: number | null;
+  kind: string | null;
+  package: string | null;
+  routine: string | null;
+  sql: string | null;
+  runs: number;
+  total: number;
+}
+
+export interface ProfiledLine {
+  statement: number;
+  line: number;
+  column: number;
+  count: number;
+  min: number;
+  max: number;
+  total: number;
+}
+
+export interface ProfiledSource {
+  statement: number;
+  cursor: number;
+  cursor_name: string | null;
+  cursor_line: number | null;
+  id: number;
+  parent: number | null;
+  level: number;
+  access_path: string | null;
+  opens: number;
+  fetches: number;
+  total: number;
+}
+
+export interface Profile {
+  session: ProfileSession;
+  statements: ProfiledStatement[];
+  lines: ProfiledLine[];
+  sources: ProfiledSource[];
 }
 
 export interface TraceRecorded {
@@ -1071,6 +1138,11 @@ export const api = {
   traceTop: (run: number, by: string, sortingOnly: boolean, limit: number) =>
     invoke<TraceStatement[]>("trace_top", { run, by, sortingOnly, limit }),
   traceMemory: (run: number) => invoke<TraceMemory | null>("trace_memory", { run }),
+  profilerStart: (id: string) => invoke<number>("profiler_start", { id }),
+  profilerFinish: (id: string, discard: boolean) => invoke<void>("profiler_finish", { id, discard }),
+  profilerSessions: (id: string) => invoke<ProfileSession[]>("profiler_sessions", { id }),
+  profilerReport: (id: string, profile: number) => invoke<Profile>("profiler_report", { id, profile }),
+  profilerDelete: (id: string, profile: number) => invoke<void>("profiler_delete", { id, profile }),
   traceSessions: (id: string) => invoke<TraceRecorded[]>("trace_sessions", { id }),
   /** Opens a recorded session's log as the session `run` */
   /** Asks the latest release whether it is newer than this build */

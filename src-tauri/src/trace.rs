@@ -281,6 +281,9 @@ pub struct Store {
     peaks: HashMap<String, i64>,
     /// Connections made, by the program and the machine that made them
     connectors: HashMap<String, u64>,
+    /// The server could not use the session's configuration, and said why
+    /// from this notice on: it would go on recording nothing
+    refused: Option<usize>,
 }
 
 /// Who connects, as a few words: the program's file and the machine,
@@ -299,11 +302,21 @@ impl Store {
             TraceItem::Gap => self.gaps += 1,
             TraceItem::Notice(notice) => {
                 if !notice.starts_with('#') && self.notices.len() < 100 {
+                    // What the trace manager says when an attachment comes along
+                    // and the configuration does not do for it
+                    if self.refused.is_none() && notice.starts_with("Error creating trace session") {
+                        self.refused = Some(self.notices.len());
+                    }
                     self.notices.push(notice);
                 }
             }
             TraceItem::Event(event) => self.event(*event),
         }
+    }
+
+    /// Why the server would not trace, if it said so
+    pub fn refusal(&self) -> Option<String> {
+        self.refused.map(|from| self.notices[from..].join("\n"))
     }
 
     /// What the monitoring tables said about memory just now
@@ -717,18 +730,22 @@ pub async fn trace_start(app: AppHandle, id: String, run: u64, options: TraceOpt
                         } else {
                             reader.feed(piece, &mut take);
                         }
+                        if store.refused.is_some() {
+                            trace.stop.store(true, Ordering::Relaxed);
+                        }
                     }
                     if piece.is_empty() || sent.elapsed() >= Duration::from_millis(250) {
                         let _ = events.emit(TICK, trace.tick(run, 3));
                         sent = Instant::now();
                     }
                 });
-                let (total, gaps) = {
+                let (total, gaps, refusal) = {
                     let mut store = trace.store.lock().unwrap();
                     reader.finish(&mut |item, _| store.take(item));
-                    (store.total, store.gaps)
+                    (store.total, store.gaps, store.refusal())
                 };
                 let standing = match (&end, &written) {
+                    _ if refusal.is_some() => (Standing::Failed, refusal),
                     (Err(e), _) => (Standing::Failed, Some(AppError::from(e.clone()).to_string())),
                     (_, Err(e)) => (Standing::Failed, Some(format!("{}: {e}", trace.log.display()))),
                     (Ok(TraceEnd::Stopped), _) => (Standing::Stopped, None),
@@ -1011,6 +1028,22 @@ mod tests {
     }
 
     #[test]
+    fn a_configuration_the_server_refused_is_why_the_session_failed() {
+        let fine = store("Trace session ID 3 started\n");
+        assert_eq!(fine.refusal(), None);
+        let refused = store(
+            "Trace session ID 3 started\n\
+             Error creating trace session for database \"/data/sales.fdb\":\n\
+             error while parsing trace configuration\n\
+             \tline 4: element \"log_nothing\": unknown parameter\n",
+        );
+        let why = refused.refusal().expect("refused");
+        assert!(why.starts_with("Error creating trace session"), "{why}");
+        assert!(why.ends_with("unknown parameter"), "{why}");
+        assert!(!why.contains("ID 3"), "{why}");
+    }
+
+    #[test]
     fn connections_are_counted_by_who_makes_them() {
         let attach = |at: &str, id: i64, port: u32| {
             format!(
@@ -1047,8 +1080,8 @@ mod tests {
             used,
             peak,
         };
-        store.sample(Memory { used: 10, peak: 20, attachments: vec![], statements: vec![running("select 5 from T", 300, 900)] });
-        store.sample(Memory { used: 10, peak: 20, attachments: vec![], statements: vec![running("select 6 from T", 400, 500)] });
+        store.sample(Memory { used: 10, peak: 20, attachments: vec![], statements: vec![running("select 5 from T", 300, 900)], ..Default::default() });
+        store.sample(Memory { used: 10, peak: 20, attachments: vec![], statements: vec![running("select 6 from T", 400, 500)], ..Default::default() });
         assert_eq!(store.top("memory", true, 10)[0].memory, 900);
         assert_eq!(store.detail(0).unwrap().statement.unwrap().memory, 900);
         assert_eq!(store.memory.as_ref().unwrap().statements[0].used, 400);
