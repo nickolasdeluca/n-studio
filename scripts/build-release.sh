@@ -105,13 +105,16 @@ release() {
 
     # What an install asks for: each system's file and its signature, as the
     # release holds them. GitHub writes a space in a file's name as a dot.
-    local assets exe image
+    local assets exe image deb
     assets="$(gh release view "$tag" --json assets -q '.assets[].name')"
     exe="$(printf '%s\n' "$assets" | grep -- '-setup\.exe$' | head -1)"
     image="$(printf '%s\n' "$assets" | grep -- '\.AppImage$' | head -1)"
+    deb="$(printf '%s\n' "$assets" | grep -- '\.deb$' | head -1)"
     [ -n "$image" ] || die "Release $tag has no AppImage."
+    [ -n "$deb" ] || die "Release $tag has no .deb."
     printf '%s\n' "$assets" | grep -qx -- "$exe.sig" || die "Release $tag has no signature for $exe: was the workflow given the updater's key?"
     printf '%s\n' "$assets" | grep -qx -- "$image.sig" || die "Release $tag has no signature for $image."
+    printf '%s\n' "$assets" | grep -qx -- "$deb.sig" || die "Release $tag has no signature for $deb."
     signature() { gh release download "$tag" -p "$1" -O - | tr -d '\n'; }
     local base="$REPO_URL/releases/download/$tag" mac
     mac="$(basename "$archive")"
@@ -124,6 +127,8 @@ release() {
     "darwin-aarch64": { "signature": "$(cat "$archive.sig")", "url": "$base/$mac" },
     "darwin-x86_64": { "signature": "$(cat "$archive.sig")", "url": "$base/$mac" },
     "windows-x86_64": { "signature": "$(signature "$exe.sig")", "url": "$base/$exe" },
+    "linux-x86_64-appimage": { "signature": "$(signature "$image.sig")", "url": "$base/$image" },
+    "linux-x86_64-deb": { "signature": "$(signature "$deb.sig")", "url": "$base/$deb" },
     "linux-x86_64": { "signature": "$(signature "$image.sig")", "url": "$base/$image" }
   }
 }

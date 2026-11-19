@@ -32,8 +32,9 @@ pub struct Available {
     current: String,
     /// The release's page, for its notes and for fetching it by hand
     page: &'static str,
-    /// Whether this install can replace itself: on Linux only an AppImage
-    /// can, a package being the package manager's to replace
+    /// Whether this install can replace itself: on Linux an AppImage, and a
+    /// `.deb`, which the package manager installs after asking for the
+    /// administrator's password; any other install is fetched by hand
     installable: bool,
 }
 
@@ -42,6 +43,15 @@ struct Progress {
     received: u64,
     /// `None` when the server did not say how much there is
     total: Option<u64>,
+}
+
+/// See [`Available::installable`]. The bundler marks each Linux build with
+/// the package it went into.
+fn installable() -> bool {
+    use tauri::utils::{config::BundleType, platform::bundle_type};
+    !cfg!(target_os = "linux")
+        || std::env::var_os("APPIMAGE").is_some()
+        || bundle_type() == Some(BundleType::Deb)
 }
 
 fn failed(e: tauri_plugin_updater::Error) -> AppError {
@@ -61,7 +71,7 @@ pub async fn update_check(app: AppHandle, found: State<'_, Found>) -> AppResult<
         version: update.version.clone(),
         current: update.current_version.clone(),
         page: PAGE,
-        installable: !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some(),
+        installable: installable(),
     });
     *found.0.lock().unwrap() = update;
     Ok(available)
