@@ -11,6 +11,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText, type Action, type CellKind, type GridRow, type GridSection, type ObjectRef, type RowEditing, type TabContent } from "../api";
 import { extractMetadata, startAction } from "../actions";
+import { nextSort, sortedOrder, type GridSort } from "../gridSort";
 import { openEditor, openObject } from "../dock";
 import { useEditors } from "../editors";
 import { catalogCompletion, completionList } from "../complete";
@@ -183,19 +184,35 @@ export function Section(props: {
   const showMenu = useContextMenu((m) => m.show);
   const body = useRef<HTMLTableSectionElement>(null);
   const bar = !!section.title || section.actions.length > 0;
+  // Sorted by a header: `current` is a place in the rows as they are shown
+  const [sort, setSort] = useState<GridSort | null>(null);
+  const valid = sort && sort.column < section.columns.length ? sort : null;
+  const order = useMemo(
+    () => sortedOrder(section.rows, valid ? section.columns[valid.column].kind : undefined, valid),
+    [section, valid],
+  );
+  const rows = useMemo(() => order.map((i) => section.rows[i]), [order, section]);
+  const sortBy = (column: number) => {
+    const next = nextSort(valid, column);
+    // The row the cursor is on stays the one it is on
+    const on = order[current];
+    const after = sortedOrder(section.rows, next ? section.columns[next.column].kind : undefined, next);
+    setSort(next);
+    if (on !== undefined) onCurrent(after.indexOf(on));
+  };
 
   const move = (row: number) => {
-    const next = Math.max(0, Math.min(section.rows.length - 1, row));
+    const next = Math.max(0, Math.min(rows.length - 1, row));
     onCurrent(next);
     body.current?.children[next]?.scrollIntoView({ block: "nearest" });
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const row = section.rows[current];
+    const row = rows[current];
     const keys: Record<string, () => void> = {
       ArrowDown: () => move(current + 1),
       ArrowUp: () => move(current - 1),
       Home: () => move(0),
-      End: () => move(section.rows.length - 1),
+      End: () => move(rows.length - 1),
       Enter: () => row?.open && open(row.open),
     };
     if (!keys[e.key]) return;
@@ -260,21 +277,28 @@ export function Section(props: {
         <table className="min-w-full border-collapse outline-none" tabIndex={0} onKeyDown={onKeyDown}>
           <thead>
             <tr>
-              {section.columns.map((column, i) => (
-                <th
-                  key={i}
-                  className={`border-r border-b border-line bg-panel-2 px-2 text-left font-semibold whitespace-nowrap text-muted ${
-                    sticky ? `sticky z-10 ${bar ? "top-7" : "top-0"}` : ""
-                  } ${column.kind === "number" ? "text-right" : column.kind === "flag" ? "text-center" : ""}`}
-                  style={{ height: 22 }}
-                >
-                  {t(column.label)}
-                </th>
-              ))}
+              {section.columns.map((column, i) => {
+                const sorted = valid?.column === i ? valid : null;
+                return (
+                  <th
+                    key={i}
+                    aria-sort={sorted ? (sorted.descending ? "descending" : "ascending") : undefined}
+                    title={t("Click to sort")}
+                    onClick={() => sortBy(i)}
+                    className={`cursor-pointer border-r border-b border-line bg-panel-2 px-2 text-left font-semibold whitespace-nowrap text-muted select-none hover:bg-hover ${
+                      sticky ? `sticky z-10 ${bar ? "top-7" : "top-0"}` : ""
+                    } ${column.kind === "number" ? "text-right" : column.kind === "flag" ? "text-center" : ""}`}
+                    style={{ height: 22 }}
+                  >
+                    {t(column.label)}
+                    {sorted && <span className="ml-1 text-accent">{sorted.descending ? "▼" : "▲"}</span>}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody ref={body}>
-            {section.rows.map((row, r) => (
+            {rows.map((row, r) => (
               <tr
                 key={r}
                 aria-selected={r === current}
