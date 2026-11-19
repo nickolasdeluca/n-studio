@@ -84,14 +84,18 @@ pub struct Catalog {
     pub references: Vec<DiagramReference>,
 }
 
-/// The kinds besides relations that statements name
-const OTHERS: [ObjectKind; 6] = [
+/// The kinds besides relations that statements name: the editor completes
+/// the first six, and opens all of them
+const OTHERS: [ObjectKind; 9] = [
     ObjectKind::Procedure,
     ObjectKind::Function,
     ObjectKind::Package,
     ObjectKind::Generator,
     ObjectKind::Exception,
     ObjectKind::Domain,
+    ObjectKind::Trigger,
+    ObjectKind::Index,
+    ObjectKind::Udf,
 ];
 
 pub fn catalog(conn: &Connection) -> Result<Catalog> {

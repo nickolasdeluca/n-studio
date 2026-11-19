@@ -7,12 +7,13 @@ import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutter, keymap, lineNumbers } from "@codemirror/view";
-import { catalogCompletion, completionList, objectAt } from "./complete";
+import { catalogCompletion, completionList, objectAt, objectLinks } from "./complete";
 import { openObject } from "./dock";
 import { editorLook, firebirdSql } from "./firebird";
 
 /** A double click on the name of something the database has opens it, as
- *  the explorer does; the word is still selected, as on any other */
+ *  the explorer does; the word is still selected, as on any other. Those
+ *  names are drawn as links (`objectLinks`). */
 function openOnDoubleClick(registration: () => string | undefined | null): Extension {
   return EditorView.domEventHandlers({
     dblclick(event, view) {
@@ -42,6 +43,7 @@ export function sqlExtensions(registration: () => string | undefined | null): Ex
     firebirdSql,
     catalogCompletion(() => registration() ?? undefined),
     openOnDoubleClick(registration),
+    objectLinks(registration),
     editorLook,
     EditorState.tabSize.of(2),
     keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),

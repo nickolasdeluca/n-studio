@@ -123,6 +123,15 @@ export const editorLook = [
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
       backgroundColor: "var(--selected) !important",
     },
+    // A name a double click opens: the accent's colour, and underlined so
+    // it is not read as a keyword, which is blue too
+    ".cm-objectLink": {
+      color: "var(--accent)",
+      textDecoration: "underline dotted",
+      textUnderlineOffset: "3px",
+      textDecorationColor: "color-mix(in srgb, var(--accent) 60%, transparent)",
+    },
+    ".cm-objectLink:hover": { textDecorationStyle: "solid", textDecorationColor: "var(--accent)" },
     ".cm-matchingBracket": { backgroundColor: "var(--selected)", outline: "1px solid var(--accent)" },
     ".cm-tooltip": { backgroundColor: "var(--panel)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" },
     ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "var(--selected)", color: "var(--text)" },

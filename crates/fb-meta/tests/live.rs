@@ -155,9 +155,11 @@ fn the_fixture_completes_its_names() {
     let reference = catalog.references.iter().find(|r| r.name == "FK_ITEM_PEDIDO").expect("FK_ITEM_PEDIDO");
     assert_eq!((reference.from.as_str(), reference.to.as_str()), ("PEDIDO_ITEM", "PEDIDO"));
     assert_eq!((&reference.from_columns, &reference.to_columns), (&vec!["PEDIDO".to_string()], &vec!["ID".to_string()]));
-    // Not a relation, and not something a statement names
+    // What DDL names, opened though not completed
+    assert_eq!(other("TIPOS_BI"), Some(ObjectKind::Trigger));
+    assert_eq!(other("IDX_ITEM_PRECO"), Some(ObjectKind::Index));
+    // A relation is not among the others
     assert_eq!(other("PEDIDO"), None);
-    assert_eq!(other("TIPOS_BI"), None);
 }
 
 fn fixture() -> Option<Connection> {

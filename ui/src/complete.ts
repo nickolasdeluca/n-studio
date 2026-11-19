@@ -19,11 +19,11 @@ import {
 } from "@codemirror/autocomplete";
 import { syntaxTree } from "@codemirror/language";
 import { EditorState, Prec, StateEffect, StateField, type Extension, type Transaction, type TransactionSpec } from "@codemirror/state";
-import { EditorView, keymap, ViewPlugin, type Command, type ViewUpdate } from "@codemirror/view";
+import { Decoration, EditorView, keymap, ViewPlugin, type Command, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { api, type CatalogRelation, type CompletionCatalog, type DiagramReference, type ObjectKind, type Word } from "./api";
 import { firebirdDialect } from "./firebird";
 import { t } from "./i18n";
-import { joinsFor, qualifier, sources, stored } from "./sqlScope";
+import { blanked, joinsFor, qualifier, sources, statementAt, stored, type Source } from "./sqlScope";
 import { useStore } from "./store";
 
 interface Names {
@@ -41,6 +41,9 @@ interface Names {
 /** By registration. Read when an editor first asks, and again after the
  *  explorer's tree is: that is what a refresh and a changed catalog do. */
 const loaded = new Map<string, Promise<Names | null>>();
+/** The last of them read, for what must be known at once: kept through a
+ *  refresh until the new one arrives */
+const ready = new Map<string, Names>();
 
 useStore.subscribe((state, before) => {
   for (const id of loaded.keys()) {
@@ -107,7 +110,7 @@ function names(catalog: CompletionCatalog): Names {
   const relations = new Map(catalog.relations.map((r) => [r.name, r]));
   const top = [
     ...catalog.relations.map((r) => word(r, { type: r.kind, boost: relationBoost[r.kind] })),
-    ...catalog.others.map((o) => word(o, { type: o.kind satisfies ObjectKind, boost: -1 })),
+    ...catalog.others.filter((o) => !OPENED_ONLY.has(o.kind)).map((o) => word(o, { type: o.kind satisfies ObjectKind, boost: -1 })),
   ];
   // Of two kinds with one name, the first the catalog gives
   const others = new Map(catalog.others.toReversed().map((o) => [o.name, o.kind]));
@@ -121,7 +124,9 @@ function namesOf(registration: string): Promise<Names | null> {
     pending = api.completionCatalog(registration).then(names, () => null);
     loaded.set(registration, pending);
     void pending.then((n) => {
-      if (!n && loaded.get(registration) === pending) loaded.delete(registration);
+      if (loaded.get(registration) !== pending) return;
+      if (n) ready.set(registration, n);
+      else loaded.delete(registration);
     });
   }
   return pending;
@@ -154,41 +159,148 @@ function columnsOf(all: Names, relation: CatalogRelation, keysFirst: boolean, bo
   return boost ? options.map((c) => ({ ...c, boost: boost + (c.boost ?? 0) })) : options;
 }
 
-/**
- * The object the name at `pos` stands for, for opening it: a relation, an
- * alias of one in the statement there, or what else the database has by
- * that name. Not a column, nor a name the database does not have.
- */
-export async function objectAt(state: EditorState, pos: number, registration: string): Promise<{ kind: ObjectKind; name: string } | null> {
-  const inside = syntaxTree(state).resolveInner(pos, 1).name;
-  if (inside === "String" || inside === "LineComment" || inside === "BlockComment") return null;
-  const line = state.doc.lineAt(pos);
-  const at = pos - line.from;
-  let written: string | null = null;
-  let from = 0;
-  for (const m of line.text.matchAll(/"(?:[^"]|"")+"|[A-Za-z_][\w$]*/g)) {
-    if (m.index <= at && at <= m.index + m[0].length) {
-      written = m[0];
-      from = m.index;
-      break;
-    }
-  }
-  if (!written) return null;
-  // After a dot it is a column, or a package's member
-  if (qualifier(line.text.slice(0, from))) return null;
+/** What is named in DDL alone: opened from the text, never completed */
+const OPENED_ONLY = new Set<ObjectKind>(["trigger", "index", "udf"]);
 
-  const all = await namesOf(registration);
-  if (!all) return null;
-  const name = stored(written);
-  const start = Math.max(0, pos - REACH);
-  const aliased = sources(state.doc.sliceString(start, Math.min(state.doc.length, pos + REACH)), pos - start).find(
-    (s) => s.alias === name,
-  );
-  const relation = all.relations.get(aliased ? aliased.relation : name);
+/** What comes before the name of what a statement reads */
+const SOURCE_LEAD = /\b(?:from|join|update|into|using)\s+$/i;
+
+/** An object's name in the text, which opens it */
+export interface Link {
+  from: number;
+  to: number;
+  kind: ObjectKind;
+  name: string;
+}
+
+/** What a name stands for, in a statement that reads from `inStatement`;
+ *  `asSource` when it is where the statement says what it reads */
+function objectNamed(all: Names, name: string, inStatement: Source[], asSource: boolean): { kind: ObjectKind; name: string } | null {
   // The catalog's own tables are not in the explorer either
-  if (relation) return relation.kind === "system" ? null : { kind: relation.kind, name: relation.name };
+  const open = (r: CatalogRelation | undefined) => (r && r.kind !== "system" ? { kind: r.kind, name: r.name } : null);
+  // An alias hides a relation of the same name
+  const aliased = inStatement.find((s) => s.alias === name);
+  if (aliased) return open(all.relations.get(aliased.relation));
+  // A column of what the statement reads is that column, though a table
+  // has its name, except where the statement names what it reads
+  if (!asSource && inStatement.some((s) => all.relations.get(s.relation)?.columns.some((c) => c.name === name))) return null;
+  const relation = all.relations.get(name);
+  if (relation) return open(relation);
   const kind = all.others.get(name);
   return kind ? { kind, name } : null;
+}
+
+/**
+ * The names between `from` and `to` that stand for an object, for opening
+ * it: a relation, an alias of one in its statement, or what else the
+ * database has by that name. Not a column, a word in a string or a comment,
+ * nor a name the database does not have.
+ */
+function linksIn(state: EditorState, all: Names, from: number, to: number): Link[] {
+  const doc = state.doc;
+  const start = Math.max(0, from - REACH);
+  const text = doc.sliceString(start, Math.min(doc.length, to + REACH));
+  const clean = blanked(text);
+  // What each statement reads from, read once for all its names
+  const read = new Map<number, Source[]>();
+  const sourcesAt = (pos: number) => {
+    const statement = statementAt(clean, pos - start).from;
+    let found = read.get(statement);
+    if (!found) read.set(statement, (found = sources(text, pos - start)));
+    return found;
+  };
+  const links: Link[] = [];
+  syntaxTree(state).iterate({
+    from,
+    to,
+    enter(node) {
+      if (node.name !== "Identifier" && node.name !== "QuotedIdentifier") return;
+      const line = doc.lineAt(node.from);
+      // After a dot it is a column, or a package's member
+      if (qualifier(line.text.slice(0, node.from - line.from))) return;
+      const asSource = SOURCE_LEAD.test(clean.slice(Math.max(0, node.from - start - 40), node.from - start));
+      const object = objectNamed(all, stored(doc.sliceString(node.from, node.to)), sourcesAt(node.from), asSource);
+      if (object) links.push({ from: node.from, to: node.to, ...object });
+    },
+  });
+  return links;
+}
+
+/** The object the name at `pos` stands for, as `linksIn` reads it */
+export async function objectAt(state: EditorState, pos: number, registration: string): Promise<{ kind: ObjectKind; name: string } | null> {
+  const all = await namesOf(registration);
+  if (!all) return null;
+  const line = state.doc.lineAt(pos);
+  const link = linksIn(state, all, line.from, line.to).find((l) => l.from <= pos && pos <= l.to);
+  return link ? { kind: link.kind, name: link.name } : null;
+}
+
+/** The catalog has been read: the links in view are looked for again */
+const catalogRead = StateEffect.define<null>();
+
+/**
+ * The names in view that a double click opens, drawn as links. Looked for
+ * in what is in view only, again as it is scrolled or changed, and once the
+ * catalog arrives: until then, and on a database without one, there are none.
+ */
+export function objectLinks(registration: () => string | undefined | null): Extension {
+  return ViewPlugin.fromClass(
+    class {
+      decorations: DecorationSet = Decoration.none;
+      names: Names | null = null;
+      /** The reading of the catalog this view waits for */
+      awaited: Promise<Names | null> | null = null;
+      /** A registration whose catalog could not be read: not asked again
+       *  at every key, only when something else reads it */
+      failed: string | null = null;
+      gone = false;
+      constructor(view: EditorView) {
+        this.find(view);
+      }
+      destroy() {
+        this.gone = true;
+      }
+      update(update: ViewUpdate) {
+        const arrived = update.transactions.some((tr) => tr.effects.some((e) => e.is(catalogRead)));
+        if (arrived || update.docChanged || update.viewportChanged || syntaxTree(update.state) !== syntaxTree(update.startState)) {
+          this.find(update.view);
+        }
+      }
+      find(view: EditorView) {
+        const id = registration();
+        if (!id || !useStore.getState().servers[id]) {
+          this.decorations = Decoration.none;
+          return;
+        }
+        const all = ready.get(id) ?? null;
+        this.names = all;
+        // Read for the first time, or again after a refresh: drawn when it comes
+        let pending = loaded.get(id);
+        if (!pending && this.failed !== id) pending = namesOf(id);
+        if (pending && pending !== this.awaited) {
+          this.awaited = pending;
+          void pending.then((n) => {
+            this.failed = n ? null : id;
+            if (n && n !== this.names && !this.gone) view.dispatch({ effects: catalogRead.of(null) });
+          });
+        }
+        if (!all) {
+          this.decorations = Decoration.none;
+          return;
+        }
+        const marks = view.visibleRanges.flatMap(({ from, to }) =>
+          linksIn(view.state, all, from, to).map((l) =>
+            Decoration.mark({
+              class: "cm-objectLink",
+              attributes: { title: t("Double-click to open {name}", { name: l.name }) },
+            }).range(l.from, l.to),
+          ),
+        );
+        this.decorations = Decoration.set(marks, true);
+      }
+    },
+    { decorations: (plugin) => plugin.decorations },
+  );
 }
 
 /** How far around the cursor a statement is looked for */
