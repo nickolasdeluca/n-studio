@@ -98,17 +98,22 @@ extracted as metadata in dependency order.
 ### Manage the server
 
 Run backup, restore, validation, sweep and statistics, read the server log,
-and manage users.
+and manage users. Change a database's settings (sweep interval, forced
+writes, page buffers, read only, reserved space), shut it down and bring it
+online, mend a corrupt one, and back it up and restore it with `nbackup`.
+Paths on the server can have accents on Firebird 3 and later.
 
 The activity monitor records everything the server runs, through a trace
 session: every statement, procedure, trigger and transaction, with its plan
 and what it cost. It shows what that adds up to (charts by the second, the
 statements that cost the most, tables read whole, sorts that held a lot of
-memory), lists each event nested under what called it, and saves each
-recording to a log file that can be opened again. It also shows who is
-connected now, with actions to disconnect an attachment or cancel a
-statement. The server may drop events when it is busier than they can be
-read; the monitor counts those gaps.
+memory, transactions left open long enough to hold garbage back), lists
+each event nested under what called it, and saves each recording to a log
+file that can be opened again. It also shows who is connected now, read on
+a connection of its own, with actions to disconnect an attachment or cancel
+a statement. The server may drop events when it is busier than they can be
+read; the monitor counts those gaps. On Firebird 5 its Profiler measures
+what the editors run, by line of PSQL and by step of each plan.
 
 ### Run scripts
 
@@ -122,7 +127,16 @@ time and rows as it runs; failures are listed by line, and an explorer shows
 what the script touches, by object kind, before anything runs.
 
 `INPUT 'file'` runs another script where it stands, found beside the one
-that names it; a failure in it is told with its file and line.
+that names it; a failure in it is told with its file and line. Its
+statements show under it in the list, to leave some out.
+
+isql's own commands work as they do there: `CREATE DATABASE` and `DROP
+DATABASE`, `OUTPUT` to write rows to a file, `SHOW`, `SET BAIL`, `EXIT` and
+`QUIT`. `SHELL` runs only when the options allow it. A select shows its
+first rows under its statement, and parameters are asked before the
+statement runs. The Compare tab shows, before anything runs, which objects
+the script creates, changes or leaves as they are, with each change line
+by line.
 
 A script can name its own database with `CONNECT` and `SET NAMES`; Add
 CONNECT writes those lines for a registered database. The password is not
@@ -179,9 +193,9 @@ overrides; your `~/.codex/config.toml` is not changed.
 - Windows and Linux installers are unsigned.
 - The app updates itself from the latest release: it asks when it opens,
   and offers the new version in the status bar (the version shown there
-  asks again when clicked). On Linux only the AppImage replaces itself; a
-  `.deb` install is told where the new version is.
-- `nbackup`, shutting a database down, changing its header settings.
+  asks again when clicked). On Linux the AppImage and the `.deb` replace
+  themselves, the `.deb` after asking for the administrator's password.
+  A `.deb` of 0.7 or before is updated by hand one last time.
 - The server's CPU, memory and lock table are not shown: Firebird does not
   report them to a client.
 - The debugger is an emulator and says what it does not follow: triggers,
@@ -268,8 +282,8 @@ system missing. `--release-only` adds the `.dmg` already in `dist/`, for when
 the workflow was still running.
 
 Publishing is also what offers the version to every install. Each installer
-an install updates itself from (the Windows setup, the AppImage, and the
-macOS app as an archive) is signed with the updater's key: the workflow's
+an install updates itself from (the Windows setup, the AppImage, the `.deb`,
+and the macOS app as an archive) is signed with the updater's key: the workflow's
 `TAURI_SIGNING_PRIVATE_KEY` secret, and the same key in a file on the Mac
 (`UPDATER_KEY_PATH`, `~/.tauri/n-studio-updater.key` by default). The script
 writes `latest.json`, with each system's file and signature, adds it and

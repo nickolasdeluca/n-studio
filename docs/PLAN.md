@@ -1,4 +1,4 @@
-# N Studio — Implementation Plan (draft for review)
+# N Studio — Implementation Plan
 
 **N** — *Any database, One IDE.* N Studio is the application; N is the brand.
 
@@ -109,7 +109,7 @@ rollback, tab close, or LRU eviction.
 
 ## 4. Milestones
 
-### M0 — Spikes (blocking, ~1–2 weeks)
+### M0 — Spikes — done
 Prove the risky assumptions before any UI is built:
 1. `rsfbclient` pure-Rust backend against Firebird **2.5, 3.0, 4.0, 5.0** in Docker —
    connect, dialect 3, SRP auth, wire compression, `WIN1252` and `UTF8` round-trip.
@@ -210,9 +210,21 @@ The two planned crates did not happen: services are a connection, and live with
 the connection in `fb-core`; the monitor and the users are catalog readers, and
 live in `fb-meta`.
 
-Left out: `nbackup`, shutting a database down and bringing it online, changing
-its header settings (sweep interval, forced writes), mending a corrupt database,
-trace sessions, and non-ASCII paths in service arguments.
+What M5 first left out came after it. Trace sessions are M8. The database's
+settings (sweep interval, forced writes, page buffers, read only, reserved
+space) are changed through the services manager as `gfix` does, only those
+the form changed, read only last since a read-only database takes no other
+change. A database is shut down (multi-user, single-user or full; ending
+every connection after some seconds, or failing if connections or
+transactions remain) and brought online again. Mending (`gfix -mend -full`)
+is there for a database that cannot be backed up, with a warning that what
+it takes out is lost. `nbackup` backs up by level and puts a database back
+together from a level 0 backup and the levels on top of it. And a path with
+letters past ASCII names the file it says: on Firebird 3 and later the
+service attach says its strings are UTF-8 (`isc_spb_utf8_filename`), where
+before the server read them in its own code page; on 2.5, which has no such
+flag, a path still has to be in the server's code page. The fixture's live
+test does each of them to a restored copy, never to the fixture itself.
 
 ### M6 — Stretch — done
 PSQL debugger (IBExpert's is an *emulator*: it parses the procedure body and executes
@@ -260,7 +272,7 @@ parameter left empty is NULL, its default not applied; BLOB variables are not
 carried. In an expression a bare name is a variable unless it is inside a
 subquery, where only `:NAME` is.
 
-### M7 — Alpha
+### M7 — Alpha — done
 M1 to M6 built what the tool does. This one is what stands between that and
 handing it to someone who uses IBExpert all day: something to install, and the
 parts of the editor's daily loop the feature milestones walked past.
@@ -309,7 +321,10 @@ imported from one, so a team formats alike). With that the first tag, `v0.1.0`, 
 `WIN1252` default are still to be run by hand.
 
 Exit criterion: a tester installs a released bundle, registers a database of
-their own and works a day in it without the source tree.
+their own and works a day in it without the source tree. Met: the owner
+works in the released app day to day, on their own databases, and closed
+the alpha with 0.7.2. Still to be run by hand, and known: a dialect 1
+database, and one whose default character set is `WIN1252`.
 
 Not in the alpha, and said to be: the keymap editor and adjustable font sizes
 (§7), languages other than English, signing and an updater, what M5 left out,
@@ -355,13 +370,29 @@ operating system counts it, the lock table and how much of a sort went to
 temporary files are not told over the wire at all: HQbird has an agent on
 the server for those, and a build of the engine of its own.
 
-Left out: the role in the service attach (a user who is an administrator
-only through `RDB$ADMIN` sees their own attachments), a session started
-with a configuration the server cannot read (it runs and records nothing;
-the server's complaint is in the text), long transactions among the
-findings, the monitoring grids on a connection of their own, the
-Firebird 5 profiler, and a run against a real server, which wants its
-owner's leave: a trace of everything is load, and its log is their SQL.
+What M8 first left out came after it:
+
+- The service attach names the connection's role, so a user who is an
+  administrator only through `RDB$ADMIN` traces every attachment.
+- A session the server cannot use its configuration for (it would run and
+  record nothing) stops, failed, with what the server said.
+- Long transactions are among the findings: those open a minute or more
+  that hold garbage back (not the read-only read committed ones), read
+  with the memory every five seconds, the oldest first.
+- The monitoring grids read on a connection of their own, opened the first
+  time and dropped when it fails or the database disconnects: a slow read
+  of `MON$` neither waits behind the user's work nor holds it up. The
+  user's own connection is the one shown as this connection.
+- The Firebird 5 profiler (`RDB$PROFILER`), a tab of the monitor: a
+  session on the registration's own connection measures what its editors
+  run, and the report shows each statement with the routines and triggers
+  it called, its plan step by step with opens, fetches and time, and its
+  PSQL lines, the costliest first. What it measured is in the database's
+  `PLG$PROF_*` tables, deleted only when asked. The fixture's Firebird 5
+  test profiles a loop and a join.
+- A short run against a real server (Firebird 4, its owner's leave given):
+  every event read back with its kind, attachment and user, every
+  statement with its time and table counts, no line left unread.
 
 ### M9 — Out of the alpha: the app updates itself — done
 
@@ -379,9 +410,16 @@ signs the app's archive and writes `latest.json` from what the release
 holds, and then publishes. Releases are no longer pre-releases:
 `releases/latest`, which installs ask, answers only for those.
 
-Left out: a `.deb` install does not replace itself (it is told where the
-new version is); nothing is fetched before the user says so; and versions
-before this one have no updater, so they are updated by hand one last time.
+A `.deb` install replaces itself too, since it came after: the bundler
+signs the `.deb` and marks the build with the package it went into, the
+release carries the signature, `latest.json` names it as
+`linux-x86_64-deb` (and the AppImage as `linux-x86_64-appimage`, keeping
+`linux-x86_64` for the installs before it), and the updater installs it
+with `dpkg -i` through `pkexec`, or `sudo` where there is none. A `.deb`
+install of 0.7 does not know it can, and is updated by hand one last time.
+
+Left out: nothing is fetched before the user says so; and versions before
+M9 have no updater, so they are updated by hand one last time.
 
 ### M10 — Script Executive — done
 
@@ -454,11 +492,19 @@ commits, unless the options say to roll back at the end. The database
 cannot be changed while a transaction a run left is active; the panel says
 to end it first. The owner decided this stays too, rather than asking.
 
-Left out: IBExpert's own language (`IBEBlock`, `ibec_*`); the statements of
-an `INPUT`'s file in the Statements tab, to pick from; `CREATE DATABASE` and `DROP DATABASE`
-(reported as not run); `SHELL`, `OUTPUT`, `SHOW` and the rest of isql's
-interactive commands (passed over, said once); parameters and showing a
-select's rows; comparing the script with the database before running it.
+Added after: `CREATE DATABASE` and `DROP DATABASE`; `OUTPUT`, which writes
+every row of the selects after it to a file; `SHOW`, answered from the
+catalog; `SET BAIL`, `EXIT` and `QUIT`; `SHELL`, run only when an option
+allows it; a select's first 50 rows under its statement; parameters asked
+as the editor asks them; the statements of an `INPUT`'s file in the
+Statements tab, to leave some out; and a Compare tab, which shows each
+object the script creates or changes as new, the same or different from
+the database, with a line diff.
+
+Left out: IBExpert's own language (`IBEBlock`, `ibec_*`), which the owner
+decided stays out; isql's other interactive commands (passed over, said
+once). Only the statements of a file the script itself reads with `INPUT`
+can be left out, not of one that file reads in turn.
 Tried by the live tests on the docker fixture, the panel in the browser
 preview, and by the owner against a real database in the app; a file near
 the 256 MB limit has been split, not run.
