@@ -338,11 +338,18 @@ impl TraceReader {
         }
     }
 
-    /// The text ended
+    /// The text ended. A session stopped while the server was writing ends
+    /// inside a line; when that line is a record's first, the record was
+    /// cut before it said what it is, and nothing of it is read.
     pub fn finish(&mut self, on_item: &mut dyn FnMut(TraceItem, &str)) {
         if !self.rest.is_empty() {
             let line = std::mem::take(&mut self.rest);
-            self.line(text(line.strip_suffix(b"\r").unwrap_or(&line)), on_item);
+            let line = text(line.strip_suffix(b"\r").unwrap_or(&line));
+            if is_header(&line) {
+                self.flush(on_item);
+                return;
+            }
+            self.line(line, on_item);
         }
         self.flush(on_item);
     }
@@ -482,6 +489,23 @@ mod tests {
         });
         assert_eq!(items.len(), 1);
         assert!(raw.starts_with("2024-05-01T10:15:42.1234 (") && raw.ends_with("3"), "{raw}");
+    }
+
+    #[test]
+    fn a_record_cut_in_its_first_line_is_not_read() {
+        // A session stopped while the server was writing: the text ends
+        // inside the next record's first line, before its kind
+        let text = "2024-05-01T10:15:40.0001 (12345:0x7f8a1c0) START_TRANSACTION\n\
+                    \t/data/sales.fdb (ATT_17, SYSDBA:NONE, NONE, <internal>)\n\
+                    \t\t(TRA_88, CONCURRENCY | NOWAIT | READ_ONLY)\n\n\
+                    2024-05-01T10:15:40.0002 (12345:0x7f8a";
+        let events = events(text);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, "START_TRANSACTION");
+        // Cut after its first line, a record is still read for what it says
+        let events = super::tests::events("2024-05-01T10:15:40.0001 (12345:0x7f8a1c0) START_TRANSACTION\n\t/data/sal");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "START_TRANSACTION");
     }
 
     #[test]
