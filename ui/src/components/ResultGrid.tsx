@@ -93,6 +93,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, Cell[][]>());
   const inflight = useRef(new Set<number>());
+  /** Counts the orders the rows have been in: a page asked for in one is
+   *  not kept once they are in another */
+  const generation = useRef(0);
   const fetching = useRef(false);
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const [widths, setWidths] = useState<number[]>(() => columns.map(initialWidth));
@@ -118,7 +121,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   // Sorted another way: every page holds other rows now
   const order = result.sort ? `${result.sort.column}:${result.sort.descending}` : "";
   useEffect(() => {
+    generation.current++;
     pages.current.clear();
+    inflight.current.clear();
     rerender();
   }, [order]);
 
@@ -154,15 +159,16 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       if (pages.current.has(page) || inflight.current.has(page)) return;
       inflight.current.add(page);
       const id = result.id;
+      const asked = generation.current;
       api
         .resultRows(id, page * PAGE, PAGE)
         .then((chunk) => {
-          if (id !== result.id) return;
+          if (id !== result.id || asked !== generation.current) return;
           pages.current.set(page, chunk);
           rerender();
         })
         .catch(() => {})
-        .finally(() => inflight.current.delete(page));
+        .finally(() => asked === generation.current && inflight.current.delete(page));
     },
     [result.id],
   );
@@ -190,7 +196,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       if (cache.size <= MAX_PAGES) break;
       if (p < firstPage || p > lastPage) cache.delete(p);
     }
-  }, [firstPage, lastPage, load, result.rows]);
+    // Sorted another way, the rows in view are asked for again even when
+    // no more have arrived: all of them may have been fetched already
+  }, [firstPage, lastPage, load, result.rows, order]);
 
   // Near the end of what was fetched: fetch the next pages
   useEffect(() => {
