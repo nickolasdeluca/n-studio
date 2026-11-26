@@ -1916,7 +1916,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fb-core"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "fb-sql",
@@ -1929,7 +1929,7 @@ dependencies = [
 
 [[package]]
 name = "fb-meta"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "fb-core",
  "fb-sql",
@@ -1938,7 +1938,7 @@ dependencies = [
 
 [[package]]
 name = "fb-probe"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "rsfbclient",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "fb-sql"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2645,7 +2645,7 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 
 [[package]]
 name = "grid-shell"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "rsfbclient-core",
  "rsfbclient-rust",
@@ -2657,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "grid-slint"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "rand",
  "serde_json",
@@ -4300,7 +4300,7 @@ dependencies = [
 
 [[package]]
 name = "n-studio"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "chrono",
  "fb-core",
