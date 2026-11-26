@@ -3,14 +3,18 @@
 import { useState } from "react";
 import { t } from "../i18n";
 import { COMMANDS, conflicts, display, keysOf, normalize, pressed, SCOPES, type Command } from "../keymap";
-import { isMac } from "../keys";
-import { usePrefs } from "../prefs";
+import { isMac, shortcut } from "../keys";
+import { FONT_DEFAULTS, FONT_LIMITS, usePrefs, type Fonts } from "../prefs";
 import { useStore } from "../store";
 import { Button, inputClass, Modal } from "./Modal";
+import { rowHeight as rowHeightOf } from "./ResultGrid";
 
-type Section = "keys";
+type Section = "keys" | "fonts";
 
-const sections: [Section, string][] = [["keys", "Keyboard"]];
+const sections: [Section, string][] = [
+  ["keys", "Keyboard"],
+  ["fonts", "Fonts"],
+];
 
 export function PreferencesDialog() {
   const [section, setSection] = useState<Section>("keys");
@@ -43,7 +47,10 @@ export function PreferencesDialog() {
             </button>
           ))}
         </nav>
-        <div className="flex min-w-0 flex-1 flex-col">{section === "keys" && <KeysPane />}</div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {section === "keys" && <KeysPane />}
+          {section === "fonts" && <FontsPane />}
+        </div>
       </div>
     </Modal>
   );
@@ -206,5 +213,102 @@ function CommandRow(props: {
         </button>
       </div>
     </div>
+  );
+}
+
+const fontRows: [keyof Fonts, string, string, string][] = [
+  ["zoom", "Window", "%", "Everything in the window, larger or smaller."],
+  ["editor", "SQL text", "px", "The SQL editors, the object editors and the Script Executive."],
+  ["grid", "Result grids", "px", "The cells of a result's grid; its rows grow with them."],
+];
+
+function FontsPane() {
+  const fonts = usePrefs((s) => s.fonts);
+  const setFont = usePrefs((s) => s.setFont);
+  const zoomKeys = [shortcut("app.zoomIn"), shortcut("app.zoomOut"), shortcut("app.zoomReset")].filter(Boolean);
+  return (
+    <div className="flex flex-col gap-4">
+      {fontRows.map(([which, label, unit, hint]) => {
+        const [min, max, step] = FONT_LIMITS[which];
+        const value = fonts[which];
+        return (
+          <div key={which} className="grid grid-cols-[9rem_1fr_auto] items-center gap-x-3 gap-y-0.5">
+            <label htmlFor={`font-${which}`}>{t(label)}</label>
+            <input
+              id={`font-${which}`}
+              type="range"
+              min={min}
+              max={max}
+              step={step}
+              value={value}
+              onChange={(e) => setFont(which, Number(e.target.value))}
+              className="accent-[var(--accent)]"
+            />
+            <div className="flex items-center gap-1">
+              <SizeBox label={t(label)} value={value} min={min} max={max} step={step} onChange={(n) => setFont(which, n)} />
+              <span className="w-5 text-muted">{unit}</span>
+              <button
+                type="button"
+                disabled={value === FONT_DEFAULTS[which]}
+                onClick={() => setFont(which, FONT_DEFAULTS[which])}
+                className="h-6 rounded px-2 text-muted hover:bg-hover hover:text-fg disabled:invisible"
+              >
+                {t("Reset")}
+              </button>
+            </div>
+            <span className="col-start-2 col-end-4 text-[11.5px] text-faint">
+              {t(hint)}
+              {which === "zoom" && zoomKeys.length > 0 && ` ${t("Keys: {keys}.", { keys: zoomKeys.join(", ") })}`}
+            </span>
+          </div>
+        );
+      })}
+      <div className="rounded border border-line bg-bg p-3">
+        <div className="mb-1 text-muted">{t("SQL text")}</div>
+        <pre className="font-mono select-text" style={{ fontSize: fonts.editor, lineHeight: 1.5 }}>
+          {"select ID, NAME from CUSTOMERS\n where CREATED >= current_date - 30;"}
+        </pre>
+        <div className="mt-2 mb-1 text-muted">{t("Result grids")}</div>
+        <div className="font-mono" style={{ fontSize: fonts.grid, lineHeight: `${rowHeightOf(fonts.grid) - 1}px` }}>
+          <div className="flex border-b border-line/60">
+            <span className="w-16 px-1.5 text-right">1</span>
+            <span className="px-1.5">ACME Ltda.</span>
+          </div>
+          <div className="flex">
+            <span className="w-16 px-1.5 text-right">2</span>
+            <span className="px-1.5">Ferragens São José</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A size typed in: each number in range is used as it is typed, and what
+ *  is left out of range goes back to the size in use */
+function SizeBox(props: { label: string; value: number; min: number; max: number; step: number; onChange(n: number): void }) {
+  const { value, min, max } = props;
+  const [text, setText] = useState(String(value));
+  const [was, setWas] = useState(value);
+  if (was !== value) {
+    setWas(value);
+    setText(String(value));
+  }
+  return (
+    <input
+      type="number"
+      aria-label={props.label}
+      className={`${inputClass} w-16 text-right`}
+      min={min}
+      max={max}
+      step={props.step}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = Number(e.target.value);
+        if (e.target.value !== "" && n >= min && n <= max) props.onChange(n);
+      }}
+      onBlur={() => setText(String(value))}
+    />
   );
 }

@@ -29,6 +29,9 @@ export const COMMANDS: Command[] = [
   { id: "app.openScript", label: "Open Script…", scope: "app", keys: ["Mod-O"] },
   { id: "app.executive", label: "Script Executive", scope: "app", keys: ["Mod-F12", "Ctrl-F12"] },
   { id: "app.preferences", label: "Preferences…", scope: "app", keys: ["Mod-Comma"] },
+  { id: "app.zoomIn", label: "Zoom In", scope: "app", keys: ["Mod-Equal", "Mod-Shift-Equal"] },
+  { id: "app.zoomOut", label: "Zoom Out", scope: "app", keys: ["Mod-Minus"] },
+  { id: "app.zoomReset", label: "Actual Size", scope: "app", keys: ["Mod-0"] },
 
   { id: "text.complete", label: "Complete", scope: "text", keys: ["Ctrl-Space"] },
 

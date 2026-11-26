@@ -109,7 +109,7 @@ const highlight = HighlightStyle.define([
 export const editorLook = [
   syntaxHighlighting(highlight),
   EditorView.theme({
-    "&": { height: "100%", fontSize: "13px", backgroundColor: "var(--panel)", color: "var(--text)" },
+    "&": { height: "100%", fontSize: "var(--editor-font-size, 13px)", backgroundColor: "var(--panel)", color: "var(--text)" },
     ".cm-scroller": {
       fontFamily: 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
       lineHeight: "1.5",

@@ -21,6 +21,7 @@ import {
 import { api, type Cell, type ColumnInfo, type ColumnKind, type ResultView } from "../api";
 import { PAGE } from "../editors";
 import { t } from "../i18n";
+import { FONT_DEFAULTS, usePrefs } from "../prefs";
 import {
   addInserted,
   removeInserted,
@@ -31,7 +32,8 @@ import {
   type RowEdits,
 } from "../rowEdits";
 
-const ROW_H = 22;
+/** A row of cells of `font` pixels: 22 at the default 12 */
+export const rowHeight = (font: number) => Math.round(font * 1.5) + 4;
 const GUTTER_W = 56;
 /** Pages kept on this side, least recently viewed dropped first */
 const MAX_PAGES = 60;
@@ -111,7 +113,12 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
   const generation = useRef(0);
   const fetching = useRef(false);
   const [, rerender] = useReducer((n: number) => n + 1, 0);
-  const [widths, setWidths] = useState<number[]>(() => columns.map(initialWidth));
+  // The cells' font, from the preferences, and what it makes of a row
+  const font = usePrefs((s) => s.fonts.grid);
+  const ROW_H = rowHeight(font);
+  const [widths, setWidths] = useState<number[]>(() =>
+    columns.map((c) => Math.round((initialWidth(c) * font) / FONT_DEFAULTS.grid)),
+  );
   /** The cell being typed into; `first`: it began with a key, not with all selected */
   const [typing, setTyping] = useState<{ row: number; col: number; text: string; initial: string; first: boolean } | null>(null);
   // Set when the keyboard ended the typing, so that losing focus does not end it again
@@ -155,6 +162,9 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
     paddingStart: ROW_H,
     scrollPaddingStart: ROW_H,
   });
+  useEffect(() => {
+    rows.measure();
+  }, [ROW_H, rows]);
   const cols = useVirtualizer({
     horizontal: true,
     count: columns.length,
@@ -377,7 +387,8 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
       ref={scrollRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="scroll-thin relative h-full overflow-auto bg-panel font-mono text-[12px] outline-none"
+      className="scroll-thin relative h-full overflow-auto bg-panel font-mono outline-none"
+      style={{ fontSize: font }}
       role="grid"
       aria-rowcount={total}
       aria-colcount={columns.length}

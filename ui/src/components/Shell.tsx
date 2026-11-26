@@ -27,6 +27,7 @@ import { restoreSession, sessionChanged } from "../session";
 import { Icon } from "../icons";
 import { useStore } from "../store";
 import { runKey, useKeys, withKey } from "../keys";
+import { zoom } from "../fonts";
 import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { AdminView, ServiceOutput } from "./AdminPanels";
@@ -123,6 +124,9 @@ export function Shell() {
         "app.openScript": () => (id && s.servers[id] ? void openScripts(id) : false),
         "app.executive": () => void openExecutive(id ?? null),
         "app.preferences": () => s.openDialog({ type: "preferences" }),
+        "app.zoomIn": () => zoom(1),
+        "app.zoomOut": () => zoom(-1),
+        "app.zoomReset": () => zoom(0),
       });
     };
     window.addEventListener("keydown", onKey);
