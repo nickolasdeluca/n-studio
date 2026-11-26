@@ -498,6 +498,16 @@ commits, unless the options say to roll back at the end. The database
 cannot be changed while a transaction a run left is active; the panel says
 to end it first. The owner decided this stays too, rather than asking.
 
+Added later, at the owner's request: **a queue of files** (the Queue
+tab, `ui/src/scriptQueue.ts`). Script files are run from disk one after
+another, each as Run from File runs one, in the order of their names as
+migrations are named (a numeric collation: `V1.1__` after `V1__`, `V10__`
+after `V2__`), or the user's once a file is moved. It runs from the first
+file not run through, stops at a file that fails or is stopped, and can be
+told to stop before the next file. A queue cannot stop to ask between
+files, so what a file leaves active is committed, unless the options say
+to roll back: the same rule a `CONNECT` follows.
+
 Added after: `CREATE DATABASE` and `DROP DATABASE`; `OUTPUT`, which writes
 every row of the selects after it to a file; `SHOW`, answered from the
 catalog; `SET BAIL`, `EXIT` and `QUIT`; `SHELL`, run only when an option

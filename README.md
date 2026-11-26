@@ -157,6 +157,15 @@ written unless you ask: the run takes it from the keychain, or asks for it.
 Options decide whether to stop at the first error, commit DDL as it runs,
 and what to do with a transaction still active at the end.
 
+The Queue tab runs many script files from disk, one after another: the
+migrations of a release, say. Files added are put in the order of their
+names, numbers read as numbers (`V2__` before `V10__`), and can be moved
+or removed while they are not running. Run Queue goes from the first file
+not run through and stops at one that fails; run it again, once that file
+is fixed, to go on from there. Stop After This File lets the file running
+end first; Stop stops it too. What a file leaves active is committed
+before the next, unless the options say to roll back.
+
 ### Work across tables and routines
 
 View tables and foreign keys in a diagram, assemble SQL with the query

@@ -25,9 +25,10 @@ import { baseName, openAdminPanel, panelTitle, setPanelTitle } from "./dock";
 import { ms } from "./editors";
 import { t } from "./i18n";
 import { askParams, paramFields } from "./params";
+import { addFiles, emptyQueue, fileName, nextItem, patchItem, type Queue } from "./scriptQueue";
 import { useStore } from "./store";
 
-export type ExecutiveTab = "script" | "statements" | "compare" | "options";
+export type ExecutiveTab = "script" | "statements" | "compare" | "queue" | "options";
 
 export interface ExecutiveMessage {
   level: "info" | "error";
@@ -81,6 +82,8 @@ export interface Executive {
   /** The file the text is from, and how it is written */
   file: { path: string; format: FileFormat } | null;
   changed: boolean;
+  /** Script files to run from disk one after another */
+  queue: Queue;
 }
 
 interface ExecutiveState {
@@ -143,6 +146,7 @@ export function openExecutive(registration: string | null, text?: string): strin
     disk: null,
     file: null,
     changed: !!text,
+    queue: emptyQueue,
   };
   useExecutives.setState((s) => ({ panels: { ...s.panels, [id]: panel } }));
   openAdminPanel(id, "executive", titleOf(panel, count));
@@ -263,8 +267,11 @@ export async function compareExecutive(id: string): Promise<void> {
 /** Runs the panel's script, or the statements of it numbered in `only` */
 export async function runExecutive(id: string, only: number[] | null = null): Promise<void> {
   const panel = get(id);
-  if (!panel || panel.run) return;
-  if (panel.disk) return runDisk(id, only);
+  if (!panel || panel.run || panel.queue.running) return;
+  if (panel.disk) {
+    await runDisk(id, only);
+    return;
+  }
   const text = texts.get(id)?.read() ?? "";
   if (panel.active !== null) {
     log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
@@ -318,48 +325,169 @@ export async function runExecutive(id: string, only: number[] | null = null): Pr
   if (ends.get(id) === done) ends.delete(id);
 }
 
-/** Runs the file the panel has on disk, or the statements of it in `only` */
-async function runDisk(id: string, only: number[] | null): Promise<void> {
+/** How a queue runs each of its files */
+interface InQueue {
+  options: ExecutiveOptions;
+}
+
+/** Runs the file the panel has on disk, or the statements of it in `only`.
+ *  Its end, or null when it did not run or failed to. */
+async function runDisk(id: string, only: number[] | null, queued?: InQueue): Promise<ExecutiveEnd | null> {
   const panel = get(id);
-  if (!panel?.disk || panel.run) return;
+  if (!panel?.disk || panel.run) return null;
   if (panel.active !== null) {
     log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
-    return;
+    return null;
   }
   const run = newRun();
   const listed = panel.blocks.map((b) => b.index);
   // Past the statements listed, all are run unless some are left out
   const chosen = only ? listed.filter((i) => only.includes(i)) : null;
-  const done = (async () => {
+  const done = (async (): Promise<ExecutiveEnd | null> => {
     const run_ = { id: run, chosen, picked: chosen && new Set(chosen), total: chosen?.length ?? panel.disk!.total };
-    patchExecutive(id, { steps: {}, messages: [], run: { ...run_, at: 0, failed: 0, started: Date.now() } });
+    // A queue's messages are of all its files: kept
+    patchExecutive(id, { steps: {}, ...(queued ? {} : { messages: [] }), run: { ...run_, at: 0, failed: 0, started: Date.now() } });
     if (only && listed.length < panel.disk!.total) {
       log(id, [{ level: "info", text: t("Only the statements listed can be checked: those past them are not run.") }]);
     }
     await listening();
     progress.set(run, (e) => take(id, run, e.steps, e.at));
     try {
-      const options = get(id)?.options ?? defaultOptions;
+      const options = queued?.options ?? get(id)?.options ?? defaultOptions;
       const end = await api.executiveRun(run, panel.registration, panel.charset, { type: "file", path: panel.disk!.path }, only, withinOf(panel), options);
       take(id, run, end.steps);
       finish(id, run, end);
+      return end;
     } catch (e) {
       log(id, [{ level: "error", text: errorText(e) }]);
+      return null;
     } finally {
       progress.delete(run);
       patchExecutive(id, { run: null });
     }
   })();
   ends.set(id, done);
-  await done;
+  const end = await done;
   if (ends.get(id) === done) ends.delete(id);
+  return end;
+}
+
+// ── The queue ─────────────────────────────────────────────────────────────
+
+export function patchQueue(id: string, change: (q: Queue) => Queue) {
+  patchExecutive(id, (p) => ({ queue: change(p.queue) }));
+}
+
+/** Asks for script files and adds them to the queue */
+export async function addQueueFiles(id: string): Promise<void> {
+  if (!get(id)) return;
+  let paths: string[];
+  try {
+    const picked = await open({ title: t("Add Scripts to the Queue"), multiple: true, filters: filters() });
+    paths = picked === null ? [] : Array.isArray(picked) ? picked : [picked];
+  } catch (e) {
+    useStore.getState().setNotice(errorText(e));
+    return;
+  }
+  if (paths.length > 0) patchExecutive(id, (p) => ({ queue: addFiles(p.queue, paths), tab: "queue" }));
+}
+
+/** Runs the queue's files one after another, from the first not run
+ *  through, each from disk as Run from File does. It stops at a file that
+ *  fails or is stopped, and before the next file once asked to. */
+export async function runQueue(id: string): Promise<void> {
+  const panel = get(id);
+  if (!panel || panel.run || panel.queue.running) return;
+  if (panel.active !== null) {
+    log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
+    return;
+  }
+  if (!nextItem(panel.queue)) {
+    log(id, [{ level: "info", text: t("Every file of the queue was run: add more, or run them again.") }]);
+    return;
+  }
+  // A queue cannot stop to ask between its files: what a file leaves
+  // active is committed, unless the options say to roll it back
+  const options: ExecutiveOptions = { ...panel.options, atEnd: panel.options.atEnd === "rollback" ? "rollback" : "commit" };
+  patchExecutive(id, (p) => ({ queue: { ...p.queue, running: true, stopping: false }, messages: [] }));
+  const started = Date.now();
+  let ran = 0;
+  let how = t("Queue finished");
+  try {
+    for (;;) {
+      const now = get(id);
+      if (!now) return;
+      if (now.queue.stopping) {
+        how = t("Queue stopped");
+        break;
+      }
+      const item = nextItem(now.queue);
+      if (!item) break;
+      const path = item.path;
+      patchQueue(id, (q) => patchItem(q, path, { status: "running", note: undefined, failed: false }));
+      // What was said of the file before is no longer about statements of
+      // the one in the Statements tab
+      patchExecutive(id, (p) => ({ messages: p.messages.map(({ index: _, ...m }) => m) }));
+      log(id, [{ level: "info", text: `▸ ${fileName(path)}` }]);
+      let end: ExecutiveEnd | null = null;
+      try {
+        const outline = await api.executiveOutlineFile(path, now.charset);
+        patchExecutive(id, {
+          disk: { path, size: outline.size, total: outline.total, readAs: outline.readAs },
+          blocks: outline.blocks,
+          unchecked: {},
+          inputs: {},
+          steps: {},
+        });
+        end = await runDisk(id, null, { options });
+      } catch (e) {
+        log(id, [{ level: "error", text: errorText(e) }]);
+      }
+      if (!get(id)) return;
+      ran += 1;
+      if (!end) {
+        patchQueue(id, (q) => patchItem(q, path, { status: "failed", note: t("Not run"), failed: true }));
+        how = t("Queue stopped at an error");
+        break;
+      }
+      const note = t("{done} executed, {failed} failed in {time}", { done: n(end.done), failed: n(end.failed), time: ms(end.elapsedMs) });
+      if (end.cancelled) {
+        patchQueue(id, (q) => patchItem(q, path, { status: "stopped", note }));
+        how = t("Queue stopped");
+        break;
+      }
+      if (end.failed > 0 || end.stopped || end.endError) {
+        patchQueue(id, (q) => patchItem(q, path, { status: "failed", note, failed: true }));
+        how = t("Queue stopped at an error");
+        break;
+      }
+      patchQueue(id, (q) => patchItem(q, path, { status: "done", note }));
+    }
+  } finally {
+    patchExecutive(id, (p) => ({ queue: { ...p.queue, running: false, stopping: false } }));
+  }
+  const left = get(id)?.queue.items.filter((i) => i.status !== "done").length ?? 0;
+  log(id, [
+    {
+      level: how === t("Queue finished") ? "info" : "error",
+      text: t("{how}: {ran} file(s) run, {left} left, in {time}", { how, ran: n(ran), left: n(left), time: elapsed(Date.now() - started) }),
+    },
+  ]);
+}
+
+/** A queue's time: its files may take minutes */
+const elapsed = (v: number) => (v < 1000 ? ms(v) : `${(v / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s`);
+
+/** The queue stops before its next file; the one running goes on */
+export function stopQueueAfter(id: string) {
+  if (get(id)?.queue.running) patchQueue(id, (q) => ({ ...q, stopping: true }));
 }
 
 /** Asks for a script file, lists its statements and runs it from disk,
  *  without loading it into the editor */
 export async function runFromFile(id: string): Promise<void> {
   const panel = get(id);
-  if (!panel || panel.run) return;
+  if (!panel || panel.run || panel.queue.running) return;
   if (panel.active !== null) {
     log(id, [{ level: "error", text: t("The last run left a transaction active: commit or roll back first.") }]);
     return;
@@ -405,7 +533,7 @@ export async function runFromFile(id: string): Promise<void> {
 /** The character set a script is sent in, and a file from disk read in */
 export async function chooseCharset(id: string, charset: string | null) {
   const panel = get(id);
-  if (!panel || panel.run) return;
+  if (!panel || panel.run || panel.queue.running) return;
   patchExecutive(id, { charset });
   if (!panel.disk) return;
   // The file is read again in it: its statements may read differently
@@ -428,7 +556,7 @@ export async function chooseCharset(id: string, charset: string | null) {
 /** Back to the script in the editor */
 export function closeDisk(id: string) {
   const panel = get(id);
-  if (!panel?.disk || panel.run) return;
+  if (!panel?.disk || panel.run || panel.queue.running) return;
   patchExecutive(id, { disk: null, blocks: [], steps: {}, unchecked: {}, inputs: {} });
   void outlineExecutive(id);
 }
@@ -466,8 +594,10 @@ function finish(id: string, run: number, end: ExecutiveEnd) {
   if (end.ddl > 0 && registration) metadataChanged(registration);
 }
 
-/** Stops the panel's run: before its next statement, and the running one */
+/** Stops the panel's run: before its next statement, and the running one;
+ *  and its queue, which runs no file after it */
 export function stopExecutive(id: string) {
+  stopQueueAfter(id);
   const run = get(id)?.run;
   if (run) void api.executiveCancel(run.id);
 }
@@ -493,7 +623,7 @@ export async function endExecutive(id: string, how: "commit" | "rollback"): Prom
 /** Panels a closing or a quit would stop or end the transaction of */
 export function busyExecutives(only?: string): string[] {
   return Object.values(useExecutives.getState().panels)
-    .filter((p) => (only === undefined || p.id === only) && (p.run !== null || p.active !== null))
+    .filter((p) => (only === undefined || p.id === only) && (p.run !== null || p.active !== null || p.queue.running))
     .map((p) => p.id);
 }
 

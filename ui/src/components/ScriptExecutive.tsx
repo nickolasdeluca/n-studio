@@ -28,6 +28,10 @@ import {
   patchExecutive,
   runExecutive,
   runFromFile,
+  runQueue,
+  addQueueFiles,
+  patchQueue,
+  stopQueueAfter,
   runningIndex,
   closeDisk,
   saveExecutive,
@@ -49,6 +53,7 @@ import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
 import { runKey } from "../keys";
 import { TextButton } from "./ObjectViewer";
+import { clearDone, fileName, move, remove, reset, sortByName, type QueueItem } from "../scriptQueue";
 
 /** Editor states by panel, so a panel that remounts keeps its text and undo */
 const saved = new Map<string, EditorState>();
@@ -118,6 +123,7 @@ const tabs: [ExecutiveTab, string][] = [
   ["script", "Script"],
   ["statements", "Statements"],
   ["compare", "Compare"],
+  ["queue", "Queue"],
   ["options", "Options"],
 ];
 
@@ -289,6 +295,11 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
                   <CompareTab panel={panel} select={select} />
                 </div>
               )}
+              {panel.tab === "queue" && (
+                <div className="absolute inset-0 bg-panel">
+                  <QueueTab panel={panel} />
+                </div>
+              )}
               {panel.tab === "options" && (
                 <div className="absolute inset-0 overflow-auto bg-panel">
                   <OptionsTab panel={panel} />
@@ -312,7 +323,8 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
 const selectClass = "h-6 max-w-[14rem] rounded border border-line bg-panel px-1 text-fg disabled:text-faint";
 
 function Toolbar({ panel, run }: { panel: Executive; run(): void }) {
-  const running = !!panel.run;
+  // A queue is running between its files too
+  const running = !!panel.run || panel.queue.running;
   const r = panel.run;
   const registrations = useStore((s) => s.registrations);
   const charsets = useStore((s) => s.charsets);
@@ -414,8 +426,8 @@ function DiskNotice({ panel }: { panel: Executive }) {
         })}
       </p>
       <div className="mt-2 flex gap-1">
-        <TextButton icon="run" accent label={t("Run Again")} disabled={!!panel.run || panel.active !== null} onClick={() => runExecutive(panel.id)} />
-        <TextButton icon="sql" label={t("Back to the Editor")} disabled={!!panel.run} onClick={() => closeDisk(panel.id)} />
+        <TextButton icon="run" accent label={t("Run Again")} disabled={!!panel.run || panel.queue.running || panel.active !== null} onClick={() => runExecutive(panel.id)} />
+        <TextButton icon="sql" label={t("Back to the Editor")} disabled={!!panel.run || panel.queue.running} onClick={() => closeDisk(panel.id)} />
       </div>
     </div>
   );
@@ -483,6 +495,133 @@ function OptionsTab({ panel }: { panel: Executive }) {
           {t("A CONNECT in the script commits what is active before it switches, unless this says to roll back.")}
         </span>
       </fieldset>
+    </div>
+  );
+}
+
+// ── Queue ─────────────────────────────────────────────────────────────────
+
+const queueStatus: Record<QueueItem["status"], [string, string]> = {
+  pending: ["Waiting", "text-muted"],
+  running: ["Running", "text-accent"],
+  done: ["Done", "text-ok"],
+  failed: ["Failed", "text-danger"],
+  stopped: ["Stopped", "text-warn"],
+};
+
+const folderOf = (path: string) => path.slice(0, path.length - fileName(path).length).replace(/[\\/]$/, "");
+
+function IconButton(props: { icon: string; label: string; disabled?: boolean; onClick(): void }) {
+  return (
+    <button
+      type="button"
+      title={props.label}
+      aria-label={props.label}
+      disabled={props.disabled}
+      onClick={props.onClick}
+      className="grid h-5 w-5 place-items-center rounded text-muted hover:bg-hover hover:text-fg disabled:text-faint disabled:hover:bg-transparent"
+    >
+      <Icon name={props.icon} size={12} />
+    </button>
+  );
+}
+
+/** Script files run from disk one after another: in the order of their
+ *  names unless moved, stopping at the first that fails */
+function QueueTab({ panel }: { panel: Executive }) {
+  const q = panel.queue;
+  const id = panel.id;
+  const blocked = !!panel.run || q.running || panel.active !== null;
+  const pending = q.items.filter((i) => i.status !== "done").length;
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-line px-1.5 [&>button]:shrink-0 [&>button]:whitespace-nowrap">
+        <TextButton icon="plus" label={t("Add Files…")} onClick={() => addQueueFiles(id)} />
+        <TextButton icon="format" label={t("Sort by Name")} disabled={q.byName || q.running} onClick={() => patchQueue(id, sortByName)} />
+        <span className="mx-1 h-4 w-px bg-line" />
+        <TextButton icon="run" accent label={t("Run Queue")} disabled={blocked || pending === 0} onClick={() => runQueue(id)} />
+        <TextButton
+          icon="stop"
+          label={q.stopping ? t("Stopping after this file…") : t("Stop After This File")}
+          disabled={!q.running || q.stopping}
+          onClick={() => stopQueueAfter(id)}
+        />
+        <span className="mx-1 h-4 w-px bg-line" />
+        <TextButton icon="refresh" label={t("Run All Again")} disabled={q.running || q.items.length === 0} onClick={() => patchQueue(id, reset)} />
+        <TextButton
+          icon="trash"
+          label={t("Remove Done")}
+          disabled={q.running || !q.items.some((i) => i.status === "done")}
+          onClick={() => patchQueue(id, clearDone)}
+        />
+      </div>
+      {q.items.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-muted">
+          <p>{t("Add script files to run them one after another, from disk.")}</p>
+          <p>
+            {t(
+              "They are put in the order of their names, as migrations are named (V1__, V2__, V10__), and stop at the first that fails.",
+            )}
+          </p>
+          <TextButton icon="plus" accent label={t("Add Files…")} onClick={() => addQueueFiles(id)} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="w-full border-collapse text-[12px]">
+            <thead className="sticky top-0 bg-panel-2 text-left text-muted">
+              <tr>
+                <th className="w-8 border-b border-line px-2 py-0.5 text-right font-normal">#</th>
+                <th className="border-b border-line px-2 py-0.5 font-normal">{t("File")}</th>
+                <th className="w-24 border-b border-line px-2 py-0.5 font-normal">{t("Status")}</th>
+                <th className="border-b border-line px-2 py-0.5 font-normal">{t("Result")}</th>
+                <th className="w-[4.5rem] border-b border-line px-2 py-0.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {q.items.map((item, i) => {
+                const [label, color] = queueStatus[item.status];
+                const fixed = item.status === "running";
+                return (
+                  <tr key={item.path} className="align-top hover:bg-hover">
+                    <td className="px-2 py-0.5 text-right text-muted tabular-nums">{i + 1}</td>
+                    <td className="px-2 py-0.5" title={item.path}>
+                      <span className="font-mono">{fileName(item.path)}</span>
+                      <span className="ml-2 text-faint">{folderOf(item.path)}</span>
+                    </td>
+                    <td className={`px-2 py-0.5 ${color}`}>{t(label)}</td>
+                    <td className={`px-2 py-0.5 ${item.failed ? "text-danger" : "text-muted"}`}>{item.note ?? ""}</td>
+                    <td className="px-1 py-0.5">
+                      <div className="flex justify-end gap-0.5">
+                        <IconButton
+                          icon="up"
+                          label={t("Move Up")}
+                          disabled={fixed || i === 0 || q.items[i - 1].status === "running"}
+                          onClick={() => patchQueue(id, (x) => move(x, i, i - 1))}
+                        />
+                        <IconButton
+                          icon="down"
+                          label={t("Move Down")}
+                          disabled={fixed || i === q.items.length - 1 || q.items[i + 1].status === "running"}
+                          onClick={() => patchQueue(id, (x) => move(x, i, i + 1))}
+                        />
+                        <IconButton icon="trash" label={t("Remove")} disabled={fixed} onClick={() => patchQueue(id, (x) => remove(x, item.path))} />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="px-3 pt-2 tabular-nums">
+            {t("{left} of {n} file(s) to run", { left: pending.toLocaleString(), n: q.items.length.toLocaleString() })}
+          </p>
+          <p className="px-3 py-2 text-muted">
+            {t(
+              "Each file runs with the Options tab's options. What a file leaves active is committed before the next, unless the options say to roll it back.",
+            )}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
