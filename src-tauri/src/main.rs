@@ -14,6 +14,7 @@ mod files;
 mod formatter;
 mod history;
 mod ibexpert;
+mod menu;
 mod objects;
 mod profiler;
 mod registry;
@@ -28,39 +29,6 @@ mod update;
 mod window;
 
 use tauri::Manager;
-
-/// What the toolbar's View button offers, in the menu bar's View menu too:
-/// a Mac user looks there for a panel that was closed. The window carries
-/// each choice out (`view-menu`), as it does its own button's.
-#[cfg(target_os = "macos")]
-fn view_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-    use tauri::Emitter;
-
-    let menu = Menu::default(app)?;
-    let view = menu.items()?.into_iter().find_map(|item| match item {
-        MenuItemKind::Submenu(submenu) if submenu.text().is_ok_and(|text| text == "View") => Some(submenu),
-        _ => None,
-    });
-    if let Some(view) = view {
-        view.prepend_items(&[
-            &MenuItem::with_id(app, "view:explorer", "Database Explorer", true, None::<&str>)?,
-            &MenuItem::with_id(app, "view:objects", "Objects", true, None::<&str>)?,
-            &MenuItem::with_id(app, "view:agent", "AI Agent", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "view:reset", "Reset Layout", true, None::<&str>)?,
-            &PredefinedMenuItem::separator(app)?,
-        ])?;
-    }
-    app.set_menu(menu)?;
-    app.on_menu_event(|app, event| {
-        if let Some(choice) = event.id().as_ref().strip_prefix("view:") {
-            // Nothing to tell when there is no window to hear it
-            let _ = app.emit("view-menu", choice);
-        }
-    });
-    Ok(())
-}
 
 fn main() {
     tauri::Builder::default()
@@ -82,8 +50,12 @@ fn main() {
             let places = window::Places::open(&dir);
             window::restore(app, &places);
             app.manage(places);
+            // In English until the window sends its texts
             #[cfg(target_os = "macos")]
-            view_menu(app.handle())?;
+            {
+                menu::menu_bar(app.handle(), &menu::Texts::new())?;
+                menu::listen(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -94,6 +66,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            menu::menu_texts,
             commands::charsets,
             commands::list_registrations,
             commands::save_registration,

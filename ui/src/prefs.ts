@@ -5,6 +5,30 @@ import { create } from "zustand";
 
 export type Language = "system" | "en" | "pt-BR";
 
+/** A language there is a catalog for (or English, which needs none) */
+export type Locale = Exclude<Language, "system">;
+
+export const LOCALES: [Locale, string][] = [
+  ["en", "English"],
+  ["pt-BR", "Português (Brasil)"],
+];
+
+/** The first of the system's languages there is a catalog for; English
+ *  otherwise */
+export function systemLocale(languages: readonly string[]): Locale {
+  for (const language of languages) {
+    const l = language.toLowerCase();
+    if (l.startsWith("pt")) return "pt-BR";
+    if (l.startsWith("en")) return "en";
+  }
+  return "en";
+}
+
+/** The language a choice of the preferences makes */
+export function localeOf(choice: Language, languages: readonly string[]): Locale {
+  return choice === "system" ? systemLocale(languages) : choice;
+}
+
 export interface Fonts {
   /** The whole window, in percent */
   zoom: number;

@@ -13,6 +13,9 @@ import { Icon } from "../icons";
 import { useStore } from "../store";
 import { BlobViewer } from "./BlobViewer";
 import { editCount } from "../rowEdits";
+import { display, keysOf } from "../keymap";
+import { isMac } from "../keys";
+import { usePrefs } from "../prefs";
 import { ResultGrid, type GridCursor, type GridEdit, type GridHandle } from "./ResultGrid";
 
 /** A grid whose rows can be changed, and what is done with the changes */
@@ -75,7 +78,9 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
   const picks = useSummaryRow((s) => s.picks[tab.id] ?? NO_PICKS);
   const summaries = useSummaries(tab, summaryShown, picks);
   const agentRunning = useAgent((s) => s.status === "running");
-  if (!outcome) return <Empty>{t("Execute a statement with F9 or Ctrl+Enter.")}</Empty>;
+  if (!outcome) return <Empty>{t("Execute a statement with {keys}.", {
+      keys: keysOf("editor.run", usePrefs.getState().keys).map((k) => display(k, isMac)).join(t(" or ")),
+    })}</Empty>;
   const { executed, result } = outcome;
 
   if (!result) {

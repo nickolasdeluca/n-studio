@@ -1,19 +1,20 @@
 // The preferences: what this machine's user changed of the app. Each change
 // is in use as soon as it is made, and kept; there is nothing to save.
 import { useState } from "react";
-import { t } from "../i18n";
+import { locale, systemDefault, t } from "../i18n";
 import { COMMANDS, conflicts, display, keysOf, normalize, pressed, SCOPES, type Command } from "../keymap";
 import { isMac, shortcut } from "../keys";
-import { FONT_DEFAULTS, FONT_LIMITS, usePrefs, type Fonts } from "../prefs";
+import { FONT_DEFAULTS, FONT_LIMITS, LOCALES, localeOf, usePrefs, type Fonts, type Language } from "../prefs";
 import { useStore } from "../store";
 import { Button, inputClass, Modal } from "./Modal";
 import { rowHeight as rowHeightOf } from "./ResultGrid";
 
-type Section = "keys" | "fonts";
+type Section = "keys" | "fonts" | "language";
 
 const sections: [Section, string][] = [
   ["keys", "Keyboard"],
   ["fonts", "Fonts"],
+  ["language", "Language"],
 ];
 
 export function PreferencesDialog() {
@@ -50,6 +51,7 @@ export function PreferencesDialog() {
         <div className="flex min-w-0 flex-1 flex-col">
           {section === "keys" && <KeysPane />}
           {section === "fonts" && <FontsPane />}
+          {section === "language" && <LanguagePane />}
         </div>
       </div>
     </Modal>
@@ -310,5 +312,39 @@ function SizeBox(props: { label: string; value: number; min: number; max: number
       }}
       onBlur={() => setText(String(value))}
     />
+  );
+}
+
+function LanguagePane() {
+  const choice = usePrefs((s) => s.language);
+  const setLanguage = usePrefs((s) => s.setLanguage);
+  const name = (l: string) => LOCALES.find(([id]) => id === l)?.[1] ?? l;
+  const options: [Language, string][] = [
+    ["system", t("The system's ({language})", { language: name(systemDefault()) })],
+    ...LOCALES,
+  ];
+  const next = localeOf(choice, [systemDefault()]);
+  return (
+    <div className="flex flex-col gap-3">
+      <fieldset className="flex flex-col gap-1.5">
+        <legend className="mb-1.5 text-muted">{t("The language of N Studio")}</legend>
+        {options.map(([id, label]) => (
+          <label key={id} className="flex items-center gap-2">
+            <input type="radio" name="language" checked={choice === id} onChange={() => setLanguage(id)} />
+            {label}
+          </label>
+        ))}
+      </fieldset>
+      {next !== locale && (
+        <p className="rounded border border-line bg-panel-2 px-3 py-2">
+          {t("{language} is used from the next time N Studio opens.", { language: name(next) })}
+        </p>
+      )}
+      <p className="text-[11.5px] text-faint">
+        {t(
+          "The names of the database's objects, its messages and the SQL keywords stay as they are. A text not translated yet is shown in English.",
+        )}
+      </p>
+    </div>
   );
 }

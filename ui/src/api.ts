@@ -1040,6 +1040,8 @@ export interface UpdateAvailable {
 
 export const api = {
   charsets: () => invoke<string[]>("charsets"),
+  /** The texts of a Mac's menu bar, by what each is for */
+  menuTexts: (texts: Record<string, string>) => invoke<void>("menu_texts", { texts }),
   listRegistrations: () => invoke<RegistrationView[]>("list_registrations"),
   /** `passwordOf`: a registration whose password to keep, when none is given */
   saveRegistration: (registration: Registration, password: string | null, passwordOf: string | null = null) =>

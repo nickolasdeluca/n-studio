@@ -19,14 +19,14 @@ import { forgetComparison } from "../compare";
 import { forgetDebug } from "../debug";
 import { useDiagrams } from "../diagram";
 import { useEditors } from "../editors";
-import { t } from "../i18n";
+import { t, tx } from "../i18n";
 import { guardQuit, request } from "../pending";
 import { checkForUpdate } from "../update";
 import { openScripts } from "../scripts";
 import { restoreSession, sessionChanged } from "../session";
 import { Icon } from "../icons";
 import { useStore } from "../store";
-import { runKey, useKeys, withKey } from "../keys";
+import { runKey, shortcut, useKeys, withKey } from "../keys";
 import { zoom } from "../fonts";
 import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
@@ -395,7 +395,7 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       />
       <button className="flex h-7 items-center gap-1.5 rounded px-2 hover:bg-hover" onClick={viewMenu}>
         <Icon name="panel" />
-        {t("View")}
+        {tx("menu", "View")}
       </button>
     </div>
   );
@@ -533,7 +533,9 @@ function Start() {
         <p className="text-muted">
           {count === 0
             ? t("Register a database to get started.")
-            : t("Double-click a database in the explorer to connect, then an object to open it, or press F12 for an SQL editor.")}
+            : t("Double-click a database in the explorer to connect, then an object to open it, or press {key} for an SQL editor.", {
+                key: shortcut("app.newEditor"),
+              })}
         </p>
         {count === 0 && (
           <button
