@@ -152,6 +152,14 @@ const glyphs: Record<string, ReactNode> = {
     </>
   ),  script: <path d="M3.5 2h6l3 3v9h-9zM9.5 2v3h3M6.4 7.6v4.2l3.4-2.1z" />,
   options: <path d="m4.5 6.5 3.5 3.5 3.5-3.5" />,
+  // Sliders: the preferences
+  settings: (
+    <>
+      <path d="M2.5 4.5h5M10.5 4.5h3M2.5 11.5h2M7.5 11.5h6" />
+      <circle cx="9" cy="4.5" r="1.5" />
+      <circle cx="6" cy="11.5" r="1.5" />
+    </>
+  ),
   open: <path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5M11.5 9.5v4h-9v-9h4" />,
   copy: (
     <>

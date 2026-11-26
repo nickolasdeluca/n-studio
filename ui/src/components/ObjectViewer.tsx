@@ -1,11 +1,11 @@
 // An object's viewer: a row of tabs the backend names, each drawn by its
 // shape. Nothing here knows what a Firebird table is made of; a row that
 // stands for another object opens that object's viewer.
-import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { closeBrackets } from "@codemirror/autocomplete";
+import { history } from "@codemirror/commands";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
-import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { EditorState, Prec } from "@codemirror/state";
+import { highlightSelectionMatches } from "@codemirror/search";
+import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +18,8 @@ import { catalogCompletion, completionList } from "../complete";
 import { editorLook, firebirdSql } from "../firebird";
 import { t } from "../i18n";
 import { Icon, kindColor } from "../icons";
+import { editorKeys, useKeys, withKey } from "../keys";
+import { textKeymap, textKeys } from "../sqlView";
 import { useStore } from "../store";
 import { editCount, noEdits, toChanges, type RowEdits } from "../rowEdits";
 import { typed } from "../selectEdit";
@@ -331,6 +333,7 @@ export function Section(props: {
 /** An object's script. Where the script creates the object over itself,
  *  it is how the object is changed: edited here, then compiled. */
 function SqlText({ viewer, text, editable }: { viewer: Viewer; text: string; editable: boolean }) {
+  useKeys();
   const tab = viewer.active ?? "";
   const modified = viewer.drafts[tab] !== undefined;
   const host = useRef<HTMLDivElement>(null);
@@ -353,18 +356,9 @@ function SqlText({ viewer, text, editable }: { viewer: Viewer; text: string; edi
           catalogCompletion(() => viewer.registration),
           highlightSelectionMatches(),
           EditorState.tabSize.of(2),
-          Prec.highest(
-            keymap.of(
-              ["F9", "Mod-Enter"].map((key) => ({
-                key,
-                run: () => {
-                  compile.current();
-                  return true;
-                },
-              })),
-            ),
-          ),
-          keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
+          editorKeys("viewer", () => ({ "viewer.compile": () => compile.current() })),
+          textKeys,
+          keymap.of(textKeymap),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged) return;
             const doc = update.state.doc.toString();
@@ -397,7 +391,7 @@ function SqlText({ viewer, text, editable }: { viewer: Viewer; text: string; edi
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-1.5">
         {editable && (
           <>
-            <TextButton icon="run" label={t("Compile (F9)")} accent onClick={() => compile.current()} />
+            <TextButton icon="run" label={withKey(t("Compile"), "viewer.compile")} accent onClick={() => compile.current()} />
             <TextButton icon="rollback" label={t("Revert")} disabled={!modified} onClick={revert} />
             <span className="mx-1 h-4 w-px bg-line" />
           </>

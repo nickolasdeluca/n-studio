@@ -1,7 +1,7 @@
 // The SQL editor: one tab per editor, each with its own transaction.
 // The text on top, what the last statement did below.
-import { EditorState, Prec, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, EditorView, keymap, type DecorationSet } from "@codemirror/view";
+import { EditorState, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errorText, type TxEnd } from "../api";
@@ -9,6 +9,7 @@ import { drafts, isolations, MAX_PAGES, pageOf, readers, useEditors, type Bottom
 import { prepareCompletion } from "../complete";
 import { t } from "../i18n";
 import { Icon } from "../icons";
+import { editorKeys, runKey, useKeys, withKey } from "../keys";
 import { formatEditor } from "../format";
 import { formatLabel, pageName, saveEditor } from "../scripts";
 import { request } from "../pending";
@@ -42,9 +43,6 @@ function cancelKey(id: string) {
   };
 }
 
-/** The modifier a shortcut is said with */
-const ALT = /Mac|iPhone|iPad/.test(navigator.platform) ? "Option" : "Alt";
-
 /** The mounted editors, by tab: what Format lays out */
 const views = new Map<string, EditorView>();
 const format = (id: string) => {
@@ -74,47 +72,24 @@ const newPage = (id: string) => {
   return true;
 };
 
+/** The editor's commands, with the keys the preferences give them. Commit
+ *  and Rollback are the tab's, wherever in it the keyboard is. */
 function runKeys(id: string) {
   const run = (mode: RunMode | "script") => () => runners.get(id)?.run(mode) ?? false;
-  return Prec.highest(
-    keymap.of([
-      { key: "F9", run: run("current") },
-      { key: "Mod-Enter", run: run("current") },
-      { key: "Shift-F9", run: run("all") },
-      { key: "Mod-Shift-Enter", run: run("all") },
-      { key: "Alt-F9", run: run("to_cursor") },
-      { key: "Mod-Alt-Enter", run: run("to_cursor") },
-      { key: "Ctrl-F9", run: run("script") },
-      { key: "Mod-s", run: () => (void saveEditor(id), true) },
-      { key: "Mod-Shift-s", run: () => (void saveEditor(id, true), true) },
-      // The key editors elsewhere have; IBExpert's is `formatKey`
-      { key: "Mod-Shift-f", run: () => format(id) },
-      { key: "Escape", run: cancelKey(id) },
-      // The pages, as a browser's tabs
-      { key: "Mod-t", run: () => newPage(id) },
-      { key: "Ctrl-Tab", run: () => turnPage(id, 1) },
-      { key: "Ctrl-Shift-Tab", run: () => turnPage(id, -1) },
-      { key: "Ctrl-PageDown", run: () => turnPage(id, 1) },
-      { key: "Ctrl-PageUp", run: () => turnPage(id, -1) },
-    ]),
-  );
-}
-
-/**
- * Alt+F, IBExpert's key for the formatter, taken by the key pressed and not
- * by the character it types: on a Mac, Option+F types "ƒ", and a keymap
- * leaves Option alone with a letter to the typing.
- */
-function formatKey(id: string) {
-  return Prec.highest(
-    EditorView.domEventHandlers({
-      keydown(event) {
-        if (event.code !== "KeyF" || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
-        event.preventDefault();
-        return format(id);
-      },
-    }),
-  );
+  return editorKeys("editor", () => ({
+    "editor.run": run("current"),
+    "editor.runAll": run("all"),
+    "editor.runToCursor": run("to_cursor"),
+    "editor.runScript": run("script"),
+    "editor.stop": cancelKey(id),
+    "editor.format": () => format(id),
+    "editor.save": () => void saveEditor(id),
+    "editor.saveAs": () => void saveEditor(id, true),
+    // The pages, as a browser's tabs
+    "editor.newPage": () => newPage(id),
+    "editor.nextPage": () => turnPage(id, 1),
+    "editor.previousPage": () => turnPage(id, -1),
+  }));
 }
 
 const markError = StateEffect.define<{ from: number; to: number } | null>();
@@ -205,7 +180,6 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
           doc: drafts.get(page) ?? "",
           extensions: [
             runKeys(id),
-            formatKey(id),
             errorField,
             // Typing makes the text other than its file's, and the session's
             EditorView.updateListener.of((update) => {
@@ -311,17 +285,11 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
     window.addEventListener("mouseup", onUp);
   };
 
-  // IBExpert's Ctrl+Alt+C and Ctrl+Alt+R, wherever in the tab the keyboard
-  // is, the grid too. By the key pressed and not the character it types:
-  // on Windows Ctrl+Alt is AltGr, and AltGr+C types "₢" on a Brazilian
-  // keyboard, which a keymap would take for some other key.
+  // Commit and Rollback (IBExpert's Ctrl+Alt+C and Ctrl+Alt+R), wherever in
+  // the tab the keyboard is, the grid too
   const endKeys = (e: React.KeyboardEvent) => {
-    if (!e.altKey || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
-    const how = e.code === "KeyC" ? "commit" : e.code === "KeyR" ? "rollback" : null;
-    if (!how) return;
-    e.preventDefault();
-    e.stopPropagation();
-    end(how);
+    const ran = runKey("editor", e, { "editor.commit": () => end("commit"), "editor.rollback": () => end("rollback") });
+    if (ran) e.stopPropagation();
   };
 
   return (
@@ -352,6 +320,7 @@ export function SqlEditor({ params }: IDockviewPanelProps<{ tab: string }>) {
 /** The editor's pages, as a browser's tabs: the one in front is what runs.
  *  A double click on one, or its menu, renames it. */
 function PageStrip({ tab }: { tab: EditorTab }) {
+  useKeys();
   const editors = useEditors.getState();
   const showMenu = useContextMenu((m) => m.show);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -361,7 +330,7 @@ function PageStrip({ tab }: { tab: EditorTab }) {
     e.preventDefault();
     showMenu(e.clientX, e.clientY, [
       { label: t("Rename…"), icon: "edit", onSelect: () => setRenaming(page) },
-      { label: t("New Page (Ctrl+T)"), icon: "plus", disabled: full, onSelect: () => editors.addPage(tab.id) },
+      { label: withKey(t("New Page"), "editor.newPage"), icon: "plus", disabled: full, onSelect: () => editors.addPage(tab.id) },
       "separator",
       { label: t("Close the Page"), disabled: tab.pages.length <= 1, onSelect: () => close(page) },
     ]);
@@ -426,7 +395,7 @@ function PageStrip({ tab }: { tab: EditorTab }) {
         );
       })}
       <button
-        title={full ? t("An editor has at most {n} pages", { n: MAX_PAGES }) : t("New Page (Ctrl+T)")}
+        title={full ? t("An editor has at most {n} pages", { n: MAX_PAGES }) : withKey(t("New Page"), "editor.newPage")}
         aria-label={t("New Page")}
         disabled={full}
         onClick={() => editors.addPage(tab.id)}
@@ -472,6 +441,7 @@ function PageName({ page, done }: { page: string; done(title: string | null): vo
 
 function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): unknown; end(how: TxEnd): unknown }) {
   const { tab, run, end } = props;
+  useKeys();
   const showMenu = useContextMenu((m) => m.show);
   const connected = useStore((s) => !!s.servers[tab.registration]);
   useEffect(() => {
@@ -490,13 +460,13 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
     const rect = e.currentTarget.getBoundingClientRect();
     showMenu(rect.left, rect.bottom + 2, [
       { label: t("Save"), icon: "save", onSelect: () => void saveEditor(tab.id) },
-      { label: t("Save As… (Ctrl+Shift+S)"), onSelect: () => void saveEditor(tab.id, true) },
+      { label: withKey(t("Save As…"), "editor.saveAs"), onSelect: () => void saveEditor(tab.id, true) },
     ]);
   };
   const formatMenu = (e: React.MouseEvent) => {
     const rect = e.currentTarget.getBoundingClientRect();
     showMenu(rect.left, rect.bottom + 2, [
-      { label: t("Format ({key}+F)", { key: ALT }), icon: "format", onSelect: () => void format(tab.id) },
+      { label: withKey(t("Format"), "editor.format"), icon: "format", onSelect: () => void format(tab.id) },
       { label: t("Formatter Options…"), onSelect: () => useStore.getState().openDialog({ type: "formatter" }) },
     ]);
   };
@@ -505,10 +475,10 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
   const active = tab.tx !== null;
   return (
     <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line bg-panel-2 px-1.5">
-      <Tool icon="run" label={t("Execute (F9)")} disabled={busy} onClick={() => run("current")} accent />
-      <Tool icon="run-cursor" label={t("Execute to Cursor (Alt+F9)")} disabled={busy} onClick={() => run("to_cursor")} />
-      <Tool icon="run-all" label={t("Execute All (Shift+F9)")} disabled={busy} onClick={() => run("all")} />
-      <Tool icon="script" label={t("Execute as Script (Ctrl+F9): every statement, errors logged")} disabled={busy} onClick={() => run("script")} />
+      <Tool icon="run" label={withKey(t("Execute"), "editor.run")} disabled={busy} onClick={() => run("current")} accent />
+      <Tool icon="run-cursor" label={withKey(t("Execute to Cursor"), "editor.runToCursor")} disabled={busy} onClick={() => run("to_cursor")} />
+      <Tool icon="run-all" label={withKey(t("Execute All"), "editor.runAll")} disabled={busy} onClick={() => run("all")} />
+      <Tool icon="script" label={`${withKey(t("Execute as Script"), "editor.runScript")}: ${t("every statement, errors logged")}`} disabled={busy} onClick={() => run("script")} />
       <button
         title={t("Script Options")}
         aria-label={t("Script Options")}
@@ -518,7 +488,7 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
         <Icon name="options" size={10} />
       </button>
       <span className="mx-1 h-4 w-px bg-line" />
-      <Tool icon="save" label={t("Save (Ctrl+S)")} onClick={() => saveEditor(tab.id)} />
+      <Tool icon="save" label={withKey(t("Save"), "editor.save")} onClick={() => saveEditor(tab.id)} />
       <button
         title={t("Save Options")}
         aria-label={t("Save Options")}
@@ -529,7 +499,7 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
       </button>
       <Tool
         icon="format"
-        label={t("Format the selection, or all of the text ({key}+F)", { key: ALT })}
+        label={withKey(t("Format the selection, or all of the text"), "editor.format")}
         onClick={() => format(tab.id)}
       />
       <button
@@ -541,8 +511,8 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
         <Icon name="options" size={10} />
       </button>
       <span className="mx-1 h-4 w-px bg-line" />
-      <Tool icon="commit" label={t("Commit (Ctrl+Alt+C)")} disabled={busy || !active} onClick={() => end("commit")} />
-      <Tool icon="rollback" label={t("Rollback (Ctrl+Alt+R)")} disabled={busy || !active} onClick={() => end("rollback")} />
+      <Tool icon="commit" label={withKey(t("Commit"), "editor.commit")} disabled={busy || !active} onClick={() => end("commit")} />
+      <Tool icon="rollback" label={withKey(t("Rollback"), "editor.rollback")} disabled={busy || !active} onClick={() => end("rollback")} />
       <span className="mx-1 h-4 w-px bg-line" />
       <label className="flex items-center gap-1.5 text-muted" title={active ? t("Applies to the next transaction") : undefined}>
         {t("Isolation")}
@@ -592,7 +562,7 @@ function EditorToolbar(props: { tab: EditorTab; run(mode: RunMode | "script"): u
               : t("Fetching…")}
           <button
             onClick={() => void s.cancel(tab.id)}
-            title={t("Stop (Esc)")}
+            title={withKey(t("Stop"), "editor.stop")}
             className="ml-1 flex h-6 items-center gap-1 rounded border border-line bg-panel px-2 text-fg hover:bg-hover"
           >
             <Icon name="stop" size={12} />

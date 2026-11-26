@@ -61,6 +61,8 @@ export type Dialog =
   | { type: "share"; tab: string; row: number | null }
   /** The code formatter's style */
   | { type: "formatter" }
+  /** Keys, fonts and language */
+  | { type: "preferences" }
   /** IBExpert's registered databases and formatter options, brought over */
   | { type: "ibexpert" }
   /** A change to the catalog, as the script that makes it: shown, then run

@@ -1,7 +1,7 @@
 // What every SQL text view is built from, the editors' and the Script
 // Executive's: the dialect, the look, the keys, completion from the
 // catalog of the database the view is on.
-import { closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
+import { closeBrackets, closeBracketsKeymap, completionKeymap, startCompletion } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput } from "@codemirror/language";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -10,6 +10,7 @@ import { drawSelection, EditorView, highlightActiveLine, highlightActiveLineGutt
 import { catalogCompletion, completionList, objectAt, objectLinks } from "./complete";
 import { openObject } from "./dock";
 import { editorLook, firebirdSql } from "./firebird";
+import { editorKeys } from "./keys";
 
 /** A double click on the name of something the database has opens it, as
  *  the explorer does; the word is still selected, as on any other. Those
@@ -46,6 +47,17 @@ export function sqlExtensions(registration: () => string | undefined | null): Ex
     objectLinks(registration),
     editorLook,
     EditorState.tabSize.of(2),
-    keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completionKeymap, indentWithTab]),
+    textKeys,
+    keymap.of(textKeymap),
   ];
 }
+
+/** Completion's keys but the one that opens it, which is a command of the
+ *  app's and has the key the preferences give it */
+const completing = completionKeymap.filter((b) => b.run !== startCompletion);
+
+/** CodeMirror's own keys for editing text, which stay as they are */
+export const textKeymap = [...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...completing, indentWithTab];
+
+/** The commands of any SQL text */
+export const textKeys = editorKeys("text", (view) => ({ "text.complete": () => startCompletion(view) }));

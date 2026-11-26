@@ -2,8 +2,8 @@
 // its own, all of it or only the statements checked. The script on one
 // tab, its statements on another, the options on a third; what failed
 // below.
-import { Compartment, EditorState, Prec, RangeSet, StateEffect, StateField } from "@codemirror/state";
-import { Decoration, EditorView, GutterMarker, gutterLineClass, keymap, type DecorationSet } from "@codemirror/view";
+import { Compartment, EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, EditorView, GutterMarker, gutterLineClass, type DecorationSet } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -47,12 +47,11 @@ import { prepareCompletion } from "../complete";
 import { sqlExtensions } from "../sqlView";
 import { useStore } from "../store";
 import { useContextMenu } from "./ContextMenu";
+import { runKey } from "../keys";
 import { TextButton } from "./ObjectViewer";
 
 /** Editor states by panel, so a panel that remounts keeps its text and undo */
 const saved = new Map<string, EditorState>();
-/** What the keys call, by panel: the mounted panel's callbacks */
-const keys = new Map<string, { run(): void; save(): void }>();
 /** Outlining again after typing, by panel */
 const outlines = new Map<string, ReturnType<typeof setTimeout>>();
 const OUTLINE_AFTER_MS = 300;
@@ -66,7 +65,6 @@ export function forgetExecutive(id: string) {
   clearTimeout(outlines.get(id));
   outlines.delete(id);
   saved.delete(id);
-  keys.delete(id);
 }
 
 // ── Marks: the statement running, those that failed ──────────────────────
@@ -116,14 +114,6 @@ const marksField = StateField.define<{ text: DecorationSet; gutter: RangeSet<Gut
 
 const editable = new Compartment();
 
-function panelKeys(id: string) {
-  return Prec.highest(
-    keymap.of([
-      { key: "Mod-s", run: () => (keys.get(id)?.save(), true) },
-    ]),
-  );
-}
-
 const tabs: [ExecutiveTab, string][] = [
   ["script", "Script"],
   ["statements", "Statements"],
@@ -143,13 +133,11 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
 
   useEffect(() => {
     if (!host.current) return;
-    keys.set(id, { run, save: () => void saveExecutive(id) });
     const state =
       saved.get(id) ??
       EditorState.create({
         doc: takeStartingText(id),
         extensions: [
-          panelKeys(id),
           marksField,
           editable.of([]),
           EditorView.updateListener.of((u) => {
@@ -252,12 +240,14 @@ export function ScriptExecutive({ params }: IDockviewPanelProps<{ id: string }>)
     <div
       className="flex h-full flex-col bg-panel"
       onKeyDownCapture={(e) => {
-        // IBExpert's keys, wherever in the panel the keyboard is
-        if (e.key !== "F9" || e.ctrlKey || e.metaKey || e.altKey) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.shiftKey) void runFromFile(id);
-        else run();
+        // The panel's keys (IBExpert's F9 and Shift+F9), wherever in it the
+        // keyboard is
+        const ran = runKey("executive", e, {
+          "executive.run": run,
+          "executive.runFromFile": () => void runFromFile(id),
+          "executive.save": () => void saveExecutive(id),
+        });
+        if (ran) e.stopPropagation();
       }}
     >
       <Toolbar panel={panel} run={run} />

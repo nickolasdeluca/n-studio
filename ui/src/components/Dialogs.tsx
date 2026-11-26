@@ -13,6 +13,7 @@ import { CompileDialog, DiscardDialog } from "./CompileDialog";
 import { FormDialog } from "./FormDialog";
 import { FormatterDialog } from "./FormatterDialog";
 import { IbexpertDialog } from "./IbexpertDialog";
+import { PreferencesDialog } from "./PreferencesDialog";
 import { Button, Field, inputClass, Modal } from "./Modal";
 import { RegistrationDialog } from "./RegistrationDialog";
 import { ShareDialog } from "./ShareDialog";
@@ -46,6 +47,8 @@ export function Dialogs() {
       return <FormatterDialog />;
     case "ibexpert":
       return <IbexpertDialog />;
+    case "preferences":
+      return <PreferencesDialog />;
     case "compile":
       // Another change is another dialog: its outcome is not the last one's
       return <CompileDialog key={dialog.script} dialog={dialog} />;

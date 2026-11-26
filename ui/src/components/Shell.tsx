@@ -26,6 +26,7 @@ import { openScripts } from "../scripts";
 import { restoreSession, sessionChanged } from "../session";
 import { Icon } from "../icons";
 import { useStore } from "../store";
+import { runKey, useKeys, withKey } from "../keys";
 import { hasChanges, useViewers } from "../viewers";
 import { ContextMenuHost, useContextMenu, type MenuItem } from "./ContextMenu";
 import { AdminView, ServiceOutput } from "./AdminPanels";
@@ -108,26 +109,21 @@ export function Shell() {
     return () => void heard.then((stop) => stop());
   }, []);
 
-  // F12, as in IBExpert: an SQL editor on the selected database
+  // The app's own keys, wherever the keyboard is: F12, as in IBExpert, an
+  // SQL editor on the selected database, Ctrl+F12 the Script Executive on it
+  // or on none, Ctrl+O (Cmd+O on a Mac, where Ctrl+O splits a line) a script
+  // into an editor. A key a place took for its own is not one of these.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // Ctrl+O, Cmd+O on a Mac (where Ctrl+O is the editor's own, splitting
-      // a line): a script into an editor on the selected database
-      const mod = /Mac|iPhone|iPad/.test(navigator.platform) ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
-      const script = mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "o";
-      if (e.key !== "F12" && !script) return;
-      // Ctrl+F12, as in IBExpert: the Script Executive, on the selected
-      // database or on none (Cmd+F12 too on a Mac)
-      if (e.key === "F12" && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
-        e.preventDefault();
-        openExecutive(useStore.getState().selection?.id ?? null);
-        return;
-      }
-      const id = useStore.getState().selection?.id;
-      if (!id) return;
-      e.preventDefault();
-      if (!script) openEditor(id);
-      else if (useStore.getState().servers[id]) void openScripts(id);
+      if (e.defaultPrevented) return;
+      const s = useStore.getState();
+      const id = s.selection?.id;
+      runKey("app", e, {
+        "app.newEditor": () => (id ? void openEditor(id) : false),
+        "app.openScript": () => (id && s.servers[id] ? void openScripts(id) : false),
+        "app.executive": () => void openExecutive(id ?? null),
+        "app.preferences": () => s.openDialog({ type: "preferences" }),
+      });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -336,6 +332,7 @@ function showPanel(api: DockviewApi, id: string) {
 }
 
 function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
+  useKeys();
   const agent = AGENTS[useAgent((s) => s.kind)].name;
   const selection = useStore((s) => s.selection);
   const connected = useStore((s) => (selection ? !!s.servers[selection.id] : false));
@@ -372,9 +369,9 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
       <ToolButton icon="unplug" label={t("Disconnect")} disabled={!connected} onClick={() => id && void s.disconnect(id)} />
       <ToolButton icon="refresh" label={t("Refresh")} disabled={!connected} onClick={() => id && void s.refresh(id)} />
       <Separator />
-      <ToolButton icon="sql" label={t("New SQL Editor (F12)")} disabled={!connected} onClick={() => id && openEditor(id)} />
-      <ToolButton icon="folder" label={t("Open Script… (Ctrl+O)")} disabled={!connected} onClick={() => id && openScripts(id)} />
-      <ToolButton icon="run" label={t("Script Executive (Ctrl+F12)")} onClick={() => openExecutive(id ?? null)} />
+      <ToolButton icon="sql" label={withKey(t("New SQL Editor"), "app.newEditor")} disabled={!connected} onClick={() => id && openEditor(id)} />
+      <ToolButton icon="folder" label={withKey(t("Open Script…"), "app.openScript")} disabled={!connected} onClick={() => id && openScripts(id)} />
+      <ToolButton icon="run" label={withKey(t("Script Executive"), "app.executive")} onClick={() => openExecutive(id ?? null)} />
       <ToolButton icon="agent" label={t("AI Agent ({agent})", { agent })} onClick={() => dock.current && showPanel(dock.current, "agent")} />
       <Separator />
       <ToolButton
@@ -387,6 +384,11 @@ function Toolbar({ dock }: { dock: React.RefObject<DockviewApi | null> }) {
         }}
       />
       <span className="flex-1" />
+      <ToolButton
+        icon="settings"
+        label={withKey(t("Preferences…"), "app.preferences")}
+        onClick={() => s.openDialog({ type: "preferences" })}
+      />
       <button className="flex h-7 items-center gap-1.5 rounded px-2 hover:bg-hover" onClick={viewMenu}>
         <Icon name="panel" />
         {t("View")}
