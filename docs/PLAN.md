@@ -625,6 +625,10 @@ Left out: the keys that move about and edit text (CodeMirror's, the grid's)
 stay as they are; the server's messages and the backend's errors stay in
 English.
 
+With it, what the alpha said it lacked is in, but for signed Windows and
+Linux installers and the debugger's limits: 0.8.0 leaves the alpha, as a
+beta.
+
 not to it.
 
 ---

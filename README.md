@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/nickolasdeluca/n-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/nickolasdeluca/n-studio/actions/workflows/ci.yml)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-black)
-![Status](https://img.shields.io/badge/status-alpha-orange)
+![Status](https://img.shields.io/badge/status-beta-yellow)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **A native desktop database IDE for writing SQL, exploring schemas and managing
@@ -199,7 +199,7 @@ The agent must be installed and signed in once from a terminal (`claude`,
 or `codex`). Codex is given N Studio's server for that run only, with `-c`
 overrides; your `~/.codex/config.toml` is not changed.
 
-## The alpha caveats
+## Known limits
 
 - Embedded (serverless) databases, and engines other than Firebird.
 - Windows and Linux installers are unsigned.
