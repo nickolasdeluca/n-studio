@@ -82,6 +82,19 @@ Each editor's History tab searches queries for that database.
 Blobs load on demand beside the grid as text, images, formatted JSON or XML,
 or hex. Save the full value to a file when you need it outside the app.
 
+### Make it yours
+
+Preferences (the sliders on the toolbar, or Ctrl+, / Cmd+,) change three
+things, in use at once and kept on this machine:
+
+- **Keyboard**: every command of the app, IBExpert's keys by default (F9,
+  Shift+F9, Ctrl+F9, F12, Ctrl+Space…). Add a key by pressing it, remove
+  one, or reset; a key two commands share where both work is marked.
+- **Fonts**: the window's zoom (also Ctrl+= and Ctrl+-), the SQL text's
+  size, and the result grids', whose rows grow with it.
+- **Language**: English or Português (Brasil); by default the system's.
+  It changes the next time the app opens.
+
 ### Explore and change a schema
 
 Register a database once; saved passwords go in the system keychain. Clone
@@ -189,7 +202,6 @@ overrides; your `~/.codex/config.toml` is not changed.
 ## The alpha caveats
 
 - Embedded (serverless) databases, and engines other than Firebird.
-- A language other than English; adjustable fonts; remapping keys.
 - Windows and Linux installers are unsigned.
 - The app updates itself from the latest release: it asks when it opens,
   and offers the new version in the status bar (the version shown there
@@ -222,6 +234,8 @@ The app keeps four files in its config directory: `registrations.json`,
 `session.json` (the open editors and their text), `history.db` (what was
 run, without parameter values and without statements that set a password)
 and `formatter.json` (the code formatter's style, once one is saved).
+The preferences (keys, fonts, language) are kept in the window's own
+storage.
 Saved passwords live in the OS keychain, never in a file.
 
 ## Architecture

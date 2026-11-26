@@ -333,7 +333,8 @@ database, and one whose default character set is `WIN1252`.
 
 Not in the alpha, and said to be: the keymap editor and adjustable font sizes
 (§7), languages other than English, signing and an updater, what M5 left out,
-and the debugger's limits as M6 lists them.
+and the debugger's limits as M6 lists them. The updater came with M9, and the
+keymap, the fonts and pt-BR with M12.
 
 ### M8 — The activity monitor as a recording — done
 
@@ -597,6 +598,35 @@ and `codex` its own);
 metadata only by default; queries the agent runs are shown to the user and
 not to it.
 
+### M12 — Preferences: keys, fonts, language — done
+
+What the alpha left out of §7, in one Preferences dialog; each change is in
+use at once and kept in the webview's storage.
+
+- **Keymap.** One list of commands (`ui/src/keymap.ts`), each with a scope
+  (everywhere, any SQL text, SQL editor, object editor, Script Executive)
+  and IBExpert's keys as its defaults. The editors, the viewers, the
+  Executive and the window look a key up there when it is pressed, so a
+  change needs no reload; the toolbars' tooltips show the keys in use. A
+  key is taken by the letter it types, or by its place when Alt changes
+  what it types (Option+F on a Mac, AltGr on Windows). The editor adds and
+  removes keys by pressing them, and marks one two commands share where
+  both work.
+- **Fonts.** The window's zoom (the webview's own, so everything scales
+  sharp), the SQL text's size and the result grid's, whose rows grow with
+  it.
+- **Language.** English or Português (Brasil), by default the system's. A
+  catalog per language, keyed by the English; texts the backend sends (an
+  object's tabs and columns, the forms of its actions) go through it too.
+  A Mac's menu bar is made again in the language. It changes on the next
+  start, so nothing on screen is left in the language before.
+
+Left out: the keys that move about and edit text (CodeMirror's, the grid's)
+stay as they are; the server's messages and the backend's errors stay in
+English.
+
+not to it.
+
 ---
 
 ## 5. Testing
@@ -626,8 +656,8 @@ trademark are not.
 | Grid | DOM-virtualized (TanStack Virtual) | Keeps text selection, accessibility, in-place cell editors and blob popups. Viable because results stream in chunks and are never fully materialized. |
 | State | Rust owns connections, transactions, cursors and metadata; TS holds view state only (Zustand) | No duplicated source of truth. A tab close or a rollback is a Rust-side event the UI reacts to. |
 | Styling | Tailwind, tokens for density and theme | Font size and row height are user-adjustable (screenshot 3 has a grid font-size spinner). |
-| Keybindings | IBExpert preset **and** a full keymap editor | F9 execute, Ctrl+F9 prepare, Shift+F9 execute-all, Ctrl+Space completion, F12. Every binding remappable; preset ships as the default so migrating users keep muscle memory. |
-| i18n | **Deferred** — en-only through M2 | Accepted debt. Strings go through a single `t()` shim from day one so the retrofit is a catalog extraction, not a UI rewrite. |
+| Keybindings | IBExpert preset **and** a full keymap editor | F9 execute, Ctrl+F9 prepare, Shift+F9 execute-all, Ctrl+Space completion, F12. Every command remappable (M12; the keys that edit text stay CodeMirror's); preset ships as the default so migrating users keep muscle memory. |
+| i18n | English text as the key, a catalog per language (M12) | Strings went through a single `t()` shim from day one, so pt-BR was a catalog, not a UI rewrite. A test keeps the catalog in step with the code. |
 | Icons | Custom set, IBExpert icon *grammar* only | Per-object-type icons (table, view, procedure, trigger, generator, domain). None of IBExpert's artwork is reused. |
 
 ### Shell layout
