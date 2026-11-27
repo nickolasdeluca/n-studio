@@ -69,6 +69,8 @@ pub struct Rows {
     blobs: Vec<Option<Vec<u64>>>,
     /// The rows in a sorted order, by their place in fetch order
     order: Option<Vec<u32>>,
+    /// By column: it holds bytes, shown as `0x…`, not text
+    binary: Vec<bool>,
 }
 
 /// How the grid has the rows sorted
@@ -82,7 +84,8 @@ pub struct Sort {
 impl Rows {
     pub fn new(kinds: Vec<ColumnKind>) -> Self {
         let blobs = kinds.iter().map(|k| matches!(k, ColumnKind::Blob | ColumnKind::TextBlob).then(Vec::new)).collect();
-        Self { kinds, pages: Vec::new(), len: 0, blobs, order: None }
+        let binary = vec![false; kinds.len()];
+        Self { kinds, pages: Vec::new(), len: 0, blobs, order: None, binary }
     }
 
     /// Row `row` as shown: its place in fetch order
@@ -138,6 +141,9 @@ impl Rows {
                 ids.push(if let Value::BlobRef { id, .. } = v { *id } else { 0 });
             }
         }
+        for (binary, v) in self.binary.iter_mut().zip(&row) {
+            *binary |= matches!(v, Value::Binary(_));
+        }
         let kinds = &self.kinds;
         let page = self.pages.last_mut().expect("pushed above");
         page.push(row.iter().zip(kinds).map(|(v, k)| display(v, *k)));
@@ -159,6 +165,11 @@ impl Rows {
     pub fn row(&self, row: usize) -> impl Iterator<Item = Option<&str>> {
         let r = self.physical(row);
         (0..self.kinds.len()).map(move |c| self.cell(r, c))
+    }
+
+    /// Whether column `col` holds bytes, which it shows as `0x…`
+    pub fn binary(&self, col: usize) -> bool {
+        self.binary.get(col).copied().unwrap_or(false)
     }
 
     pub fn kinds(&self) -> &[ColumnKind] {
@@ -289,6 +300,16 @@ mod tests {
         // Past the end: what there is
         assert_eq!(rows.slice(PAGE * 2 + 2, 10).len(), 1);
         assert!(rows.slice(PAGE * 3, 10).is_empty());
+    }
+
+    #[test]
+    fn a_column_of_bytes_is_told_from_text() {
+        let mut rows = Rows::new(vec![ColumnKind::Text, ColumnKind::Text]);
+        rows.push(vec![Value::Null, Value::Text("0xAB".into())]);
+        assert!(!rows.binary(0));
+        rows.push(vec![Value::Binary(vec![0xAB]), Value::Text("x".into())]);
+        assert!(rows.binary(0) && !rows.binary(1));
+        assert_eq!(rows.slice(1, 1)[0][0].as_deref(), Some("0xAB"));
     }
 
     #[test]

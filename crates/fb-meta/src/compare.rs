@@ -100,9 +100,9 @@ fn invalid(message: String) -> Error {
 
 /// A value as it is shown, and as a statement writes it
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Lit {
+pub(crate) struct Lit {
     show: Option<String>,
-    sql: String,
+    pub(crate) sql: String,
 }
 
 /// Firebird keeps a ten-thousandth of a second, and takes no more digits
@@ -121,7 +121,7 @@ fn fraction(time: &str) -> String {
     }
 }
 
-fn lit(column: &Column, value: &Value) -> Lit {
+pub(crate) fn lit(column: &Column, value: &Value) -> Lit {
     let quoted = |text: String| Lit { sql: literal(&text), show: Some(text) };
     let bare = |text: String| Lit { sql: text.clone(), show: Some(text) };
     match value {
@@ -269,7 +269,7 @@ fn plan<'a>(source: &'a Table, target: &'a Table, strong: bool) -> Result<Plan<'
 }
 
 /// Bytes of one blob a script writes: past them it says to copy it by hand
-fn blob_limit(major: u32) -> usize {
+pub(crate) fn blob_limit(major: u32) -> usize {
     // Before Firebird 3 a statement is at most 64 KB
     if major >= 3 {
         1 << 20
@@ -279,14 +279,14 @@ fn blob_limit(major: u32) -> usize {
 }
 
 /// Bytes of blobs a script holds in all
-const BLOB_BUDGET: usize = 64 << 20;
+pub(crate) const BLOB_BUDGET: usize = 64 << 20;
 
 /// Of a blob, what is read of it to show beside the other side's
 const PREVIEW: usize = 256;
 
 /// A blob's value as a script writes it and as it is shown
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Content {
+pub(crate) enum Content {
     Null,
     Value { show: String, sql: String },
     /// Larger than a script holds: shown, not written
@@ -303,7 +303,7 @@ impl Content {
 }
 
 /// A text as a blob literal: in pieces, as a string literal holds 32 KB
-fn text_blob_sql(text: &str) -> String {
+pub(crate) fn text_blob_sql(text: &str) -> String {
     const CHARS: usize = 8000;
     let mut pieces = Vec::new();
     let mut rest = text;
@@ -320,7 +320,7 @@ fn text_blob_sql(text: &str) -> String {
 }
 
 /// Bytes as a blob literal, in pieces as [`text_blob_sql`]
-fn binary_blob_sql(bytes: &[u8]) -> String {
+pub(crate) fn binary_blob_sql(bytes: &[u8]) -> String {
     let hex = |part: &[u8]| format!("x'{}'", part.iter().map(|b| format!("{b:02X}")).collect::<String>());
     let pieces: Vec<String> = bytes.chunks(16_000).map(hex).collect();
     match pieces.len() {
@@ -348,19 +348,20 @@ fn binary_preview(bytes: &[u8], cut: bool) -> String {
     }
 }
 
-/// Reads blobs for a script, within [`BLOB_BUDGET`]
-struct Blobs {
-    limit: usize,
-    used: usize,
+/// Reads blobs for a script, within a budget of bytes in all
+pub(crate) struct Blobs {
+    pub(crate) limit: usize,
+    pub(crate) used: usize,
+    pub(crate) budget: usize,
 }
 
 impl Blobs {
     /// The value a cursor of `tx` returned for a blob, read up to `max`
     /// bytes (the limit when `None`); a column that is no blob on this side
     /// comes as text or bytes
-    fn read(&mut self, conn: &Connection, tx: TxId, value: &Value, max: Option<usize>) -> Result<Content> {
+    pub(crate) fn read(&mut self, conn: &Connection, tx: TxId, value: &Value, max: Option<usize>) -> Result<Content> {
         let writing = max.is_none();
-        let max = max.unwrap_or(self.limit).min(if writing { BLOB_BUDGET.saturating_sub(self.used) } else { usize::MAX });
+        let max = max.unwrap_or(self.limit).min(if writing { self.budget.saturating_sub(self.used) } else { usize::MAX });
         let (text, bytes, complete) = match value {
             Value::Null => return Ok(Content::Null),
             Value::Text(s) => (Some(s.clone()), Vec::new(), true),
@@ -474,7 +475,7 @@ impl Plan<'_> {
 
 /// Reads a query's rows a page at a time, in a snapshot of its own, which
 /// `each` is given to read blobs in; `false` from it stops
-fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(TxId, Vec<Value>) -> Result<bool>) -> Result<()> {
+pub(crate) fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(TxId, Vec<Value>) -> Result<bool>) -> Result<()> {
     let tx = conn.begin(TxOptions { isolation: Isolation::Snapshot, read_only: true, ..Default::default() })?;
     let mut run = || -> Result<()> {
         let executed = conn.execute(tx, sql, vec![], ExecuteOptions { plan: false, performance: false })?;
@@ -497,7 +498,7 @@ fn stream(conn: &Connection, sql: &str, mut each: impl FnMut(TxId, Vec<Value>) -
 }
 
 /// A line of a script that is not run, with no line break in it
-fn comment(text: String) -> Statement {
+pub(crate) fn comment(text: String) -> Statement {
     Statement::plain(format!("-- {}", text.replace(['\r', '\n'], " ")))
 }
 
@@ -597,7 +598,7 @@ pub fn compare(
     let mut deletes = Vec::new();
     let mut updates = Vec::new();
     let mut insert_statements = Vec::new();
-    let mut blobs = Blobs { limit: blob_limit(target.info().major), used: 0 };
+    let mut blobs = Blobs { limit: blob_limit(target.info().major), used: 0, budget: BLOB_BUDGET };
     let first_blob = keys + plan.columns.len();
     let too_large = |column: &str, condition: &str, limit: usize| {
         comment(format!(

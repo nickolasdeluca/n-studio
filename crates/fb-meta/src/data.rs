@@ -86,7 +86,7 @@ fn is_number(text: &str) -> bool {
 }
 
 /// A typed value as the literal the column takes
-fn written(column: &Column, value: Option<&str>) -> String {
+pub(crate) fn written(column: &Column, value: Option<&str>) -> String {
     let Some(value) = value else { return "NULL".into() };
     let trimmed = value.trim();
     // Only text can hold nothing and not be null

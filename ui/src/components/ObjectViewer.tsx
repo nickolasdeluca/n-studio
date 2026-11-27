@@ -9,7 +9,8 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, errorText, type Action, type CellKind, type GridRow, type GridSection, type ObjectRef, type RowEditing, type TabContent } from "../api";
+import { save } from "@tauri-apps/plugin-dialog";
+import { api, errorText, type Action, type Assign, type CellKind, type ColumnInfo, type GridRow, type GridSection, type ObjectRef, type RowEditing, type TabContent } from "../api";
 import { extractMetadata, startAction } from "../actions";
 import { nextSort, sortedOrder, type GridSort } from "../gridSort";
 import { openEditor, openObject } from "../dock";
@@ -476,6 +477,50 @@ async function applyEdits(viewer: Viewer) {
   }
 }
 
+/** The table's rows as INSERT statements, in a new editor: the one the grid
+ *  shows at `row` (among those fetched), or every row */
+async function scriptRows(viewer: Viewer, result: number, columns: ColumnInfo[], row: number | null) {
+  const s = useStore.getState();
+  s.setBusy(t("Writing the INSERT script of {name}…", { name: viewer.name }));
+  try {
+    let cells: Assign[] | null = null;
+    if (row !== null) {
+      const [shown] = await api.resultRows(result, row, 1);
+      if (!shown) throw new Error(t("The row is no longer in the grid."));
+      cells = columns.map((c, i) => ({ column: c.field || c.name, value: shown[i] ?? null }));
+    }
+    const done = await api.tableInserts(viewer.registration, viewer.name, cells, null);
+    openEditor(viewer.registration, done.script ?? "");
+    if (done.truncated) {
+      s.setNotice(t("The script stops after {n} rows, what an editor holds: save it to a file for all of them.", { n: done.rows.toLocaleString() }));
+    }
+  } catch (e) {
+    s.setNotice(t("Could not write the INSERT script: {error}", { error: errorText(e) }));
+  } finally {
+    s.setBusy(null);
+  }
+}
+
+/** Every row of the table as INSERT statements, into a file the user picks */
+async function saveRows(viewer: Viewer) {
+  const s = useStore.getState();
+  const path = await save({
+    title: t("Save Rows as INSERT Script"),
+    defaultPath: `${viewer.name.replace(/[\\/:*?"<>|]/g, "_")}.sql`,
+    filters: [{ name: t("SQL scripts"), extensions: ["sql"] }],
+  });
+  if (!path) return;
+  s.setBusy(t("Writing the INSERT script of {name}…", { name: viewer.name }));
+  try {
+    const done = await api.tableInserts(viewer.registration, viewer.name, null, path);
+    s.setNotice(t("{n} rows written to {path}.", { n: done.rows.toLocaleString(), path }));
+  } catch (e) {
+    s.setNotice(t("Could not write the INSERT script: {error}", { error: errorText(e) }));
+  } finally {
+    s.setBusy(null);
+  }
+}
+
 function Data({ viewer, editing }: { viewer: Viewer; editing: RowEditing | null }) {
   const tab = useEditors((s) => (viewer.data ? s.tabs[viewer.data] : undefined));
   const [cursor, setCursor] = useState<GridCursor>({ row: 0, col: 0 });
@@ -500,6 +545,25 @@ function Data({ viewer, editing }: { viewer: Viewer; editing: RowEditing | null 
   useEffect(() => {
     setCursor({ row: 0, col: 0 });
   }, [resultId]);
+  const showMenu = useContextMenu((m) => m.show);
+  const rowMenu =
+    viewer.kind === "table" && resultId !== undefined && columns
+      ? (e: React.MouseEvent, row: number | null) =>
+          showMenu(e.clientX, e.clientY, [
+            {
+              label: t("Script This Record as INSERT"),
+              icon: "sql",
+              disabled: row === null,
+              onSelect: () => void scriptRows(viewer, resultId, columns, row),
+            },
+            {
+              label: t("Script All Rows as INSERT"),
+              icon: "sql",
+              onSelect: () => void scriptRows(viewer, resultId, columns, null),
+            },
+            { label: t("Save All Rows as INSERT Script…"), icon: "export", onSelect: () => void saveRows(viewer) },
+          ])
+      : undefined;
 
   if (!tab || (tab.running && !tab.outcome)) return <Empty>{t("Loading…")}</Empty>;
   const last = tab.messages.at(-1);
@@ -509,7 +573,7 @@ function Data({ viewer, editing }: { viewer: Viewer; editing: RowEditing | null 
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1">
-        <Results tab={tab} cursor={cursor} setCursor={setCursor} edit={edit} />
+        <Results tab={tab} cursor={cursor} setCursor={setCursor} edit={edit} rowMenu={rowMenu} />
       </div>
       {!editing && viewer.kind === "table" && (
         <div className="shrink-0 truncate border-t border-line px-2 py-0.5 text-muted">

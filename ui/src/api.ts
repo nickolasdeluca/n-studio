@@ -1021,6 +1021,21 @@ export interface Assign {
   value: Cell;
 }
 
+/** A result's column an INSERT writes, and the table's column it is */
+export interface InsertColumn {
+  index: number;
+  name: string;
+}
+
+/** A script of a table's rows as INSERT statements */
+export interface TableInserts {
+  /** The script, unless it went to a file */
+  script: string | null;
+  rows: number;
+  /** It stopped at what an editor holds */
+  truncated: boolean;
+}
+
 /** What was done to a grid's rows and is not in the table yet */
 export interface RowChanges {
   updates: { key: Cell[]; set: Assign[] }[];
@@ -1094,6 +1109,10 @@ export const api = {
   rowEditing: (id: string, table: string) => invoke<RowEditing | null>("row_editing", { id, table }),
   dataChangesScript: (id: string, table: string, changes: RowChanges) =>
     invoke<string>("data_changes_script", { id, table, changes }),
+  resultInserts: (result: number, table: string, columns: InsertColumn[], row: number | null, path: string | null) =>
+    invoke<TableInserts>("result_inserts", { result, table, columns, row, path }),
+  tableInserts: (id: string, table: string, row: Assign[] | null, path: string | null) =>
+    invoke<TableInserts>("table_inserts", { id, table, row, path }),
   objectDropScript: (id: string, kind: ObjectKind, name: string) => invoke<string>("object_drop_script", { id, kind, name }),
   objectTemplate: (id: string, kind: ObjectKind) => invoke<string>("object_template", { id, kind }),
   extractMetadata: (id: string, objects: ObjectRef[]) => invoke<string>("extract_metadata", { id, objects }),

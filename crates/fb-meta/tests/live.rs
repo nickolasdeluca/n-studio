@@ -1153,3 +1153,60 @@ fn fixture_the_profiler_measures_lines_and_plans() {
     profiler::delete(&conn, id).unwrap();
     assert_eq!(profiler::report(&conn, id).unwrap(), None);
 }
+
+/// Reads only: any table's rows script as INSERT statements, and a script
+/// stops at the size asked
+#[test]
+fn rows_script_as_inserts() {
+    use std::sync::atomic::AtomicBool;
+    let Some(conn) = connect() else { return };
+    let never = AtomicBool::new(false);
+    for object in sample(&objects(&conn, ObjectKind::Table).unwrap(), 12) {
+        let mut out = Vec::new();
+        let done = fb_meta::inserts::inserts(&conn, &object.name, None, &mut out, Some(16 * 1024), &never).unwrap();
+        let script = String::from_utf8(out).unwrap();
+        // A text with a line break in it takes more than a line
+        let statements = fb_sql::split(&script);
+        assert_eq!(statements.len() as u64, done.rows);
+        assert!(statements.iter().all(|s| script[s.range.clone()].starts_with("INSERT INTO ")));
+        assert!(!done.truncated || script.len() < 64 * 1024);
+    }
+}
+
+/// The fixture's rows, deleted and put back by their script, are what they
+/// were: every type, blobs too. Rolled back.
+#[test]
+fn the_fixtures_rows_come_back_from_their_inserts() {
+    use fb_core::{ExecuteOptions, TxEnd, TxOptions, Value};
+    use fb_meta::data::Assign;
+    use std::sync::atomic::AtomicBool;
+    let Some(conn) = fixture() else { return };
+    let never = AtomicBool::new(false);
+    let script = |row: Option<&[Assign]>| {
+        let mut out = Vec::new();
+        fb_meta::inserts::inserts(&conn, "TIPOS", row, &mut out, None, &never).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let all = script(None);
+    let one = script(Some(&[Assign { column: "ID".into(), value: Some("1".into()) }]));
+    assert_eq!(fb_sql::split(&one).len(), 1, "{one}");
+    assert!(all.contains(one.trim_end()));
+
+    let tx = conn.begin(TxOptions::default()).unwrap();
+    let run = |sql: &str| conn.execute(tx, sql, vec![], ExecuteOptions::default()).unwrap();
+    let read = || -> Vec<Vec<Value>> {
+        let sql = "select t.*, hash(c_blob_text), hash(c_blob_bin) from tipos t order by id";
+        let cursor = run(sql).cursor.unwrap();
+        let rows = conn.fetch(cursor, 1000).unwrap().rows;
+        // The blobs are compared by their hashes: their ids are new
+        rows.into_iter().map(|r| r.into_iter().filter(|v| !matches!(v, Value::BlobRef { .. })).collect()).collect()
+    };
+    let before = read();
+    assert!(!before.is_empty());
+    run("delete from tipos");
+    for statement in fb_sql::split(&all) {
+        run(&all[statement.range]);
+    }
+    assert_eq!(read(), before);
+    conn.end(tx, TxEnd::Rollback).unwrap();
+}

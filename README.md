@@ -59,7 +59,10 @@ input parameters among them. Results stream into a
 sortable grid with CSV export and a summary row (Σ): under each column, chosen
 there, the count of its values or of the different ones, the least, the
 greatest, and for numbers the sum and the average, of every row. An object
-viewer's Data tab has it too. The plan, performance counters and cancellation
+viewer's Data tab has it too. A right click on a row scripts it, or every row,
+as INSERT statements, into an editor or a file: from a select, of the columns
+it selected from the table the clicked column comes from; from a table's Data
+tab, every column of the table, read from the table itself, blobs included. The plan, performance counters and cancellation
 stay close to the query, below a bottom that can be minimized. A rollback
 takes the rows it rolled back away, so they are not edited afterwards.
 

@@ -5,6 +5,7 @@
 
 use fb_core::Connection;
 use fb_meta::data::{self, RowChanges, RowEditing};
+use fb_meta::inserts::inserts;
 use fb_meta::{
     extract, Column, Constraint, ConstraintKind, Dependency, Grant, Index, ObjectKind, Param, Routine, Trigger, TriggerScope,
 };
@@ -245,6 +246,57 @@ pub async fn data_changes_script(app: AppHandle, id: String, table: String, chan
         Ok(fb_meta::ddl::script(&statements))
     })
     .await
+}
+
+/// A script of the table's rows as INSERT statements: every row, or with
+/// `row` (a grid's cells by column) the one it shows. Into the file at `path`
+/// when there is one; otherwise it comes back, to open in an editor, and stops
+/// at a size an editor holds.
+#[tauri::command]
+pub async fn table_inserts(
+    app: AppHandle,
+    id: String,
+    table: String,
+    row: Option<Vec<data::Assign>>,
+    path: Option<std::path::PathBuf>,
+) -> AppResult<TableInserts> {
+    blocking(app, move |state| {
+        let conn = state.session(&id)?;
+        let never = std::sync::atomic::AtomicBool::new(false);
+        let client = |e| match e {
+            fb_core::Error::Client { message } => AppError::Invalid { message },
+            e => e.into(),
+        };
+        match path {
+            Some(path) => {
+                let file = std::fs::File::create(&path).map_err(|e| AppError::storage(&path, e))?;
+                let mut out = std::io::BufWriter::new(file);
+                let done = inserts(&conn, &table, row.as_deref(), &mut out, None, &never).map_err(client)?;
+                Ok(TableInserts { script: None, rows: done.rows, truncated: done.truncated })
+            }
+            None => {
+                let mut out = Vec::new();
+                let done =
+                    inserts(&conn, &table, row.as_deref(), &mut out, Some(EDITOR_SCRIPT), &never).map_err(client)?;
+                let script = String::from_utf8(out)
+                    .map_err(|_| AppError::Invalid { message: "The script is not UTF-8.".into() })?;
+                Ok(TableInserts { script: Some(script), rows: done.rows, truncated: done.truncated })
+            }
+        }
+    })
+    .await
+}
+
+/// The most of a script of rows an editor is given: past it, a file
+pub(crate) const EDITOR_SCRIPT: usize = 16 << 20;
+
+#[derive(Serialize)]
+pub struct TableInserts {
+    /// The script, unless it went to a file
+    pub(crate) script: Option<String>,
+    pub(crate) rows: u64,
+    /// It stopped at what an editor holds
+    pub(crate) truncated: bool,
 }
 
 /// Whether a kind's script creates the object over the one that is there

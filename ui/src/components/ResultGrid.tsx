@@ -82,6 +82,8 @@ interface Props {
   /** A row kept at the bottom, under every column: what the column adds
    *  up to */
   footer?: { gutter: ReactNode; cell(col: number): ReactNode };
+  /** A cell was right-clicked, by its place in the grid: the cursor is on it */
+  onRowMenu?(e: React.MouseEvent, row: number, col: number): void;
   ref?: Ref<GridHandle>;
 }
 
@@ -104,7 +106,7 @@ function initialWidth(c: ColumnInfo): number {
   return Math.round(Math.max(60, Math.min(Math.max(name, content), 360)));
 }
 
-export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort, edit, footer, ref }: Props) {
+export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onSort, edit, footer, onRowMenu, ref }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pages = useRef(new Map<number, Cell[][]>());
   const inflight = useRef(new Set<number>());
@@ -511,6 +513,14 @@ export function ResultGrid({ result, columns, cursor, onCursor, onFetchMore, onS
                     role="gridcell"
                     onMouseDown={() => move(r.index, c.index)}
                     onDoubleClick={() => startTyping()}
+                    onContextMenu={
+                      onRowMenu &&
+                      ((e) => {
+                        e.preventDefault();
+                        move(r.index, c.index);
+                        onRowMenu(e, r.index, c.index);
+                      })
+                    }
                     className={`absolute top-0 truncate border-r border-line/60 px-1.5 ${align[c.index]} ${
                       focused ? "bg-selected outline outline-1 -outline-offset-1 outline-accent" : dirty && !added ? "bg-accent/10" : ""
                     }`}

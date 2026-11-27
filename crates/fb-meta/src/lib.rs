@@ -22,6 +22,7 @@ mod deps;
 pub mod diagram;
 pub mod extract;
 pub mod grant;
+pub mod inserts;
 mod ident;
 pub mod monitor;
 pub mod profiler;

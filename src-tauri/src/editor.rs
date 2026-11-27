@@ -356,6 +356,148 @@ pub async fn result_export(
     .await
 }
 
+/// A column of a result an INSERT writes: its place, and the table's column
+/// it comes from
+#[derive(serde::Deserialize)]
+pub struct InsertColumn {
+    index: usize,
+    name: String,
+}
+
+/// A result's rows as INSERT statements into `table`, of `columns` only:
+/// the row at `row` as the grid shows it, or every row (fetching the rest
+/// first). Values are written as the grid holds them; blobs are read in the
+/// transaction that fetched them. Into the file at `path` when there is one;
+/// otherwise the script comes back, up to what an editor holds.
+#[tauri::command]
+pub async fn result_inserts(
+    app: AppHandle,
+    result: u64,
+    table: String,
+    columns: Vec<InsertColumn>,
+    row: Option<usize>,
+    path: Option<PathBuf>,
+) -> AppResult<crate::objects::TableInserts> {
+    blocking(app, move |state| {
+        let set = state.results.get(result)?;
+        let mut set = set.lock().unwrap();
+        match &path {
+            Some(path) => {
+                let mut file = BufWriter::new(File::create(path).map_err(|e| AppError::storage(path, e))?);
+                write_inserts(&mut set, &table, &columns, row, &mut file, None)
+            }
+            None => {
+                let mut text = Vec::new();
+                let max = Some(crate::objects::EDITOR_SCRIPT);
+                let mut done = write_inserts(&mut set, &table, &columns, row, &mut text, max)?;
+                let script = String::from_utf8(text)
+                    .map_err(|_| AppError::Invalid { message: "The script is not UTF-8.".into() })?;
+                done.script = Some(script);
+                Ok(done)
+            }
+        }
+    })
+    .await
+}
+
+/// Writes [`result_inserts`]'s script into `sink`, stopping past `max`
+/// bytes when given
+fn write_inserts(
+    set: &mut ResultSet,
+    table: &str,
+    columns: &[InsertColumn],
+    row: Option<usize>,
+    sink: &mut dyn std::io::Write,
+    max: Option<usize>,
+) -> AppResult<crate::objects::TableInserts> {
+    let cols = set.rows.kinds().len();
+    if columns.is_empty() {
+        return Err(AppError::Invalid { message: format!("No column of the result comes from {table}.") });
+    }
+    if let Some(bad) = columns.iter().find(|c| c.index >= cols) {
+        return Err(AppError::Invalid { message: format!("The result has no column {}.", bad.index) });
+    }
+    if row.is_none() {
+        set.fetch(usize::MAX)?;
+    }
+    let rows = match row {
+        Some(r) if r < set.rows.len() => r..r + 1,
+        Some(_) => return Err(AppError::Invalid { message: "The row is no longer in the result.".into() }),
+        None => 0..set.rows.len(),
+    };
+    let info = set.conn.info();
+    let dialect = info.dialect;
+    let limit = fb_meta::inserts::blob_statement_limit(info.major);
+    let name = fb_meta::quote(table, dialect);
+    let names: Vec<String> = columns.iter().map(|c| fb_meta::quote(&c.name, dialect)).collect();
+    let write = |e: std::io::Error| AppError::Storage { message: format!("The script could not be written: {e}") };
+    let mut done = crate::objects::TableInserts { script: None, rows: 0, truncated: false };
+    let mut bytes = 0usize;
+    for r in rows {
+        let mut list = Vec::new();
+        let mut values = Vec::new();
+        let mut notes = Vec::new();
+        let cells: Vec<Option<String>> = set.rows.row(r).map(|c| c.map(str::to_owned)).collect();
+        for (column, quoted) in columns.iter().zip(&names) {
+            let kind = set.rows.kinds()[column.index];
+            let value = if matches!(kind, ColumnKind::Blob | ColumnKind::TextBlob) {
+                match set.rows.blob(r, column.index) {
+                    None => Some("NULL".to_string()),
+                    Some(_) if set.tx_ended => {
+                        let note = "of the next row is left out: the transaction that read it has ended";
+                        notes.push(format!("{} {note}", column.name));
+                        None
+                    }
+                    Some((id, is_text)) => {
+                        let content = set.conn.read_blob(set.tx, id, is_text, limit)?;
+                        if content.complete {
+                            Some(fb_meta::inserts::blob_literal(&content))
+                        } else {
+                            notes.push(format!(
+                                "{} of the next row is larger than a script holds ({} KB): copy it by hand",
+                                column.name,
+                                limit / 1024
+                            ));
+                            None
+                        }
+                    }
+                }
+            } else {
+                let shown = cells[column.index].as_deref();
+                let value = fb_meta::inserts::shown_literal(kind, set.rows.binary(column.index), shown);
+                if value.is_none() {
+                    notes.push(format!("{} of the next row is too long for the grid: copy it by hand", column.name));
+                }
+                value
+            };
+            if let Some(value) = value {
+                list.push(quoted.clone());
+                values.push(value);
+            }
+        }
+        let mut line = String::new();
+        for note in notes {
+            line.push_str(&format!("-- {}\n", note.replace(['\r', '\n'], " ")));
+        }
+        if list.is_empty() {
+            line.push_str(&format!("INSERT INTO {name} DEFAULT VALUES;\n"));
+        } else {
+            line.push_str(&format!("INSERT INTO {name} ({}) VALUES ({});\n", list.join(", "), values.join(", ")));
+        }
+        sink.write_all(line.as_bytes()).map_err(write)?;
+        bytes += line.len();
+        done.rows += 1;
+        if max.is_some_and(|max| bytes >= max) {
+            done.truncated = true;
+            let line = format!("-- Stopped after {} rows: save the script to a file for all of them\n", done.rows);
+            sink.write_all(line.as_bytes()).map_err(write)?;
+            break;
+        }
+    }
+    sink.flush().map_err(write)?;
+    Ok(done)
+}
+
 /// The rows the grid has in view
 #[tauri::command]
 pub async fn result_rows(app: AppHandle, result: u64, from: usize, count: usize) -> AppResult<Vec<Vec<Cell>>> {
@@ -535,6 +677,92 @@ mod tests {
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
         assert_eq!(base64(&[0xff, 0xfe, 0xfd, 0x00]), "//79AA==");
+    }
+
+    /// A select's result, as `editor_execute` keeps it, and the columns of
+    /// it that come from `table`
+    fn result_of(conn: &Arc<Connection>, tx: TxId, sql: &str, table: &str) -> (ResultSet, Vec<InsertColumn>) {
+        let executed = conn.execute(tx, sql, vec![], ExecuteOptions::default()).unwrap();
+        let columns = executed
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.relation == table && !c.field.is_empty())
+            .map(|(index, c)| InsertColumn { index, name: c.field.clone() })
+            .collect();
+        let set = ResultSet {
+            session: "test".into(),
+            conn: conn.clone(),
+            tx,
+            cursor: executed.cursor,
+            rows: Rows::new(executed.columns.iter().map(|c| c.kind).collect()),
+            names: executed.columns.iter().map(|c| c.name.clone()).collect(),
+            sort: None,
+            fetch_ms: 0.0,
+            ended_early: false,
+            tx_ended: false,
+            performance: None,
+        };
+        (set, columns)
+    }
+
+    fn script(set: &mut ResultSet, table: &str, columns: &[InsertColumn], row: Option<usize>) -> String {
+        let mut out = Vec::new();
+        write_inserts(set, table, columns, row, &mut out, None).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Reads only: a few rows of any table script as INSERTs of the
+    /// columns selected
+    #[test]
+    fn a_results_rows_script_as_inserts() {
+        let Some(params) = fb_core::ConnectParams::from_env() else { return };
+        let conn = Arc::new(Connection::open(&params).expect("connect"));
+        let tx = conn.begin(TxOptions { read_only: true, ..Default::default() }).unwrap();
+        let tables = fb_meta::objects(&conn, fb_meta::ObjectKind::Table).unwrap();
+        for object in tables.iter().step_by((tables.len() / 8).max(1)) {
+            let quoted = fb_meta::quote(&object.name, conn.info().dialect);
+            let (mut set, columns) = result_of(&conn, tx, &format!("select first 20 * from {quoted}"), &object.name);
+            let text = script(&mut set, &object.name, &columns, None);
+            // A text with a line break in it takes more than a line
+            let statements = fb_sql::split(&text);
+            assert_eq!(statements.len(), set.rows.len());
+            assert!(statements.iter().all(|s| text[s.range.clone()].starts_with("INSERT INTO ")));
+            // Prepared, not run: the server takes them as written
+            for s in statements.iter().take(3) {
+                conn.describe_params(tx, &text[s.range.clone()]).expect("the server prepares the INSERT");
+            }
+        }
+        conn.end(tx, TxEnd::Rollback).unwrap();
+    }
+
+    /// The fixture's rows, deleted and put back by the script of a select of
+    /// them, are what they were. Rolled back.
+    #[test]
+    fn a_results_inserts_put_its_rows_back() {
+        if std::env::var("FB_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        let Some(params) = fb_core::ConnectParams::from_env() else { return };
+        let conn = Arc::new(Connection::open(&params).expect("connect"));
+        let tx = conn.begin(TxOptions::default()).unwrap();
+        let (mut set, columns) = result_of(&conn, tx, "select t.* from tipos t order by id", "TIPOS");
+        let all = script(&mut set, "TIPOS", &columns, None);
+        assert_eq!(fb_sql::split(&script(&mut set, "TIPOS", &columns, Some(0))).len(), 1);
+
+        let run = |sql: &str| conn.execute(tx, sql, vec![], ExecuteOptions::default()).unwrap();
+        let read = || -> Vec<Vec<Value>> {
+            let sql = "select t.*, hash(c_blob_text), hash(c_blob_bin) from tipos t order by id";
+            let rows = conn.fetch(run(sql).cursor.unwrap(), 1000).unwrap().rows;
+            rows.into_iter().map(|r| r.into_iter().filter(|v| !matches!(v, Value::BlobRef { .. })).collect()).collect()
+        };
+        let before = read();
+        run("delete from tipos");
+        for statement in fb_sql::split(&all) {
+            run(&all[statement.range]);
+        }
+        assert_eq!(read(), before);
+        conn.end(tx, TxEnd::Rollback).unwrap();
     }
 
     #[test]

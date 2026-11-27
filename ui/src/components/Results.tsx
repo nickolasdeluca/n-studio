@@ -3,7 +3,9 @@
 // tab are both this.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import type { ColumnInfo, ColumnKind, ColumnSummary } from "../api";
+import { save } from "@tauri-apps/plugin-dialog";
+import { api, errorText, type ColumnInfo, type ColumnKind, type ColumnSummary, type InsertColumn } from "../api";
+import { openEditor } from "../dock";
 import { AGGREGATES, aggregatesFor, shortOf, valueOf, type Aggregate } from "../summary";
 import { useContextMenu } from "./ContextMenu";
 import { agentName, useAgent } from "../agent";
@@ -68,8 +70,18 @@ const useSummaryRow = create<{
 
 const NO_PICKS: Record<string, Aggregate> = {};
 
-export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c: GridCursor): void; edit?: ResultsEdit }) {
+export function Results(props: {
+  tab: EditorTab;
+  cursor: GridCursor;
+  setCursor(c: GridCursor): void;
+  edit?: ResultsEdit;
+  /** A row was right-clicked: a fetched one by its place among them, a new
+   *  one as `null`. Without it, the menu scripts the rows as INSERTs into
+   *  the table the clicked column comes from. */
+  rowMenu?(e: React.MouseEvent, row: number | null, col: number): void;
+}) {
   const { tab, cursor, setCursor, edit } = props;
+  const showMenu = useContextMenu((m) => m.show);
   const grid = useRef<GridHandle>(null);
   const outcome = tab.outcome;
   const fetchMore = useCallback((max: number) => useEditors.getState().fetchMore(tab.id, max), [tab.id]);
@@ -88,6 +100,10 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
     return <Empty>{t("The statement returned no rows.")}</Empty>;
   }
 
+  const rowMenu =
+    props.rowMenu ??
+    ((e: React.MouseEvent, row: number | null, col: number) =>
+      showMenu(e.clientX, e.clientY, insertItems(tab.registration, result.id, executed.columns, row, col)));
   const fetchAll = async () => {
     await fetchMore(Number.MAX_SAFE_INTEGER);
     const rows = useEditors.getState().tabs[tab.id]?.outcome?.result?.rows ?? 0;
@@ -199,6 +215,7 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
             onFetchMore={fetchMore}
             onSort={sort}
             edit={edit}
+            onRowMenu={(e, row, col) => rowMenu(e, row < added ? null : row - added, col)}
             footer={
               summaryShown
                 ? {
@@ -227,6 +244,77 @@ export function Results(props: { tab: EditorTab; cursor: GridCursor; setCursor(c
       </div>
     </div>
   );
+}
+
+/** The table a result's column comes from, and the result's columns that
+ *  come from it, each once: what an INSERT into it writes */
+export function insertTarget(columns: ColumnInfo[], col: number): { table: string; columns: InsertColumn[] } | null {
+  const table = columns[col]?.relation || columns.find((c) => c.relation)?.relation;
+  if (!table) return null;
+  const seen = new Set<string>();
+  const picked: InsertColumn[] = [];
+  columns.forEach((c, index) => {
+    if (c.relation !== table || !c.field || seen.has(c.field)) return;
+    seen.add(c.field);
+    picked.push({ index, name: c.field });
+  });
+  return { table, columns: picked };
+}
+
+/** The menu that scripts a result's rows as INSERT statements */
+function insertItems(registration: string, result: number, columns: ColumnInfo[], row: number | null, col: number) {
+  const target = insertTarget(columns, col);
+  const table = target?.table ?? "";
+  const run = (only: number | null, toFile: boolean) => target && void scriptResult(registration, result, target, only, toFile);
+  return [
+    {
+      label: target ? t("Script This Record as INSERT into {table}", { table }) : t("Script This Record as INSERT"),
+      icon: "sql",
+      disabled: !target || row === null,
+      onSelect: () => run(row, false),
+    },
+    {
+      label: t("Script the Rows as INSERT (fetches all)"),
+      icon: "sql",
+      disabled: !target,
+      onSelect: () => run(null, false),
+    },
+    { label: t("Save the Rows as INSERT Script…"), icon: "export", disabled: !target, onSelect: () => run(null, true) },
+  ];
+}
+
+async function scriptResult(
+  registration: string,
+  result: number,
+  target: { table: string; columns: InsertColumn[] },
+  row: number | null,
+  toFile: boolean,
+) {
+  const s = useStore.getState();
+  let path: string | null = null;
+  if (toFile) {
+    path = await save({
+      title: t("Save Rows as INSERT Script"),
+      defaultPath: `${target.table.replace(/[\\/:*?"<>|]/g, "_")}.sql`,
+      filters: [{ name: t("SQL scripts"), extensions: ["sql"] }],
+    });
+    if (!path) return;
+  }
+  s.setBusy(t("Writing the INSERT script of {name}…", { name: target.table }));
+  try {
+    const done = await api.resultInserts(result, target.table, target.columns, row, path);
+    if (path) s.setNotice(t("{n} rows written to {path}.", { n: done.rows.toLocaleString(), path }));
+    else {
+      openEditor(registration, done.script ?? "");
+      if (done.truncated) {
+        s.setNotice(t("The script stops after {n} rows, what an editor holds: save it to a file for all of them.", { n: done.rows.toLocaleString() }));
+      }
+    }
+  } catch (e) {
+    s.setNotice(t("Could not write the INSERT script: {error}", { error: errorText(e) }));
+  } finally {
+    s.setBusy(null);
+  }
 }
 
 /** What the picked columns of a result add up to, worked out once every
