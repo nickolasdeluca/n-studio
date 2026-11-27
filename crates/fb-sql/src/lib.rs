@@ -218,18 +218,22 @@ pub struct Parameters {
 /// Finds a statement's parameters. Firebird takes only `?`; `:name` is the
 /// editor's, bound by position like IBExpert does. In PSQL (`EXECUTE BLOCK`,
 /// `CREATE PROCEDURE` and the like) `:name` is a variable and stays, and only
-/// `?` counts: `EXECUTE BLOCK (x INT = ?)` takes one.
+/// `?` counts — except in an `EXECUTE BLOCK`'s input list, which takes its
+/// values from the client: `EXECUTE BLOCK (x INT = ?)` and
+/// `EXECUTE BLOCK (x INT = :x)` take one each.
 pub fn parameters(statement: &str) -> Parameters {
     let tokens = tokenize(statement);
     let psql = is_psql(statement, &tokens);
+    let inputs = if psql { block_inputs(statement, &tokens) } else { None };
     let mut sql = String::with_capacity(statement.len());
     let mut names = Vec::new();
     let mut at = 0;
     for t in tokens.iter().filter(|t| t.kind == TokenKind::Param) {
         let text = &statement[t.range.clone()];
+        let named = !psql || inputs.as_ref().is_some_and(|r| r.contains(&t.range.start));
         if text == "?" {
             names.push(None);
-        } else if !psql {
+        } else if named {
             sql.push_str(&statement[at..t.range.start]);
             sql.push('?');
             at = t.range.end;
@@ -238,6 +242,33 @@ pub fn parameters(statement: &str) -> Parameters {
     }
     sql.push_str(&statement[at..]);
     Parameters { sql, names }
+}
+
+/// Where an `EXECUTE BLOCK`'s input list is, between its parentheses
+fn block_inputs(text: &str, tokens: &[Token]) -> Option<Range<usize>> {
+    let mut code = tokens.iter().filter(|t| !t.kind.is_trivia());
+    let execute = code.next()?;
+    let block = code.next()?;
+    let open = code.next()?;
+    let word = |t: &Token, w: &str| t.kind == TokenKind::Word && text[t.range.clone()].eq_ignore_ascii_case(w);
+    if !word(execute, "EXECUTE") || !word(block, "BLOCK") || &text[open.range.clone()] != "(" {
+        return None;
+    }
+    // Types have parentheses of their own: `VARCHAR(10)`, `NUMERIC(15, 2)`
+    let mut depth = 1;
+    for t in code.filter(|t| t.kind == TokenKind::Punct) {
+        match &text[t.range.clone()] {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open.range.end..t.range.start);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Whether a statement holds PSQL, where `:name` is a variable
@@ -384,6 +415,22 @@ COMMIT;";
         let proc = "create or alter procedure p (a int) as declare v int; begin v = :a; end";
         assert_eq!(parameters(proc).names, Vec::<Option<String>>::new());
         assert_eq!(parameters(proc).sql, proc);
+    }
+
+    #[test]
+    fn an_execute_blocks_inputs_take_named_parameters() {
+        let block = "EXECUTE BLOCK (\n  ATIVO D_VARCHAR1 = :ATIVO, n numeric(15, 2) = :n, k int = ?)\n\
+                     RETURNS (y VARCHAR(10)) AS BEGIN FOR SELECT a FROM t WHERE b LIKE :ATIVO INTO :y DO SUSPEND; END";
+        let p = parameters(block);
+        assert_eq!(p.names, vec![Some("ATIVO".into()), Some("N".into()), None]);
+        assert_eq!(
+            p.sql,
+            "EXECUTE BLOCK (\n  ATIVO D_VARCHAR1 = ?, n numeric(15, 2) = ?, k int = ?)\n\
+             RETURNS (y VARCHAR(10)) AS BEGIN FOR SELECT a FROM t WHERE b LIKE :ATIVO INTO :y DO SUSPEND; END"
+        );
+        // Without an input list, every `:name` is the block's
+        let plain = "execute block returns (y int) as begin y = :y; suspend; end";
+        assert_eq!(parameters(plain).names, Vec::<Option<String>>::new());
     }
 
     #[test]

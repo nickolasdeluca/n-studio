@@ -54,7 +54,8 @@ Each editor tab has its own transaction and isolation setting, and up to ten
 pages of text, as a browser's tabs (Ctrl+T, Ctrl+Tab; a double click renames
 one), that share them and its results. Run one statement, everything up to the
 cursor, the whole page, or a script with `SET TERM` support and an error log.
-Named parameters are prompted for before execution. Results stream into a
+Named parameters are prompted for before execution, an `EXECUTE BLOCK`'s
+input parameters among them. Results stream into a
 sortable grid with CSV export and a summary row (Σ): under each column, chosen
 there, the count of its values or of the different ones, the least, the
 greatest, and for numbers the sum and the average, of every row. An object

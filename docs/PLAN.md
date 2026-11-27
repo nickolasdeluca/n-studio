@@ -136,7 +136,8 @@ tab, transaction toolbar + TIL selector, status bar. This is screenshots 2 and 3
 
 In place: all of the above, plus parameters: `?` and `:name` are asked for in a
 dialog that shows each one's declared type, remembered per tab; `:name` is bound
-by position and is left alone in PSQL, where it is a variable. Also: cancel of a
+by position and is left alone in PSQL, where it is a variable, except in an
+`EXECUTE BLOCK`'s input list, whose values come from the client. Also: cancel of a
 running statement (`op_cancel`), blobs read on demand in a viewer beside the
 grid (as text, a picture, indented JSON or XML, or a hex dump, whichever the
 bytes are; a subtype 0 blob that holds text reads as text; saved to a file
